@@ -221,5 +221,6 @@ skip = [
 # github.com organizations to allow git sources for
 [sources.allow-org]
 github = [
+    "AetherBrowser",
     "servo",
 ]

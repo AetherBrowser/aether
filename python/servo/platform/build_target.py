@@ -26,6 +26,27 @@ import servo.platform
 import servo.util as util
 
 
+class BuildPort(Enum):
+    AETHER = "aether"
+    SERVOSHELL = "servoshell"
+
+    @classmethod
+    def default(cls) -> "BuildPort":
+        return cls.AETHER
+
+    def manifest_path(self, topdir: str) -> str:
+        return path.join(topdir, "ports", self.value, "Cargo.toml")
+
+    @classmethod
+    def from_string(cls, name: str) -> "BuildPort":
+        if name == "servo":
+            name = "servoshell"
+        for port in cls:
+            if port.value == name:
+                return port
+        raise ValueError(f"Unknown port: {name}")
+
+
 class SanitizerKind(Enum):
     NONE = 0
     ASAN = 1
@@ -67,8 +88,9 @@ class BuildTarget(object):
     def triple(self) -> str:
         return self.target_triple
 
-    def binary_name(self) -> str:
-        return f"servoshell{servo.platform.get().executable_suffix()}"
+    def binary_name(self, port: Optional["BuildPort"] = None) -> str:
+        port = port or BuildPort.default()
+        return f"{port.value}{servo.platform.get().executable_suffix()}"
 
     def configure_build_environment(self, env: dict[str, str], config: dict[str, Any], topdir: pathlib.Path) -> None:
         pass

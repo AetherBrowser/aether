@@ -4,17 +4,18 @@ members = [
     "components/media/examples",
     "components/xpath",
     "ffi/capi",
+    "ports/aether",
     "ports/servoshell",
     "tests/capi",
     "tests/unit/*",
 ]
-default-members = ["ports/servoshell"]
+default-members = ["ports/aether"]
 exclude = [".cargo", "support/crown"]
 
 [workspace.package]
 version = "0.6.0"
-authors = ["The Servo Project Developers"]
-repository = "https://github.com/servo/servo"
+authors = ["The Aether Project Developers"]
+repository = "https://github.com/AetherBrowser/aether"
 # A generic description for packages that don't have a meaningful description yet.
 description = "A component of the servo web-engine."
 license = "MPL-2.0"

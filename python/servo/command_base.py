@@ -34,7 +34,7 @@ from mach.decorators import CommandArgument, CommandArgumentGroup
 
 import servo.platform
 import servo.util as util
-from servo.platform.build_target import AndroidTarget, BuildTarget, OpenHarmonyTarget
+from servo.platform.build_target import AndroidTarget, BuildPort, BuildTarget, OpenHarmonyTarget
 from servo.util import get_default_cache_dir
 
 from python.servo.platform.build_target import SanitizerKind
@@ -328,6 +328,9 @@ class CommandBase(object):
         self.config["build"].setdefault("webgl-backtrace", False)
         self.config["build"].setdefault("dom-backtrace", False)
         self.config["build"].setdefault("sanitizer", SanitizerKind.NONE)
+        self.config["build"].setdefault("port", "aether")
+
+        self.port = BuildPort.default()
 
         self.config.setdefault("android", {})
         self.config["android"].setdefault("sdk", "")
@@ -354,7 +357,7 @@ class CommandBase(object):
         base_path = util.get_target_dir()
         if sanitizer.is_some() or self.target.is_cross_build() or self.enable_code_coverage:
             base_path = path.join(base_path, self.target.triple())
-        binary_name = self.target.binary_name()
+        binary_name = self.target.binary_name(self.port)
         binary_path = path.join(base_path, build_type.directory_name(), binary_name)
 
         if not path.exists(binary_path):
@@ -553,6 +556,18 @@ class CommandBase(object):
                     "--use-crown", default=False, action="store_true", help="Enable Servo's `crown` linter tool"
                 ),
             ]
+        if build_configuration or binary_selection:
+            decorators += [
+                CommandArgumentGroup("Product Selection"),
+                CommandArgument(
+                    "--port",
+                    default=None,
+                    group="Product Selection",
+                    choices=["aether", "servoshell", "servo"],
+                    help="Which browser shell to build or run (default: aether)",
+                ),
+            ]
+
         if package_configuration:
             decorators += [
                 CommandArgumentGroup("Packaging options"),
@@ -595,6 +610,9 @@ class CommandBase(object):
                     kwargs.pop("dev", None)
                     kwargs.pop("prod", None)
                     kwargs.pop("profile", None)
+
+                if build_configuration or binary_selection:
+                    self.configure_build_port(kwargs)
 
                 if build_configuration:
                     self.configure_build_target(kwargs)
@@ -729,6 +747,21 @@ class CommandBase(object):
         if self.target.is_cross_build() and not suppress_log:
             print(f"Targeting '{self.target.triple()}' for cross-compilation", file=sys.stderr)
 
+    def configure_build_port(self, kwargs: dict[str, Any]) -> None:
+        if hasattr(self.context, "port"):
+            self.port = self.context.port
+            kwargs.pop("port", None)
+            return
+
+        port_name = kwargs.pop("port", None) or self.config["build"]["port"]
+        try:
+            self.port = BuildPort.from_string(port_name)
+        except ValueError:
+            print(f"Unknown port `{port_name}`. Valid options: aether, servoshell")
+            sys.exit(1)
+
+        self.context.port = self.port
+
     def is_media_enabled(self, media_stack: Optional[str]) -> bool:
         """Determine whether media is enabled based on the value of the build target
         platform and the value of the '--media-stack' command-line argument.
@@ -779,7 +812,7 @@ class CommandBase(object):
         if "--manifest-path" not in cargo_args:
             args += [
                 "--manifest-path",
-                path.join(self.context.topdir, "ports", "servoshell", "Cargo.toml"),
+                self.port.manifest_path(self.context.topdir),
             ]
 
         if self.target.is_cross_build():
