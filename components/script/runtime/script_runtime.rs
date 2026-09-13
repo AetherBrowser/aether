@@ -301,7 +301,7 @@ unsafe extern "C" fn promise_rejection_tracker(
                 global.task_manager().dom_manipulation_task_source().queue(
                 task!(rejection_handled_event: move |cx| {
                     let target = target.root();
-                    let root_promise = trusted_promise.root();
+                    let root_promise = trusted_promise.root(cx);
 
                     rooted!(&in(cx) let mut reason = UndefinedValue());
                     unsafe {
@@ -314,7 +314,7 @@ unsafe extern "C" fn promise_rejection_tracker(
                         atom!("rejectionhandled"),
                         EventBubbles::DoesNotBubble,
                         EventCancelable::Cancelable,
-                        root_promise,
+                        &root_promise,
                         reason.handle(),
                     );
 
@@ -329,7 +329,7 @@ unsafe extern "C" fn promise_rejection_tracker(
 #[expect(unsafe_code)]
 fn safely_convert_null_to_string(cx: &JSContext, str_: HandleString) -> DOMString {
     DOMString::from(match std::ptr::NonNull::new(*str_) {
-        None => "".to_owned(),
+        None => String::new(),
         Some(str_) => unsafe { jsstr_to_string(cx, str_) },
     })
 }
@@ -479,7 +479,7 @@ pub(crate) fn notify_about_rejected_promises(cx: &mut JSContext, global: &Global
 
             // Step 4.1 For each promise p of list:
             for promise in uncaught_rejections {
-                let promise = promise.root();
+                let promise = promise.root(cx);
 
                 // 4.1.1 If p.[[PromiseIsHandled]] is true, then continue.
                 if promise.get_promise_is_handled() {
@@ -505,7 +505,7 @@ pub(crate) fn notify_about_rejected_promises(cx: &mut JSContext, global: &Global
                     atom!("unhandledrejection"),
                     EventBubbles::DoesNotBubble,
                     EventCancelable::Cancelable,
-                    promise.clone(),
+                    &promise,
                     reason.handle(),
                 );
                 event.upcast::<Event>().fire(cx, &target);
@@ -830,6 +830,12 @@ impl Runtime {
             }
             if let Some(val) = in_range(pref!(js_mem_gc_empty_chunk_count_min), 0, 10_000) {
                 JS_SetGCParameter(cx, JSGCParamKey::JSGC_MIN_EMPTY_CHUNK_COUNT, val as u32);
+            }
+            if let Some(val) = in_range(pref!(js_mem_gc_malloc_threshold_base_mb), 0, 10_000) {
+                JS_SetGCParameter(cx, JSGCParamKey::JSGC_MALLOC_THRESHOLD_BASE, val as u32);
+            }
+            if let Some(val) = in_range(pref!(js_mem_gc_urgent_threshold_mb), 0, 10_000) {
+                JS_SetGCParameter(cx, JSGCParamKey::JSGC_URGENT_THRESHOLD_MB, val as u32);
             }
         }
         Runtime {

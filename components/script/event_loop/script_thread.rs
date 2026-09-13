@@ -51,7 +51,6 @@ use fonts::{FontContext, SystemFontServiceProxy, WebFontLoadEvent};
 use headers::{HeaderMapExt, LastModified, ReferrerPolicy as ReferrerPolicyHeader};
 use http::header::REFRESH;
 use hyper_serde::Serde;
-use ipc_channel::router::ROUTER;
 use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
 use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
@@ -1727,11 +1726,8 @@ impl ScriptThread {
             ScriptThreadMessage::GetDocumentOrigin(pipeline_id, result_sender) => {
                 self.handle_get_document_origin(pipeline_id, result_sender);
             },
-            ScriptThreadMessage::GetInternalAncestorOriginObjectsList(
-                pipeline_id,
-                result_sender,
-            ) => {
-                self.handle_get_internal_ancestor_origin_objects_list(pipeline_id, result_sender);
+            ScriptThreadMessage::GetDocumentOriginDetails(pipeline_id, result_sender) => {
+                self.handle_get_origin_details(pipeline_id, result_sender);
             },
             ScriptThreadMessage::GetTitle(pipeline_id) => self.handle_get_title_msg(pipeline_id),
             ScriptThreadMessage::SetDocumentActivity(pipeline_id, activity) => {
@@ -2692,17 +2688,21 @@ impl ScriptThread {
         );
     }
 
-    fn handle_get_internal_ancestor_origin_objects_list(
+    fn handle_get_origin_details(
         &self,
         id: PipelineId,
-        result_sender: GenericSender<Option<Vec<ImmutableOrigin>>>,
+        result_sender: GenericSender<Option<(OriginSnapshot, Vec<ImmutableOrigin>)>>,
     ) {
-        let _ = result_sender.send(
-            self.documents
-                .borrow()
-                .find_document(id)
-                .and_then(|document| document.internal_ancestor_origin_objects_list().clone()),
-        );
+        let origin_details = self.documents.borrow().find_document(id).map(|document| {
+            (
+                document.origin().snapshot(),
+                document
+                    .internal_ancestor_origin_objects_list()
+                    .clone()
+                    .unwrap_or_default(),
+            )
+        });
+        let _ = result_sender.send(origin_details);
     }
 
     // exit_fullscreen creates a new JS promise object, so we need to have entered a realm
@@ -3261,9 +3261,9 @@ impl ScriptThread {
         self.background_hang_monitor.unregister();
 
         // If we're in multiprocess mode, shut-down the IPC router for this process.
-        if opts::get().multiprocess {
+        if opts::get().multiprocess || opts::get().force_ipc {
             debug!("Exiting IPC router thread in script thread.");
-            ROUTER.shutdown();
+            ipc_channel::router::ROUTER.shutdown();
         }
 
         debug!("Exited script thread.");

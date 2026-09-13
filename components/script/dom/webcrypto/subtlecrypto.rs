@@ -81,7 +81,7 @@ use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::bindings::utils::set_dictionary_property;
 use crate::dom::cryptokey::{CryptoKey, CryptoKeyOrCryptoKeyPair};
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::promise::Promise;
+use crate::dom::promise::{Promise, RootedPromise};
 
 // Named elliptic curves
 const NAMED_CURVE_P256: &str = "P-256";
@@ -218,13 +218,13 @@ impl SubtleCrypto {
     /// Queue a global task on the crypto task source, given realm's global object, to resolve
     /// promise with the result of creating an ArrayBuffer in realm, containing data. If it fails
     /// to create buffer source, reject promise with a JSFailedError.
-    fn resolve_promise_with_data(&self, promise: Rc<Promise>, data: Zeroizing<Vec<u8>>) {
-        let trusted_promise = TrustedPromise::new(promise);
+    fn resolve_promise_with_data(&self, promise: &RootedPromise, data: Zeroizing<Vec<u8>>) {
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
             .queue(task!(resolve_data: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
 
                 rooted!(&in(cx) let mut array_buffer_ptr = ptr::null_mut::<JSObject>());
                 match create_buffer_source::<ArrayBufferU8>(cx,
@@ -243,7 +243,7 @@ impl SubtleCrypto {
     fn resolve_promise_with_jwk(
         &self,
         cx: &mut js::context::JSContext,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
         jwk: Box<JsonWebKey>,
     ) {
         // NOTE: Serialize the JsonWebKey dictionary by stringifying it, in order to pass it to
@@ -257,13 +257,13 @@ impl SubtleCrypto {
         };
 
         let trusted_subtle = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
             .queue(task!(resolve_jwk: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
 
                 match JsonWebKey::parse(cx, stringified_jwk.as_bytes()) {
                     Ok(jwk) => {
@@ -273,7 +273,7 @@ impl SubtleCrypto {
                         promise.resolve_native(cx, &*object);
                     },
                     Err(error) => {
-                        subtle.reject_promise_with_error(promise, error);
+                        subtle.reject_promise_with_error(&promise, error);
                         return;
                     },
                 }
@@ -282,25 +282,25 @@ impl SubtleCrypto {
 
     /// Queue a global task on the crypto task source, given realm's global object, to resolve
     /// promise with a CryptoKey.
-    fn resolve_promise_with_key(&self, promise: Rc<Promise>, key: &CryptoKey) {
+    fn resolve_promise_with_key(&self, promise: &RootedPromise, key: &CryptoKey) {
         let trusted_key = Trusted::new(key);
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
             .queue(task!(resolve_key: move |cx| {
                 let key = trusted_key.root();
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.resolve_native(cx, &key);
             }));
     }
 
     /// Queue a global task on the crypto task source, given realm's global object, to resolve
     /// promise with a CryptoKeyPair.
-    fn resolve_promise_with_key_pair(&self, promise: Rc<Promise>, key_pair: CryptoKeyPair) {
+    fn resolve_promise_with_key_pair(&self, promise: &RootedPromise, key_pair: CryptoKeyPair) {
         let trusted_private_key = key_pair.privateKey.map(|key| Trusted::new(&*key));
         let trusted_public_key = key_pair.publicKey.map(|key| Trusted::new(&*key));
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
@@ -309,33 +309,33 @@ impl SubtleCrypto {
                     privateKey: trusted_private_key.map(|trusted_key| trusted_key.root()),
                     publicKey: trusted_public_key.map(|trusted_key| trusted_key.root()),
                 };
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.resolve_native(cx, &key_pair);
             }));
     }
 
     /// Queue a global task on the crypto task source, given realm's global object, to resolve
     /// promise with a bool value.
-    fn resolve_promise_with_bool(&self, promise: Rc<Promise>, result: bool) {
-        let trusted_promise = TrustedPromise::new(promise);
+    fn resolve_promise_with_bool(&self, promise: &RootedPromise, result: bool) {
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
             .queue(task!(resolve_bool: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.resolve_native(cx, &result);
             }));
     }
 
     /// Queue a global task on the crypto task source, given realm's global object, to reject
     /// promise with an error.
-    fn reject_promise_with_error(&self, promise: Rc<Promise>, error: Error) {
-        let trusted_promise = TrustedPromise::new(promise);
+    fn reject_promise_with_error(&self, promise: &RootedPromise, error: Error) {
+        let trusted_promise = TrustedPromise::from(promise);
         self.global()
             .task_manager()
             .crypto_task_source()
             .queue(task!(reject_error: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.reject_error(cx, error);
             }));
     }
@@ -345,13 +345,13 @@ impl SubtleCrypto {
     /// defined by [WebIDL].
     fn resolve_promise_with_encapsulated_key(
         &self,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
         encapsulated_key: EncapsulatedKey,
     ) {
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         self.global().task_manager().crypto_task_source().queue(
             task!(resolve_encapsulated_key: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.resolve_native(cx, &encapsulated_key);
             }),
         );
@@ -362,13 +362,13 @@ impl SubtleCrypto {
     /// defined by [WebIDL].
     fn resolve_promise_with_encapsulated_bits(
         &self,
-        promise: Rc<Promise>,
+        promise: &RootedPromise,
         encapsulated_bits: EncapsulatedBits,
     ) {
-        let trusted_promise = TrustedPromise::new(promise);
+        let trusted_promise = TrustedPromise::from(promise);
         self.global().task_manager().crypto_task_source().queue(
             task!(resolve_encapsulated_bits: move |cx| {
-                let promise = trusted_promise.root();
+                let promise = trusted_promise.root(cx);
                 promise.resolve_native(cx, &encapsulated_bits);
             }),
         );
@@ -415,9 +415,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(encrypt: move || {
+            .queue(task!(encrypt: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
@@ -499,9 +499,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(decrypt: move || {
+            .queue(task!(decrypt: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
@@ -583,9 +583,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(sign: move || {
+            .queue(task!(sign: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
@@ -671,9 +671,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(sign: move || {
+            .queue(task!(sign: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 9. If the following steps or referenced procedures say to throw an error,
@@ -750,9 +750,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(digest_: move || {
+            .queue(task!(digest_: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -814,7 +814,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             .dom_manipulation_task_source()
             .queue(task!(generate_key: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 7. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -947,7 +947,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             task!(derive_key: move |cx| {
                 let subtle = trusted_subtle.root();
                 let base_key = trusted_base_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 11. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1067,10 +1067,10 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(import_key: move || {
+            .queue(task!(import_key: move |cx| {
                 let subtle = trsuted_subtle.root();
                 let base_key = trusted_base_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 7. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1210,7 +1210,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             .dom_manipulation_task_source()
             .queue(task!(import_key: move |cx| {
                 let subtle = this.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1276,7 +1276,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             .dom_manipulation_task_source()
             .queue(task!(export_key: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 5. If the following steps or referenced procedures say to throw an error,
@@ -1394,7 +1394,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                 let subtle = trusted_subtle.root();
                 let key = trusted_key.root();
                 let wrapping_key = trusted_wrapping_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1585,7 +1585,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             task!(unwrap_key: move |cx| {
                 let subtle = trusted_subtle.root();
                 let unwrapping_key = trusted_unwrapping_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 11. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1753,7 +1753,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             task!(encapsulate_keys: move |cx| {
                 let subtle = trusted_subtle.root();
                 let encapsulation_key = trusted_encapsulated_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 9. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1879,10 +1879,10 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let trusted_encapsulation_key = Trusted::new(encapsulation_key);
         let trusted_promise = TrustedPromise::new(promise.clone());
         self.global().task_manager().dom_manipulation_task_source().queue(
-            task!(derive_key: move || {
+            task!(derive_key: move |cx| {
                 let subtle = trusted_subtle.root();
                 let encapsulation_key = trusted_encapsulation_key.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
 
                 // Step 7. If the following steps or referenced procedures say to throw an error,
                 // queue a global task on the crypto task source, given realm's global object, to
@@ -1995,7 +1995,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             .dom_manipulation_task_source()
             .queue(task!(decapsulate_key: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let decapsulation_key = trusted_decapsulation_key.root();
 
                 // Step 10. If the following steps or referenced procedures say to throw an error,
@@ -2113,9 +2113,9 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
-            .queue(task!(decapsulate_bits: move || {
+            .queue(task!(decapsulate_bits: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let decapsulation_key = trusted_decapsulation_key.root();
 
                 // Step 8. If the following steps or referenced procedures say to throw an error,
@@ -2212,7 +2212,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             .dom_manipulation_task_source()
             .queue(task!(get_public_key: move |cx| {
                 let subtle = trusted_subtle.root();
-                let promise = trusted_promise.root();
+                let promise = &trusted_promise.root(cx);
                 let key = trusted_key.root();
 
                 // Step 7. If the following steps or referenced procedures say to throw an error,
@@ -2343,16 +2343,14 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         }
 
         // Step 2.
-        // If operation is "deriveKey", "unwrapKey", "encapsulateKey" or "decapsulateKey":
+        // If operation is "deriveKey" or "unwrapKey":
         //     If the result of checking support for an algorithm with op set to "importKey" and
         //     alg set to additionalAlgorithm is false, return false.
         // If operation is "wrapKey":
         //     If the result of checking support for an algorithm with op set to "exportKey" and
         //     alg set to additionalAlgorithm is false, return false.
-        if matches!(
-            operation,
-            "deriveKey" | "unwrapKey" | "encapsulateKey" | "decapsulateKey"
-        ) && !check_support_for_algorithm(cx, "importKey", &additional_algorithm, None)
+        if matches!(operation, "deriveKey" | "unwrapKey") &&
+            !check_support_for_algorithm(cx, "importKey", &additional_algorithm, None)
         {
             return false;
         }
@@ -2362,18 +2360,61 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             return false;
         }
 
-        // Step 3. Let length be null.
+        // Step 3. If operation is "encapsulateKey" or "decapsulateKey":
+        if matches!(operation, "encapsulateKey" | "decapsulateKey") {
+            // Step 3.1. Let normalizedAlgorithm be the result of normalizing an algorithm, with alg
+            // set to algorithm and op set to "get shared key length".
+            // Step 3.2. If an error occurred, return false.
+            let Ok(normalized_algorithm) =
+                normalize_algorithm::<GetSharedKeyLengthOperation>(cx, &algorithm)
+            else {
+                return false;
+            };
+
+            // Step 3.3. Let sharedKeyLength be the result of performing the get shared key length
+            // algorithm specified by normalizedAlgorithm using algorithm.
+            let shared_key_length = normalized_algorithm.get_shared_key_length();
+
+            // Step 3.4. Let normalizedAdditionalAlgorithm be the result of normalizing an
+            // algorithm, with alg set to additionalAlgorithm and op set to "importKey".
+            // Step 3.5. If an error occurred, return false.
+            let Ok(normalized_additional_algorithm) =
+                normalize_algorithm::<ImportKeyOperation>(cx, &additional_algorithm)
+            else {
+                return false;
+            };
+
+            // Step 3.6. If the result of determining support from operation steps with op set to
+            // "importKey" and normalizedAlgorithm set to normalizedAdditionalAlgorithm, and length
+            // set to null is false, return false.
+            //
+            // NOTE: normalized_additional_algorithm is an ImportKeyAlgorithm value, so we don't
+            // need to explicitly set op to "importKey" when we call the
+            // determine_support_from_operation_steps method.
+            if !normalized_additional_algorithm.determine_support_from_operation_steps(None) {
+                return false;
+            }
+
+            // Step 3.7. If the import key operation specified by normalizedAdditionalAlgorithm
+            // would throw an error for every value of keyData that is a byte sequence whose length
+            // in bits is sharedKeyLength when format is "raw-secret", return false.
+            if normalized_additional_algorithm.will_throw_for_key_data_length(shared_key_length) {
+                return false;
+            }
+        }
+
+        // Step 4. Let length be null.
         let mut length = None;
 
-        // Step 4. If operation is "deriveKey":
+        // Step 5. If operation is "deriveKey":
         if operation == "deriveKey" {
-            // Step 4.1. If the result of checking support for an algorithm with op set to "get key
+            // Step 5.1. If the result of checking support for an algorithm with op set to "get key
             // length" and alg set to additionalAlgorithm is false, return false.
             if !check_support_for_algorithm(cx, "get key length", &additional_algorithm, None) {
                 return false;
             }
 
-            // Step 4.2. Let normalizedAdditionalAlgorithm be the result of normalizing an
+            // Step 5.2. Let normalizedAdditionalAlgorithm be the result of normalizing an
             // algorithm, with alg set to additionalAlgorithm and op set to "get key length".
             let Ok(normalized_additional_algorithm) =
                 normalize_algorithm::<GetKeyLengthOperation>(cx, &additional_algorithm)
@@ -2381,7 +2422,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                 return false;
             };
 
-            // Step 4.3. Let length be the result of performing the get key length algorithm
+            // Step 5.3. Let length be the result of performing the get key length algorithm
             // specified by additionalAlgorithm using normalizedAdditionalAlgorithm.'
             match normalized_additional_algorithm.get_key_length() {
                 Ok(key_length) => {
@@ -2390,11 +2431,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                 Err(_) => return false,
             };
 
-            // Step 4.4. Set operation to "deriveBits".
+            // Step 5.4. Set operation to "deriveBits".
             operation = "deriveBits";
         }
 
-        // Step 5. Return the result of checking support for an algorithm, with op set to
+        // Step 6. Return the result of checking support for an algorithm, with op set to
         // operation, alg set to algorithm, and length set to length.
         check_support_for_algorithm(cx, operation, &algorithm, length)
     }
@@ -6154,6 +6195,41 @@ impl ImportKeyAlgorithm {
             ),
         }
     }
+
+    /// Return whether the import key operation specified by normalized algorithm would throw an
+    /// error for every value of keyData that is a byte sequence whose length in bits is
+    /// sharedKeyLength when format is "raw-secret".
+    fn will_throw_for_key_data_length(&self, key_data_length: u32) -> bool {
+        match self {
+            ImportKeyAlgorithm::RsassaPkcs1V1_5(_) |
+            ImportKeyAlgorithm::RsaPss(_) |
+            ImportKeyAlgorithm::RsaOaep(_) |
+            ImportKeyAlgorithm::Ecdsa(_) |
+            ImportKeyAlgorithm::Ecdh(_) |
+            ImportKeyAlgorithm::Ed25519(_) |
+            ImportKeyAlgorithm::X25519(_) |
+            ImportKeyAlgorithm::Ed448(_) |
+            ImportKeyAlgorithm::X448(_) => true,
+            ImportKeyAlgorithm::AesCtr(_) |
+            ImportKeyAlgorithm::AesCbc(_) |
+            ImportKeyAlgorithm::AesGcm(_) |
+            ImportKeyAlgorithm::AesKw(_) => !matches!(key_data_length, 128 | 192 | 256),
+            ImportKeyAlgorithm::Hmac(algorithm) => {
+                key_data_length == 0 ||
+                    algorithm.length.is_some_and(|length| {
+                        length > key_data_length || length + 8 <= key_data_length
+                    })
+            },
+            ImportKeyAlgorithm::Hkdf(_) | ImportKeyAlgorithm::Pbkdf2(_) => false,
+            ImportKeyAlgorithm::MlKem(_) | ImportKeyAlgorithm::MlDsa(_) => true,
+            ImportKeyAlgorithm::AesOcb(_) => !matches!(key_data_length, 128 | 192 | 256),
+            ImportKeyAlgorithm::ChaCha20Poly1305(_) => key_data_length != 256,
+            ImportKeyAlgorithm::Kmac(algorithm) => algorithm
+                .length
+                .is_some_and(|length| length > key_data_length || length + 8 <= key_data_length),
+            ImportKeyAlgorithm::Argon2(_) => false,
+        }
+    }
 }
 
 /// The value of the key "exportKey" in the internal object supportedAlgorithms
@@ -6582,6 +6658,55 @@ impl DecapsulateAlgorithm {
         match self {
             DecapsulateAlgorithm::MlKem(algorithm) => {
                 ml_kem_operation::decapsulate(algorithm, key, ciphertext)
+            },
+        }
+    }
+}
+
+/// The value of the key "get shared key length" in the internal object supportedAlgorithms
+struct GetSharedKeyLengthOperation {}
+
+impl Operation for GetSharedKeyLengthOperation {
+    type RegisteredAlgorithm = GetSharedKeyLengthAlgorithm;
+}
+
+/// Normalized algorithm for the "get shared key length" operation, used as output of
+/// <https://w3c.github.io/webcrypto/#dfn-normalize-an-algorithm>
+enum GetSharedKeyLengthAlgorithm {
+    MlKem(Algorithm),
+}
+
+impl NormalizedAlgorithm for GetSharedKeyLengthAlgorithm {
+    fn from_object(
+        cx: &mut js::context::JSContext,
+        algorithm_name: CryptoAlgorithm,
+        object: HandleObject,
+    ) -> Fallible<Self> {
+        match algorithm_name {
+            CryptoAlgorithm::MlKem512 | CryptoAlgorithm::MlKem768 | CryptoAlgorithm::MlKem1024 => {
+                Ok(GetSharedKeyLengthAlgorithm::MlKem(
+                    object.try_into_with_cx_and_name(cx, algorithm_name)?,
+                ))
+            },
+            _ => Err(Error::NotSupported(Some(format!(
+                "{} does not support \"get shared key length\" operation",
+                algorithm_name.as_str()
+            )))),
+        }
+    }
+
+    fn name(&self) -> CryptoAlgorithm {
+        match self {
+            GetSharedKeyLengthAlgorithm::MlKem(algorithm) => algorithm.name,
+        }
+    }
+}
+
+impl GetSharedKeyLengthAlgorithm {
+    fn get_shared_key_length(&self) -> u32 {
+        match self {
+            GetSharedKeyLengthAlgorithm::MlKem(_algorithm) => {
+                ml_kem_operation::get_shared_key_length()
             },
         }
     }

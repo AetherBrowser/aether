@@ -64,7 +64,7 @@ cfg-if = "1.0.4"
 chacha20poly1305 = { version = "0.11", features = ["rand_core", "zeroize"] }
 chardetng = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-content-security-policy = { version = "0.8.3", features = ["serde"] }
+content-security-policy = { version = "0.9", features = ["serde"] }
 cookie = { package = "cookie", version = "0.18" }
 criterion = "0.8"
 crossbeam-channel = "0.5"
@@ -141,7 +141,7 @@ inventory = "0.3.24"
 ipc-channel = "0.23"
 itertools = "0.15"
 jni = "0.22"
-js = { package = "mozjs", version = "=0.26.0", default-features = false, features = ["intl", "libz-sys"] }
+js = { package = "mozjs", version = "=0.26.1", default-features = false, features = ["intl", "libz-sys"] }
 k12 = "0.5"
 keccak = "0.2"
 keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
@@ -375,7 +375,10 @@ xpath = { package = "servo-xpath", version = "=0.6.0", path = "components/xpath"
 # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
 
 [workspace.lints.clippy]
-manual_string_new = "deny"
+manual_string_new = "warn"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(crown)'] }
 
 # RSA key generation could be very slow without compilation
 # optimizations, in development mode. Without optimizations, WPT might

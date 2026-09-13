@@ -32,6 +32,7 @@ use webxr_api::{
 
 use crate::conversions::Convert;
 use crate::canvas_context::CanvasContext;
+use crate::dom::{RootedPromise, TracedPromise};
 use crate::dom::bindings::trace::HashMapTracedValues;
 use crate::dom::bindings::buffer_source::create_buffer_source;
 use crate::dom::bindings::callback::ExceptionHandling;
@@ -98,23 +99,20 @@ pub(crate) struct XRSession {
         DomRefCell<Vec<(i32, Option<TracedCallback<XRFrameRequestCallback>>)>>,
     input_sources: Dom<XRInputSourceArray>,
     // Any promises from calling end()
-    #[conditional_malloc_size_of]
-    end_promises: DomRefCell<Vec<Rc<Promise>>>,
+    end_promises: DomRefCell<Vec<TracedPromise>>,
     /// <https://immersive-web.github.io/webxr/#ended>
     ended: Cell<bool>,
     #[no_trace]
     next_hit_test_id: Cell<HitTestId>,
-    #[ignore_malloc_size_of = "Promise"]
     pending_hit_test_promises:
-        DomRefCell<HashMapTracedValues<HitTestId, Rc<Promise>, FxBuildHasher>>,
+        DomRefCell<HashMapTracedValues<HitTestId, TracedPromise, FxBuildHasher>>,
     /// Opaque framebuffers need to know the session is "outside of a requestAnimationFrame"
     /// <https://immersive-web.github.io/webxr/#opaque-framebuffer>
     outside_raf: Cell<bool>,
     #[no_trace]
     input_frames: DomRefCell<HashMap<InputId, InputFrame>>,
     framerate: Cell<f32>,
-    #[conditional_malloc_size_of]
-    update_framerate_promise: DomRefCell<Option<Rc<Promise>>>,
+    update_framerate_promise: DomRefCell<Option<TracedPromise>>,
     reference_spaces: DomRefCell<Vec<Dom<XRReferenceSpace>>>,
 }
 
@@ -235,14 +233,13 @@ impl XRSession {
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
-        let callback =
-            ProfileGenericCallback::new(global.time_profiler_chan().clone(), move |message| {
-                let this = this.clone();
-                task_source.queue(task!(xr_event_callback: move |cx| {
-                    this.root().event_callback(cx, message.unwrap());
-                }))
-            })
-            .expect("Could not create callback");
+        let callback = ProfileGenericCallback::new(move |message| {
+            let this = this.clone();
+            task_source.queue(task!(xr_event_callback: move |cx| {
+                this.root().event_callback(cx, message.unwrap());
+            }))
+        })
+        .expect("Could not create callback");
 
         // request animation frame
         self.session.borrow_mut().set_event_dest(callback);
@@ -592,7 +589,8 @@ impl XRSession {
     fn handle_frame_event(&self, cx: &mut JSContext, event: FrameUpdateEvent) {
         match event {
             FrameUpdateEvent::HitTestSourceAdded(id) => {
-                if let Some(promise) = self.pending_hit_test_promises.borrow_mut().remove(&id) {
+                rooted!(&in(cx) let promise = self.pending_hit_test_promises.borrow_mut().remove(&id));
+                if let Some(ref promise) = *promise {
                     let hit_test_source =
                         XRHitTestSource::new(cx, self.global().as_window(), id, self);
                     promise.resolve_native(cx, &hit_test_source);
@@ -837,8 +835,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
         &self,
         cx: &mut CurrentRealm,
         ty: XRReferenceSpaceType,
-    ) -> Rc<Promise> {
-        let p = Promise::new_in_realm(cx);
+    ) -> RootedPromise {
+        let p = Promise::new_in_realm_rooted(cx);
 
         // https://immersive-web.github.io/webxr/#create-a-reference-space
 
@@ -897,8 +895,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
     }
 
     /// <https://immersive-web.github.io/webxr/#dom-xrsession-end>
-    fn End(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
-        let p = Promise::new_in_realm(cx);
+    fn End(&self, cx: &mut CurrentRealm) -> RootedPromise {
+        let p = Promise::new_in_realm_rooted(cx);
         if self.ended.get() && self.end_promises.borrow().is_empty() {
             // If the session has completely ended and all end promises have been resolved,
             // don't queue up more end promises
@@ -912,7 +910,7 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
             p.resolve_native(cx, &());
             return p;
         }
-        self.end_promises.borrow_mut().push(p.clone());
+        self.end_promises.borrow_mut().push(p.to_traced());
         // This is duplicated in event_callback since this should
         // happen ASAP for end() but can happen later if the device
         // shuts itself down
@@ -936,8 +934,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
         &self,
         cx: &mut CurrentRealm,
         options: &XRHitTestOptionsInit,
-    ) -> Rc<Promise> {
-        let p = Promise::new_in_realm(cx);
+    ) -> RootedPromise {
+        let p = Promise::new_in_realm_rooted(cx);
 
         if !self
             .session
@@ -985,7 +983,7 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
         };
         self.pending_hit_test_promises
             .borrow_mut()
-            .insert(id, p.clone());
+            .insert(id, p.to_traced());
 
         self.session.borrow().request_hit_test(source);
 
@@ -1042,8 +1040,8 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
     }
 
     /// <https://www.w3.org/TR/webxr/#dom-xrsession-updatetargetframerate>
-    fn UpdateTargetFrameRate(&self, cx: &mut CurrentRealm, rate: Finite<f32>) -> Rc<Promise> {
-        let promise = Promise::new_in_realm(cx);
+    fn UpdateTargetFrameRate(&self, cx: &mut CurrentRealm, rate: Finite<f32>) -> RootedPromise {
+        let promise = Promise::new_in_realm_rooted(cx);
         {
             let session = self.session.borrow();
             let supported_frame_rates = session.supported_frame_rates();
@@ -1062,7 +1060,7 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
             }
         }
 
-        *self.update_framerate_promise.borrow_mut() = Some(promise.clone());
+        *self.update_framerate_promise.borrow_mut() = Some(promise.to_traced());
 
         let this = Trusted::new(self);
         let global = self.global();
@@ -1071,18 +1069,18 @@ impl XRSessionMethods<crate::DomTypeHolder> for XRSession {
             .dom_manipulation_task_source()
             .to_sendable();
 
-        let callback =
-            ProfileGenericCallback::new(global.time_profiler_chan().clone(), move |message| {
-                let this = this.clone();
-                task_source.queue(task!(update_session_framerate: move |cx| {
-                    let session = this.root();
-                    session.apply_nominal_framerate(cx, message.unwrap());
-                    if let Some(promise) = session.update_framerate_promise.borrow_mut().take() {
-                        promise.resolve_native(cx, &());
-                    };
-                }));
-            })
-            .expect("Could not create callback");
+        let callback = ProfileGenericCallback::new(move |message| {
+            let this = this.clone();
+            task_source.queue(task!(update_session_framerate: move |cx| {
+                let session = this.root();
+                session.apply_nominal_framerate(cx, message.unwrap());
+                rooted!(&in(cx) let promise = session.update_framerate_promise.borrow_mut().take());
+                if let Some(ref promise) = *promise {
+                    promise.resolve_native(cx, &());
+                };
+            }));
+        })
+        .expect("Could not create callback");
 
         self.session.borrow_mut().update_frame_rate(*rate, callback);
 
