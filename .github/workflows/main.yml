@@ -31,12 +31,13 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Setup Python
         uses: ./.github/actions/setup-python
+      # macos / macos-arm-capi disabled for now (no macOS runners)
       - name: Get Configuration
         id: configuration
         run: |
           {
             echo 'result<<EOF'
-            python ./python/servo/try_parser.py ${{ github.event_name == 'pull_request' && 'linux-unit-tests lint' || github.event_name == 'push' && 'full macos macos-arm-capi bencher production-bencher coverage' || 'fail-fast full' }}
+            python ./python/servo/try_parser.py ${{ github.event_name == 'pull_request' && 'linux-unit-tests lint' || github.event_name == 'push' && 'full bencher production-bencher coverage' || 'fail-fast full' }}
             echo EOF
            } >> $GITHUB_OUTPUT
 

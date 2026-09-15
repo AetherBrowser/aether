@@ -13,6 +13,9 @@
 # Defaults to prompting before building
 #mode = "dev"
 
+# Set "port = servoshell" or use `mach build --port servoshell` to build a project
+#port = "aether"
+
 # Set "android = true" or use `mach build --android` to build the Android app.
 android = false
 

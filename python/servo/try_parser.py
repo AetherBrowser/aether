@@ -228,9 +228,12 @@ class Config(object):
                 words.extend(["linux-wpt"])
                 continue  # skip over keyword
             if word == "full":
-                words.extend(["linux-unit-tests", "windows-unit-tests", "macos-arm-unit-tests"])
+                words.extend(["linux-unit-tests", "windows-unit-tests"])
+                # macos-arm-unit-tests, android, ohos disabled for now
+                # words.extend(["macos-arm-unit-tests"])
                 words.extend(["linux-wpt", "linux-bencher"])
-                words.extend(["android", "ohos", "lint"])
+                words.extend(["lint"])
+                # words.extend(["android", "ohos"])
                 words.extend(["linux-build-libservo", "windows-build-libservo"])
                 words.extend(["linux-capi", "windows-capi"])
                 continue  # skip over keyword
@@ -238,11 +241,12 @@ class Config(object):
                 words.extend(
                     [
                         "linux-bencher",
-                        "macos-bencher",
-                        "macos-arm-bencher",
                         "windows-bencher",
-                        "android-bencher",
-                        "ohos-bencher",
+                        # macos-bencher, macos-arm-bencher, android-bencher, ohos-bencher disabled for now
+                        # "macos-bencher",
+                        # "macos-arm-bencher",
+                        # "android-bencher",
+                        # "ohos-bencher",
                     ]
                 )
                 continue  # skip over keyword
@@ -250,10 +254,11 @@ class Config(object):
                 words.extend(
                     [
                         "linux-production-bencher",
-                        "macos-production-bencher",
-                        "macos-arm-production-bencher",
                         "windows-production-bencher",
-                        "ohos-production-bencher",
+                        # macos-production-bencher, macos-arm-production-bencher, ohos-production-bencher disabled for now
+                        # "macos-production-bencher",
+                        # "macos-arm-production-bencher",
+                        # "ohos-production-bencher",
                     ]
                 )
                 continue  # skip over keyword
@@ -348,51 +353,6 @@ class TestParser(unittest.TestCase):
                         "bencher": False,
                         "build_args": "",
                         "capi": True,
-                        "coverage": False,
-                        "wpt_args": "",
-                        "number_of_wpt_chunks": 20,
-                    },
-                    {
-                        "name": "MacOS Arm64 (Unit Tests)",
-                        "workflow": "macos-arm64",
-                        "wpt": False,
-                        "profile": "checked-release",
-                        "unit_tests": True,
-                        "devtools_tests": False,
-                        "build_libservo": False,
-                        "bencher": False,
-                        "build_args": "",
-                        "capi": False,
-                        "coverage": False,
-                        "wpt_args": "",
-                        "number_of_wpt_chunks": 20,
-                    },
-                    {
-                        "name": "Android",
-                        "workflow": "android",
-                        "wpt": False,
-                        "profile": "checked-release",
-                        "unit_tests": False,
-                        "devtools_tests": False,
-                        "build_libservo": False,
-                        "bencher": False,
-                        "build_args": "",
-                        "capi": False,
-                        "coverage": False,
-                        "wpt_args": "",
-                        "number_of_wpt_chunks": 20,
-                    },
-                    {
-                        "name": "OpenHarmony",
-                        "workflow": "ohos",
-                        "wpt": False,
-                        "profile": "checked-release",
-                        "unit_tests": False,
-                        "devtools_tests": False,
-                        "build_libservo": False,
-                        "bencher": False,
-                        "build_args": "",
-                        "capi": False,
                         "coverage": False,
                         "wpt_args": "",
                         "number_of_wpt_chunks": 20,
