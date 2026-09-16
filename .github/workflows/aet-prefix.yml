@@ -1,0 +1,64 @@
+name: Assign AET prefix
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  assign-prefix:
+    name: Prefix issue with next AET number
+    runs-on: ubuntu-latest
+    # Serialize assignments so two issues opened at once do not share a number.
+    concurrency:
+      group: aet-ticket-prefix
+      cancel-in-progress: false
+    steps:
+      - name: Assign AET-xxx prefix
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issueNumber = context.issue.number;
+            const originalTitle = context.payload.issue.title || "";
+            const trimmed = originalTitle.trim();
+
+            if (/^LLR-\d+/i.test(trimmed) || /^NO-AET/i.test(trimmed)) {
+              core.info(`Ignoring issue #${issueNumber}: title starts with LLR-xxx or NO-AET`);
+              return;
+            }
+
+            if (/^AET-\d+/i.test(trimmed)) {
+              core.info(`Issue #${issueNumber} already has an AET prefix`);
+              return;
+            }
+
+            const items = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "all",
+              per_page: 100,
+            });
+
+            let maxAet = 0;
+            const aetPattern = /\bAET-(\d+)\b/i;
+            for (const item of items) {
+              const match = item.title && item.title.match(aetPattern);
+              if (match) {
+                maxAet = Math.max(maxAet, Number(match[1]));
+              }
+            }
+
+            const next = maxAet + 1;
+            const newTitle = `AET-${next}: ${trimmed}`;
+
+            await github.rest.issues.update({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              title: newTitle,
+            });
+
+            core.info(`Renamed issue #${issueNumber} to "${newTitle}"`);
