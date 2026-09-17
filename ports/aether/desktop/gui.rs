@@ -454,7 +454,9 @@ impl Gui {
 
                             let forward_button = ui
                                 .add_enabled_ui(self.can_go_forward, |ui| {
-                                    add_toolbar_button(ui, Gui::toolbar_button("⏵"))
+                                    toolbar_icons
+                                        .button(ui, ToolbarIcon::Forward)
+                                        .on_hover_text("Forward")
                                 })
                                 .inner;
                             forward_button.widget_info(|| {

@@ -85,6 +85,7 @@ fn toolbar_button_fill_color(
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
     Back,
+    Forward,
     Home,
     Reload,
     Stop,
@@ -94,6 +95,7 @@ impl ToolbarIcon {
     fn svg_bytes(self) -> &'static [u8] {
         match self {
             Self::Back => include_bytes!("../../../resources/icons/back.svg"),
+            Self::Forward => include_bytes!("../../../resources/icons/forward.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
             Self::Reload => include_bytes!("../../../resources/icons/reload.svg"),
             Self::Stop => include_bytes!("../../../resources/icons/stop-reload.svg"),
@@ -103,6 +105,7 @@ impl ToolbarIcon {
     fn texture_name(self) -> &'static str {
         match self {
             Self::Back => "toolbar-back",
+            Self::Forward => "toolbar-forward",
             Self::Home => "toolbar-home",
             Self::Reload => "toolbar-reload",
             Self::Stop => "toolbar-stop",
@@ -204,6 +207,17 @@ mod tests {
         assert!(
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "back icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn forward_svg_rasterizes() {
+        let image = rasterize_svg(ToolbarIcon::Forward.svg_bytes(), 32)
+            .expect("forward.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "forward icon should not be fully transparent"
         );
     }
 
