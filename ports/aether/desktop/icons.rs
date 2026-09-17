@@ -17,6 +17,70 @@ const TOOLBAR_ICON_SIZE: f32 = 14.0;
 /// Toolbar button hit target, matching [`super::gui::Gui::toolbar_button`].
 const TOOLBAR_BUTTON_SIZE: f32 = 20.0;
 
+/// Rounded square used to mark a toolbar button on hover and press.
+const TOOLBAR_BUTTON_CORNER_RADIUS: u8 = 4;
+
+/// Toolbar button: icon only at rest, rounded square on hover, darker on press.
+pub(crate) fn add_toolbar_button(ui: &mut egui::Ui, button: egui::Button<'_>) -> egui::Response {
+    // Reserve a paint slot behind the icon so hover/press fill never covers it.
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(
+        button
+            .frame(false)
+            .min_size(egui::vec2(TOOLBAR_BUTTON_SIZE, TOOLBAR_BUTTON_SIZE)),
+    );
+    if let Some(fill) = toolbar_button_fill_color(
+        ui.visuals(),
+        toolbar_button_visual_state(
+            ui.is_enabled(),
+            response.hovered(),
+            response.is_pointer_button_down_on(),
+        ),
+    ) {
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(
+                response.rect,
+                egui::CornerRadius::same(TOOLBAR_BUTTON_CORNER_RADIUS),
+                fill,
+            ),
+        );
+    }
+    response
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolbarButtonVisualState {
+    Rest,
+    Hover,
+    Press,
+}
+
+fn toolbar_button_visual_state(
+    enabled: bool,
+    hovered: bool,
+    pressed: bool,
+) -> ToolbarButtonVisualState {
+    if enabled && pressed {
+        ToolbarButtonVisualState::Press
+    } else if enabled && hovered {
+        ToolbarButtonVisualState::Hover
+    } else {
+        ToolbarButtonVisualState::Rest
+    }
+}
+
+fn toolbar_button_fill_color(
+    visuals: &egui::Visuals,
+    state: ToolbarButtonVisualState,
+) -> Option<egui::Color32> {
+    match state {
+        ToolbarButtonVisualState::Rest => None,
+        ToolbarButtonVisualState::Hover => Some(visuals.widgets.hovered.weak_bg_fill),
+        ToolbarButtonVisualState::Press => Some(visuals.widgets.active.weak_bg_fill),
+    }
+}
+
 /// A bundled SVG used by the chrome toolbar.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
@@ -63,12 +127,7 @@ impl ToolbarIconCache {
             },
             None => egui::Button::new(""),
         };
-        ui.add(
-            button
-                .frame(false)
-                .min_size(egui::vec2(TOOLBAR_BUTTON_SIZE, TOOLBAR_BUTTON_SIZE))
-                .image_tint_follows_text_color(true),
-        )
+        add_toolbar_button(ui, button.image_tint_follows_text_color(true))
     }
 
     fn texture(
@@ -176,5 +235,60 @@ mod tests {
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "context-fill should be treated as an opaque white fill"
         );
+    }
+
+    #[test]
+    fn rest_state_has_no_fill() {
+        assert_eq!(
+            toolbar_button_visual_state(true, false, false),
+            ToolbarButtonVisualState::Rest
+        );
+        assert_eq!(
+            toolbar_button_fill_color(&egui::Visuals::dark(), ToolbarButtonVisualState::Rest),
+            None
+        );
+    }
+
+    #[test]
+    fn hover_state_uses_rounded_square_fill() {
+        assert_eq!(
+            toolbar_button_visual_state(true, true, false),
+            ToolbarButtonVisualState::Hover
+        );
+        let visuals = egui::Visuals::dark();
+        assert_eq!(
+            toolbar_button_fill_color(&visuals, ToolbarButtonVisualState::Hover),
+            Some(visuals.widgets.hovered.weak_bg_fill)
+        );
+    }
+
+    #[test]
+    fn press_state_darkens_the_hover_square() {
+        assert_eq!(
+            toolbar_button_visual_state(true, true, true),
+            ToolbarButtonVisualState::Press
+        );
+        for visuals in [egui::Visuals::dark(), egui::Visuals::light()] {
+            let hover = toolbar_button_fill_color(&visuals, ToolbarButtonVisualState::Hover)
+                .expect("hover should paint a square");
+            let press = toolbar_button_fill_color(&visuals, ToolbarButtonVisualState::Press)
+                .expect("press should paint a square");
+            assert!(
+                color_luma(press) < color_luma(hover),
+                "pressed square should be darker than hover"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_button_stays_at_rest() {
+        assert_eq!(
+            toolbar_button_visual_state(false, true, true),
+            ToolbarButtonVisualState::Rest
+        );
+    }
+
+    fn color_luma(color: egui::Color32) -> u16 {
+        color.r() as u16 + color.g() as u16 + color.b() as u16
     }
 }

@@ -25,7 +25,7 @@ use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
-    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel, Vec2,
+    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel,
     WidgetInfo, WidgetType, pos2,
 };
 #[cfg(any(
@@ -57,7 +57,7 @@ use winit::window::Window;
 
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
-use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
+use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache, add_toolbar_button};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
 
@@ -307,11 +307,9 @@ impl Gui {
         position.y < self.toolbar_height.get()
     }
 
-    /// Create a frameless button with square sizing, as used in the toolbar.
+    /// Create a toolbar button: icon/text at rest, rounded square on hover, darker on press.
     fn toolbar_button(text: &str) -> egui::Button<'_> {
         egui::Button::new(text)
-            .frame(false)
-            .min_size(Vec2 { x: 20.0, y: 20.0 })
     }
 
     /// Draws a browser tab, checking for clicks and queues appropriate [`UserInterfaceCommand`]s.
@@ -437,8 +435,11 @@ impl Gui {
                         ui.available_size(),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
-                            let back_button =
-                                ui.add_enabled(self.can_go_back, Gui::toolbar_button("⏴"));
+                            let back_button = ui
+                                .add_enabled_ui(self.can_go_back, |ui| {
+                                    add_toolbar_button(ui, Gui::toolbar_button("⏴"))
+                                })
+                                .inner;
                             back_button.widget_info(|| {
                                 let mut info = WidgetInfo::new(WidgetType::Button);
                                 info.label = Some("Back".into());
@@ -449,8 +450,11 @@ impl Gui {
                                 window.queue_user_interface_command(UserInterfaceCommand::Back);
                             }
 
-                            let forward_button =
-                                ui.add_enabled(self.can_go_forward, Gui::toolbar_button("⏵"));
+                            let forward_button = ui
+                                .add_enabled_ui(self.can_go_forward, |ui| {
+                                    add_toolbar_button(ui, Gui::toolbar_button("⏵"))
+                                })
+                                .inner;
                             forward_button.widget_info(|| {
                                 let mut info = WidgetInfo::new(WidgetType::Button);
                                 info.label = Some("Forward".into());
@@ -548,16 +552,16 @@ impl Gui {
                                         if cfg!(target_os = "macos") {
                                             i.clone().consume_key(Modifiers::COMMAND, Key::L)
                                         } else {
-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L) ||
-                                                i.clone().consume_key(Modifiers::ALT, Key::D)
+                                            i.clone().consume_key(Modifiers::COMMAND, Key::L)
+                                                || i.clone().consume_key(Modifiers::ALT, Key::D)
                                         }
                                     }) {
                                         // The focus request immediately makes gained_focus return true.
                                         location_field.request_focus();
                                     }
                                     // Select address bar text when it's focused (click or shortcut).
-                                    if location_field.gained_focus() &&
-                                        let Some(mut state) =
+                                    if location_field.gained_focus()
+                                        && let Some(mut state) =
                                             TextEditState::load(ui.ctx(), location_id)
                                     {
                                         // Select the whole input.
@@ -568,8 +572,8 @@ impl Gui {
                                         state.store(ui.ctx(), location_id);
                                     }
                                     // Navigate to address when enter is pressed in the address bar.
-                                    if location_field.lost_focus() &&
-                                        ui.input(|i| i.clone().key_pressed(Key::Enter))
+                                    if location_field.lost_focus()
+                                        && ui.input(|i| i.clone().key_pressed(Key::Enter))
                                     {
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::Go(location.clone()),
@@ -599,7 +603,8 @@ impl Gui {
                                         Self::browser_tab(ui, window, webview, favicon);
                                     }
 
-                                    let new_tab_button = ui.add(Gui::toolbar_button("+"));
+                                    let new_tab_button =
+                                        add_toolbar_button(ui, Gui::toolbar_button("+"));
                                     new_tab_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
                                         info.label = Some("New tab".into());
@@ -611,7 +616,8 @@ impl Gui {
                                         );
                                     }
 
-                                    let new_window_button = ui.add(Gui::toolbar_button("⊞"));
+                                    let new_window_button =
+                                        add_toolbar_button(ui, Gui::toolbar_button("⊞"));
                                     new_window_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
                                         info.label = Some("New window".into());
@@ -664,8 +670,8 @@ impl Gui {
                 }
             }
             let size = Size2D::new(available_rect.width(), available_rect.height()) * scale;
-            if let Some(webview) = window.active_webview() &&
-                size != webview.size()
+            if let Some(webview) = window.active_webview()
+                && size != webview.size()
             {
                 // `rect` is sized to just the WebView viewport, which is required by
                 // `OffscreenRenderingContext` See:
@@ -791,10 +797,10 @@ impl Gui {
         //       because logical OR would short-circuit if any of the functions return true.
         //       We want to ensure that all functions are called. The "bitwise OR" operator
         //       does not short-circuit.
-        self.update_load_status(window) |
-            self.update_location_in_toolbar(window) |
-            self.update_status_text(window) |
-            self.update_can_go_back_and_forward(window)
+        self.update_load_status(window)
+            | self.update_location_in_toolbar(window)
+            | self.update_status_text(window)
+            | self.update_can_go_back_and_forward(window)
     }
 
     /// Returns true if a redraw is required after handling the provided event.
