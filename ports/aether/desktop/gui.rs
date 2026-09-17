@@ -437,7 +437,9 @@ impl Gui {
                         |ui| {
                             let back_button = ui
                                 .add_enabled_ui(self.can_go_back, |ui| {
-                                    add_toolbar_button(ui, Gui::toolbar_button("⏴"))
+                                    toolbar_icons
+                                        .button(ui, ToolbarIcon::Back)
+                                        .on_hover_text("Back")
                                 })
                                 .inner;
                             back_button.widget_info(|| {

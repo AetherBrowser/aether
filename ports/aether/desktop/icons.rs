@@ -84,6 +84,7 @@ fn toolbar_button_fill_color(
 /// A bundled SVG used by the chrome toolbar.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
+    Back,
     Home,
     Reload,
     Stop,
@@ -92,6 +93,7 @@ pub(crate) enum ToolbarIcon {
 impl ToolbarIcon {
     fn svg_bytes(self) -> &'static [u8] {
         match self {
+            Self::Back => include_bytes!("../../../resources/icons/back.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
             Self::Reload => include_bytes!("../../../resources/icons/reload.svg"),
             Self::Stop => include_bytes!("../../../resources/icons/stop-reload.svg"),
@@ -100,6 +102,7 @@ impl ToolbarIcon {
 
     fn texture_name(self) -> &'static str {
         match self {
+            Self::Back => "toolbar-back",
             Self::Home => "toolbar-home",
             Self::Reload => "toolbar-reload",
             Self::Stop => "toolbar-stop",
@@ -192,6 +195,17 @@ pub(crate) fn rasterize_svg(svg: &[u8], size_px: u32) -> Option<egui::ColorImage
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn back_svg_rasterizes() {
+        let image =
+            rasterize_svg(ToolbarIcon::Back.svg_bytes(), 32).expect("back.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "back icon should not be fully transparent"
+        );
+    }
 
     #[test]
     fn home_svg_rasterizes() {
