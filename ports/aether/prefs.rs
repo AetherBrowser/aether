@@ -734,6 +734,11 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         return ArgumentParsingResult::ErrorParsing;
     };
 
+    #[cfg(not(feature = "multiprocess"))]
+    if cmd_args.multiprocess || cmd_args.force_ipc {
+        log::error!("IPC was disabled at compile time. IPC and multiprocess modes are disabled");
+    }
+
     let opts = Opts {
         debug: debug_options,
         time_profiling: cmd_args.profile,
@@ -924,4 +929,22 @@ fn test_servoshell_cmd() {
         let p = test_parse("--zealous-gc").1;
         p.js_mem_gc_zeal_level == 2 && p.js_mem_gc_zeal_frequency == 1
     });
+}
+
+#[test]
+fn test_content_process_argument() {
+    match parse_command_line_arguments(
+        ["--content-process", "servo-ipc-channel.abcdefg"].as_slice(),
+    ) {
+        ArgumentParsingResult::ContentProcess(token) => {
+            assert_eq!(token, "servo-ipc-channel.abcdefg");
+        },
+        ArgumentParsingResult::ChromeProcess(..) => {
+            panic!("expected a content process token, got a chrome process")
+        },
+        ArgumentParsingResult::Exit => panic!("expected a content process token, got exit"),
+        ArgumentParsingResult::ErrorParsing => {
+            panic!("expected a content process token, got a parse error")
+        },
+    }
 }

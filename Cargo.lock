@@ -221,6 +221,7 @@ dependencies = [
  "ohos-window-manager-sys",
  "ohos-window-sys",
  "raw-window-handle",
+ "resvg",
  "rustls",
  "serde_json",
  "servo",
