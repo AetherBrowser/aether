@@ -9,8 +9,7 @@ use std::collections::HashMap;
 
 use egui::load::SizedTexture;
 use log::warn;
-use resvg::tiny_skia;
-use resvg::usvg;
+use resvg::{tiny_skia, usvg};
 
 /// Logical size of a toolbar icon, in egui points.
 const TOOLBAR_ICON_SIZE: f32 = 14.0;
@@ -93,8 +92,26 @@ impl ToolbarIconCache {
     }
 }
 
+/// SVGs use `context-fill` / `context-fill-opacity`, which resvg
+/// treats as an invalid paint (fully transparent). Map them to an opaque white
+/// fill so egui can tint the icon to the current text color.
+fn prepare_toolbar_svg(svg: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let Ok(text) = std::str::from_utf8(svg) else {
+        return std::borrow::Cow::Borrowed(svg);
+    };
+    if !text.contains("context-fill") {
+        return std::borrow::Cow::Borrowed(svg);
+    }
+    std::borrow::Cow::Owned(
+        text.replace("context-fill-opacity", "1")
+            .replace("context-fill", "#ffffff")
+            .into_bytes(),
+    )
+}
+
 pub(crate) fn rasterize_svg(svg: &[u8], size_px: u32) -> Option<egui::ColorImage> {
-    let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
+    let svg = prepare_toolbar_svg(svg);
+    let tree = usvg::Tree::from_data(&svg, &usvg::Options::default())
         .map_err(|error| {
             warn!("Failed to parse toolbar SVG: {error}");
             error
@@ -147,6 +164,17 @@ mod tests {
         assert!(
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "stop icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn context_fill_svg_rasterizes() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="context-fill" fill-opacity="context-fill-opacity"><rect width="16" height="16"/></svg>"#;
+        let image = rasterize_svg(svg, 32).expect("context-fill SVG should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "context-fill should be treated as an opaque white fill"
         );
     }
 }
