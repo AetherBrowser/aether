@@ -216,7 +216,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 rustc-demangle = "0.1"
 rustc-hash = "2.1.2"
 realfft = "3.5.0"
-rustls = { version = "0.23", default-features = false, features = ["logging", "std", "tls12"] }
+rustls = { version = "0.23.45", default-features = false, features = ["logging", "std", "tls12"] }
 rustls-pki-types = "1.14"
 rustls-platform-verifier = "0.7.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }

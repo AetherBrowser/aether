@@ -289,7 +289,7 @@ class AndroidTarget(CrossBuildTarget):
         env["ANDROID_NDK_HOME"] = env["ANDROID_NDK_ROOT"]
         env["TARGET_PKG_CONFIG_SYSROOT_DIR"] = path.join(llvm_toolchain, "sysroot")
 
-    def binary_name(self) -> str:
+    def binary_name(self, port: Optional["BuildPort"] = None) -> str:
         return "libservoshell.so"
 
     def is_cross_build(self) -> bool:
@@ -506,7 +506,7 @@ class OpenHarmonyTarget(CrossBuildTarget):
         required_libraries = self.cargo_ohos_info["runtime_libraries"]
         return [pathlib.Path(lib["path"]) for lib in required_libraries]
 
-    def binary_name(self) -> str:
+    def binary_name(self, port: Optional["BuildPort"] = None) -> str:
         return "libservoshell.so"
 
     def needs_packaging(self) -> bool:
