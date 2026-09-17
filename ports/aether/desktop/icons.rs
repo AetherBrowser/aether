@@ -22,18 +22,24 @@ const TOOLBAR_BUTTON_SIZE: f32 = 20.0;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
     Home,
+    Reload,
+    Stop,
 }
 
 impl ToolbarIcon {
     fn svg_bytes(self) -> &'static [u8] {
         match self {
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
+            Self::Reload => include_bytes!("../../../resources/icons/reload.svg"),
+            Self::Stop => include_bytes!("../../../resources/icons/stop-reload.svg"),
         }
     }
 
     fn texture_name(self) -> &'static str {
         match self {
             Self::Home => "toolbar-home",
+            Self::Reload => "toolbar-reload",
+            Self::Stop => "toolbar-stop",
         }
     }
 }
@@ -119,6 +125,28 @@ mod tests {
         assert!(
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "home icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn reload_svg_rasterizes() {
+        let image = rasterize_svg(ToolbarIcon::Reload.svg_bytes(), 32)
+            .expect("reload.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "reload icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn stop_svg_rasterizes() {
+        let image = rasterize_svg(ToolbarIcon::Stop.svg_bytes(), 32)
+            .expect("stop-reload.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "stop icon should not be fully transparent"
         );
     }
 }

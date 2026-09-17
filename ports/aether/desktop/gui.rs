@@ -463,7 +463,9 @@ impl Gui {
 
                             match self.load_status {
                                 LoadStatus::Started | LoadStatus::HeadParsed => {
-                                    let stop_button = ui.add(Gui::toolbar_button("X"));
+                                    let stop_button = toolbar_icons
+                                        .button(ui, ToolbarIcon::Stop)
+                                        .on_hover_text("Stop");
                                     stop_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
                                         info.label = Some("Stop".into());
@@ -474,7 +476,9 @@ impl Gui {
                                     }
                                 },
                                 LoadStatus::Complete => {
-                                    let reload_button = ui.add(Gui::toolbar_button("↻"));
+                                    let reload_button = toolbar_icons
+                                        .button(ui, ToolbarIcon::Reload)
+                                        .on_hover_text("Reload");
                                     reload_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
                                         info.label = Some("Reload".into());
