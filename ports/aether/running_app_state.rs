@@ -163,6 +163,7 @@ pub(crate) enum UserInterfaceCommand {
     Forward,
     Reload,
     ReloadAll,
+    Home,
     NewWebView,
     CloseWebView(WebViewId),
     NewWindow,

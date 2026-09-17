@@ -19,6 +19,13 @@ use url::Url;
 use crate::parser::location_bar_input_to_url;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
 
+/// The start page loaded by the Home button and by new tabs/windows.
+pub(crate) const NEW_TAB_URL: &str = "servo:newtab";
+
+pub(crate) fn new_tab_url() -> Url {
+    Url::parse(NEW_TAB_URL).expect("Should always be able to parse 'servo:newtab' as URL")
+}
+
 // This should vary by zoom level and maybe actual text size (focused or under cursor)
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) const LINE_HEIGHT: f32 = 76.0;
@@ -218,8 +225,9 @@ impl ServoShellWindow {
     }
 
     pub(crate) fn update_and_request_repaint_if_necessary(&self, state: &RunningAppState) {
-        let updated_user_interface = self.needs_update.take() &&
-            self.platform_window
+        let updated_user_interface = self.needs_update.take()
+            && self
+                .platform_window
                 .update_user_interface_state(state, self);
 
         // Delegate handlers may have asked us to present or update painted WebView contents.
@@ -353,10 +361,16 @@ impl ServoShellWindow {
                         }
                     }
                 },
+                UserInterfaceCommand::Home => {
+                    self.set_needs_update();
+                    if let Some(active_webview) = self.active_webview() {
+                        // `load` pushes a history entry so Back can return to the previous page.
+                        active_webview.load(new_tab_url());
+                    }
+                },
                 UserInterfaceCommand::NewWebView => {
                     self.set_needs_update();
-                    let url = Url::parse("servo:newtab").expect("Should always be able to parse");
-                    self.create_and_activate_toplevel_webview(state.clone(), url);
+                    self.create_and_activate_toplevel_webview(state.clone(), new_tab_url());
                 },
                 UserInterfaceCommand::CloseWebView(id) => {
                     self.set_needs_update();
@@ -364,7 +378,7 @@ impl ServoShellWindow {
                 },
                 UserInterfaceCommand::NewWindow => {
                     if let Some(create_platform_window) = create_platform_window {
-                        let url = Url::parse("servo:newtab").unwrap();
+                        let url = new_tab_url();
                         let platform_window = create_platform_window(url.clone());
                         state.open_window(platform_window, url);
                     }

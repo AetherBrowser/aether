@@ -15,6 +15,7 @@ pub mod geometry;
 mod gui;
 pub(crate) mod headed_window;
 mod headless_window;
+mod icons;
 mod keyutils;
 mod protocols;
 mod tracing;

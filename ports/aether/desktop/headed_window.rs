@@ -54,7 +54,7 @@ use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     LINE_HEIGHT, LINE_WIDTH, MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow,
-    ServoShellWindowId,
+    ServoShellWindowId, new_tab_url,
 };
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
@@ -423,11 +423,7 @@ impl HeadedWindow {
                 }
             })
             .shortcut(CMD_OR_CONTROL, 'T', || {
-                window.create_and_activate_toplevel_webview(
-                    state.clone(),
-                    Url::parse("servo:newtab")
-                        .expect("Should be able to unconditionally parse 'servo:newtab' as URL"),
-                );
+                window.create_and_activate_toplevel_webview(state.clone(), new_tab_url());
             })
             .shortcut(CMD_OR_CONTROL, 'Q', || state.schedule_exit())
             .otherwise(|| handled = false);
@@ -526,8 +522,8 @@ impl HeadedWindow {
         // Handle resize events first, so that any subsequent redrawing draws onto a buffer of the
         // correct size.
         let mut resized = false;
-        if let WindowEvent::Resized(new_inner_size) = event &&
-            self.inner_size.get() != new_inner_size
+        if let WindowEvent::Resized(new_inner_size) = event
+            && self.inner_size.get() != new_inner_size
         {
             self.inner_size.set(new_inner_size);
             self.window_rendering_context.resize(new_inner_size);
@@ -629,8 +625,8 @@ impl HeadedWindow {
                 // forwarded to Gui (above). This is because egui needs to know when
                 // the mouse is moving in other parts of the view in order to properly
                 // hide tooltips.
-                if let WindowEvent::CursorMoved { .. } = event &&
-                    !should_forward_mouse_event_to_egui()
+                if let WindowEvent::CursorMoved { .. } = event
+                    && !should_forward_mouse_event_to_egui()
                 {
                     consumed = false;
                 } else {
@@ -871,8 +867,8 @@ impl PlatformWindow for HeadedWindow {
         let new_outer_size =
             new_outer_size.clamp(MIN_WINDOW_INNER_SIZE + decoration_size, screen_size * 2);
 
-        if outer_size.width == new_outer_size.width as u32 &&
-            outer_size.height == new_outer_size.height as u32
+        if outer_size.width == new_outer_size.width as u32
+            && outer_size.height == new_outer_size.height as u32
         {
             return Some(new_outer_size);
         }
