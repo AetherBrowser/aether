@@ -13,7 +13,9 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::reflector::{Reflector, reflect_dom_object};
-use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
+use servo_base::text::{
+    AssumeUnder4GB, RangeAny, Utf16CodeUnits, Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset,
+};
 
 use crate::dom::abstractrange::bp_position;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, NodeMethods};
@@ -95,6 +97,13 @@ impl Selection {
 
     pub(crate) fn visible_selection_dirty(&self) -> bool {
         self.visible_selection_dirty.get()
+    }
+
+    pub(crate) fn collapsed(&self) -> bool {
+        self.range
+            .borrow()
+            .as_ref()
+            .is_none_or(|range| range.collapsed())
     }
 
     fn clear_cached_live_range(&self) {
@@ -1449,9 +1458,12 @@ impl Node {
     /// `CharacterData` or else return the offset in the child list.
     fn to_sibling_or_utf16_offset(&self, offset: Utf32CodeUnitsOrNodeOffset) -> u32 {
         if let Some(character_data) = self.downcast::<CharacterData>() {
-            offset.to_utf16_code_units_in(&character_data.data()).0 as u32
+            // TODO: ensure that each `CharacterData` holds no more than 4 GiB?
+            offset
+                .to_utf16_code_units_in(AssumeUnder4GB, &character_data.data())
+                .0
         } else {
-            offset.0 as u32
+            offset.0
         }
     }
 }
@@ -1595,12 +1607,12 @@ impl<'no_gc> FlatTreeSelection<'no_gc> {
     fn range_for_character_data(&self, character_data: &CharacterData) -> RangeAny<Utf32CodeUnits> {
         let text = character_data.data();
         let node: &Node = character_data.upcast();
-        RangeAny {
-            start: (node == &**self.start.container)
-                .then(|| Utf16CodeUnits(self.start.offset as usize).to_utf32_code_units_in(&text)),
-            end: (node == &**self.end.container)
-                .then(|| Utf16CodeUnits(self.end.offset as usize).to_utf32_code_units_in(&text)),
-        }
+        RangeAny::new(
+            (node == &**self.start.container)
+                .then(|| Utf16CodeUnits(self.start.offset).to_utf32_code_units_in(&text)),
+            (node == &**self.end.container)
+                .then(|| Utf16CodeUnits(self.end.offset).to_utf32_code_units_in(&text)),
+        )
     }
 
     fn traversal(&self) -> VisibleSelectionTraversal<'no_gc> {

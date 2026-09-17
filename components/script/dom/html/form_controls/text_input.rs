@@ -8,7 +8,6 @@ use std::default::Default;
 use std::ops::Range;
 
 use app_units::Au;
-use bitflags::bitflags;
 use embedder_traits::{EmbedderMsg, MouseButton, ScriptToEmbedderChan};
 use keyboard_types::{Key, KeyState, Modifiers, NamedKey, ShortcutMatcher};
 use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods;
@@ -18,24 +17,19 @@ use script_bindings::trace::CustomTraceable;
 use script_traits::MouseButtons;
 use servo_base::generic_channel::GenericCallback;
 use servo_base::id::WebViewId;
-use servo_base::text::{RangeAny, Utf8CodeUnits, Utf16CodeUnits, Utf32CodeUnits};
+use servo_base::text::{AssumeUnder4GB, RangeAny, Utf8CodeUnits, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::{Rope, RopeIndex, RopeMovement, RopeSlice};
 
-use crate::dom::bindings::codegen::Bindings::EventBinding::Event_Binding::EventMethods;
 use crate::dom::bindings::inheritance::Castable;
-use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::event::Event;
-use crate::dom::eventtarget::EventTarget;
-use crate::dom::inputevent::{HitTestResult, InputEvent};
+use crate::dom::inputevent::HitTestResult;
 use crate::dom::keyboardevent::KeyboardEvent;
 use crate::dom::mouseevent::MouseEvent;
 use crate::dom::text_control::TextControlElement;
-use crate::dom::types::{ClipboardEvent, HTMLInputElement, HTMLTextAreaElement, UIEvent};
+use crate::dom::types::{HTMLInputElement, HTMLTextAreaElement, UIEvent};
 use crate::dom::{Element, NodeTraits};
-use crate::drag::drag_data_store::Kind;
 use crate::drag::drag_gesture::{DragGesture, DragHandler};
 
 /// A trait which abstracts access to the embedder's clipboard in order to allow unit
@@ -187,7 +181,7 @@ impl From<IsComposing> for bool {
 
 /// <https://www.w3.org/TR/input-events-2/#interface-InputEvent-Attributes>
 #[derive(Clone, Copy, PartialEq)]
-pub enum InputType {
+pub enum InputEventType {
     InsertText,
     InsertLineBreak,
     InsertFromPaste,
@@ -198,17 +192,17 @@ pub enum InputType {
     Nothing,
 }
 
-impl InputType {
-    fn as_str(&self) -> &str {
+impl InputEventType {
+    pub(crate) fn as_str(&self) -> &str {
         match *self {
-            InputType::InsertText => "insertText",
-            InputType::InsertLineBreak => "insertLineBreak",
-            InputType::InsertFromPaste => "insertFromPaste",
-            InputType::InsertCompositionText => "insertCompositionText",
-            InputType::DeleteByCut => "deleteByCut",
-            InputType::DeleteContentBackward => "deleteContentBackward",
-            InputType::DeleteContentForward => "deleteContentForward",
-            InputType::Nothing => "",
+            Self::InsertText => "insertText",
+            Self::InsertLineBreak => "insertLineBreak",
+            Self::InsertFromPaste => "insertFromPaste",
+            Self::InsertCompositionText => "insertCompositionText",
+            Self::DeleteByCut => "deleteByCut",
+            Self::DeleteContentBackward => "deleteContentBackward",
+            Self::DeleteContentForward => "deleteContentForward",
+            Self::Nothing => "",
         }
     }
 }
@@ -216,49 +210,9 @@ impl InputType {
 /// Resulting action to be taken by the owner of a text input that is handling an event.
 pub enum KeyReaction {
     TriggerDefaultAction,
-    DispatchInput(Option<String>, IsComposing, InputType),
+    DispatchInput(Option<String>, IsComposing, InputEventType),
     RedrawSelection,
     Nothing,
-}
-
-bitflags! {
-    /// Resulting action to be taken by the owner of a text input that is handling a clipboard
-    /// event.
-    #[derive(Clone, Copy)]
-    pub struct ClipboardEventFlags: u8 {
-        const QueueInputEvent = 1 << 0;
-        const FireClipboardChangedEvent = 1 << 1;
-    }
-}
-
-pub struct ClipboardEventReaction {
-    pub flags: ClipboardEventFlags,
-    pub text: Option<String>,
-    pub input_type: InputType,
-}
-
-impl ClipboardEventReaction {
-    fn new(flags: ClipboardEventFlags) -> Self {
-        Self {
-            flags,
-            text: None,
-            input_type: InputType::Nothing,
-        }
-    }
-
-    fn with_text(mut self, text: String) -> Self {
-        self.text = Some(text);
-        self
-    }
-
-    fn with_input_type(mut self, input_type: InputType) -> Self {
-        self.input_type = input_type;
-        self
-    }
-
-    fn empty() -> Self {
-        Self::new(ClipboardEventFlags::empty())
-    }
 }
 
 /// The direction in which to delete a character.
@@ -273,22 +227,6 @@ pub enum Direction {
 pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::META;
 #[cfg(not(target_os = "macos"))]
 pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
-
-/// The length in bytes of the first n code units in a string when encoded in UTF-16.
-///
-/// If the string is fewer than n code units, returns the length of the whole string.
-fn len_of_first_n_code_units(text: &DOMString, n: Utf16CodeUnits) -> Utf8CodeUnits {
-    let mut utf8_len = Utf8CodeUnits::zero();
-    let mut utf16_len = Utf16CodeUnits::zero();
-    for c in text.str().chars() {
-        utf16_len += Utf16CodeUnits(c.len_utf16());
-        if utf16_len > n {
-            break;
-        }
-        utf8_len += Utf8CodeUnits(c.len_utf8());
-    }
-    utf8_len
-}
 
 impl<T: ClipboardProvider> TextInput<T> {
     /// Instantiate a new text input control
@@ -341,7 +279,7 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     /// If there is an uncollapsed selection, delete it, otherwise do nothing. Returns
     /// true if any text was deleted.
-    fn delete_selection(&mut self) -> bool {
+    pub(crate) fn delete_selection(&mut self) -> bool {
         if self.selection_start() == self.selection_end() {
             return false;
         }
@@ -430,7 +368,7 @@ impl<T: ClipboardProvider> TextInput<T> {
         // For now, use a bounded end unconditionally instead.
         // let end = (end != rope.last_index()).then(|| rope.index_to_character_offset(end));
         let end = Some(rope.index_to_character_offset(end));
-        RangeAny { start, end }
+        RangeAny::new(start, end)
     }
 
     /// The state of the current selection. Can be used to compare whether selection state has changed.
@@ -469,7 +407,7 @@ impl<T: ClipboardProvider> TextInput<T> {
             .slice(Some(self.selection_start()), Some(self.selection_end()))
     }
 
-    pub(crate) fn get_selection_text(&self) -> Option<String> {
+    pub(crate) fn selection_content(&self) -> Option<String> {
         let text: String = self.selection_slice().into();
         if text.is_empty() {
             return None;
@@ -479,12 +417,7 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     /// The length of the selected text in UTF-16 code units.
     fn selection_utf16_len(&self) -> Utf16CodeUnits {
-        Utf16CodeUnits(
-            self.selection_slice()
-                .chars()
-                .map(char::len_utf16)
-                .sum::<usize>(),
-        )
+        self.selection_slice().len_utf16()
     }
 
     /// Replace the current selection with the given [`DOMString`]. If the [`Rope`] is in
@@ -496,8 +429,11 @@ impl<T: ClipboardProvider> TextInput<T> {
                 self.len_utf16().saturating_sub(self.selection_utf16_len());
             let utf16_length_that_can_be_inserted =
                 max_length.saturating_sub(utf16_length_without_selection);
-            let Utf8CodeUnits(last_char_index) =
-                len_of_first_n_code_units(insert, utf16_length_that_can_be_inserted);
+            // TODO: ensure that DOMString’s are under 4 GiB?
+            let last_char_index = usize::from(
+                utf16_length_that_can_be_inserted
+                    .to_utf8_code_units_in(AssumeUnder4GB, &insert.str()),
+            );
             &insert.str()[..last_char_index]
         } else {
             &insert.str()
@@ -584,7 +520,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                 KeyReaction::DispatchInput(
                     None,
                     IsComposing::NotComposing,
-                    InputType::InsertLineBreak,
+                    InputEventType::InsertLineBreak,
                 )
             },
             Lines::Single => KeyReaction::TriggerDefaultAction,
@@ -674,18 +610,22 @@ impl<T: ClipboardProvider> TextInput<T> {
                 KeyReaction::RedrawSelection
             })
             .shortcut(CMD_OR_CONTROL, 'X', || {
-                if let Some(text) = self.get_selection_text() {
+                if let Some(text) = self.selection_content() {
                     self.clipboard_provider.set_text(text);
                     self.delete_selection();
                 }
-                KeyReaction::DispatchInput(None, IsComposing::NotComposing, InputType::DeleteByCut)
+                KeyReaction::DispatchInput(
+                    None,
+                    IsComposing::NotComposing,
+                    InputEventType::DeleteByCut,
+                )
             })
             .shortcut(CMD_OR_CONTROL, 'C', || {
                 // TODO(stevennovaryo): we should not provide text to clipboard for type=password
-                if let Some(text) = self.get_selection_text() {
+                if let Some(text) = self.selection_content() {
                     self.clipboard_provider.set_text(text);
                 }
-                KeyReaction::DispatchInput(None, IsComposing::NotComposing, InputType::Nothing)
+                KeyReaction::DispatchInput(None, IsComposing::NotComposing, InputEventType::Nothing)
             })
             .shortcut(CMD_OR_CONTROL, 'V', || {
                 if let Ok(text_content) = self.clipboard_provider.get_text() {
@@ -693,13 +633,13 @@ impl<T: ClipboardProvider> TextInput<T> {
                     KeyReaction::DispatchInput(
                         Some(text_content),
                         IsComposing::NotComposing,
-                        InputType::InsertFromPaste,
+                        InputEventType::InsertFromPaste,
                     )
                 } else {
                     KeyReaction::DispatchInput(
                         Some(String::new()),
                         IsComposing::NotComposing,
-                        InputType::InsertFromPaste,
+                        InputEventType::InsertFromPaste,
                     )
                 }
             })
@@ -708,7 +648,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                     KeyReaction::DispatchInput(
                         None,
                         IsComposing::NotComposing,
-                        InputType::DeleteContentForward,
+                        InputEventType::DeleteContentForward,
                     )
                 } else {
                     KeyReaction::Nothing
@@ -719,7 +659,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                     KeyReaction::DispatchInput(
                         None,
                         IsComposing::NotComposing,
-                        InputType::DeleteContentBackward,
+                        InputEventType::DeleteContentBackward,
                     )
                 } else {
                     KeyReaction::Nothing
@@ -730,7 +670,7 @@ impl<T: ClipboardProvider> TextInput<T> {
                     KeyReaction::DispatchInput(
                         None,
                         IsComposing::NotComposing,
-                        InputType::DeleteContentBackward,
+                        InputEventType::DeleteContentBackward,
                     )
                 } else {
                     KeyReaction::Nothing
@@ -846,14 +786,14 @@ impl<T: ClipboardProvider> TextInput<T> {
                     return KeyReaction::DispatchInput(
                         Some(character.to_string()),
                         IsComposing::NotComposing,
-                        InputType::InsertText,
+                        InputEventType::InsertText,
                     );
                 }
                 if matches!(key, Key::Named(NamedKey::Process)) {
                     return KeyReaction::DispatchInput(
                         None,
                         IsComposing::Composing,
-                        InputType::Nothing,
+                        InputEventType::Nothing,
                     );
                 }
                 KeyReaction::Nothing
@@ -872,7 +812,7 @@ impl<T: ClipboardProvider> TextInput<T> {
         KeyReaction::DispatchInput(
             Some(insertion.to_string()),
             IsComposing::NotComposing,
-            InputType::InsertCompositionText,
+            InputEventType::InsertCompositionText,
         )
     }
 
@@ -893,7 +833,7 @@ impl<T: ClipboardProvider> TextInput<T> {
         KeyReaction::DispatchInput(
             Some(insertion),
             IsComposing::Composing,
-            InputType::InsertCompositionText,
+            InputEventType::InsertCompositionText,
         )
     }
 
@@ -913,6 +853,7 @@ impl<T: ClipboardProvider> TextInput<T> {
 
     fn drag_moved(&mut self, element: &impl TextControlElement, hit_test_result: &HitTestResult) {
         let point_in_viewport = hit_test_result.point_in_frame.map(Au::from_f32_px);
+        let element = element.as_element();
         self.edit_point = element
             .owner_window()
             .text_index_query_on_node_for_event(element.upcast(), point_in_viewport)
@@ -1056,146 +997,6 @@ impl<T: ClipboardProvider> TextInput<T> {
 
         self.assert_ok_selection();
     }
-
-    /// This implements step 3 onward from:
-    ///
-    ///  - <https://www.w3.org/TR/clipboard-apis/#copy-action>
-    ///  - <https://www.w3.org/TR/clipboard-apis/#cut-action>
-    ///  - <https://www.w3.org/TR/clipboard-apis/#paste-action>
-    ///
-    /// Earlier steps should have already been run by the callers.
-    pub(crate) fn handle_clipboard_event(
-        &mut self,
-        clipboard_event: &ClipboardEvent,
-    ) -> ClipboardEventReaction {
-        let event = clipboard_event.upcast::<Event>();
-        if !event.IsTrusted() {
-            return ClipboardEventReaction::empty();
-        }
-
-        // This step is common to all event types in the specification.
-        // Step 3: If the event was not canceled, then
-        if event.DefaultPrevented() {
-            // Step 4: Else, if the event was canceled
-            // Step 4.1: Return false.
-            return ClipboardEventReaction::empty();
-        }
-
-        let event_type = event.Type();
-        match_domstring_ascii!(event_type,
-            "copy" => {
-                // These steps are from <https://www.w3.org/TR/clipboard-apis/#copy-action>:
-                let selection = self.get_selection_text();
-
-                // Step 3.1 Copy the selected contents, if any, to the clipboard
-                if let Some(text) = selection {
-                    self.clipboard_provider.set_text(text);
-                }
-
-                // Step 3.2 Fire a clipboard event named clipboardchange
-                ClipboardEventReaction::new(ClipboardEventFlags::FireClipboardChangedEvent)
-            },
-            "cut" => {
-                // These steps are from <https://www.w3.org/TR/clipboard-apis/#cut-action>:
-                let selection = self.get_selection_text();
-
-                // Step 3.1 If there is a selection in an editable context where cutting is enabled, then
-                let Some(text) = selection else {
-                    // Step 3.2 Else, if there is no selection or the context is not editable, then
-                    return ClipboardEventReaction::empty();
-                };
-
-                // Step 3.1.1 Copy the selected contents, if any, to the clipboard
-                self.clipboard_provider.set_text(text);
-
-                // Step 3.1.2 Remove the contents of the selection from the document and collapse the selection.
-                self.delete_selection();
-
-                // Step 3.1.3 Fire a clipboard event named clipboardchange
-                // Step 3.1.4 Queue tasks to fire any events that should fire due to the modification.
-                ClipboardEventReaction::new(
-                    ClipboardEventFlags::FireClipboardChangedEvent |
-                        ClipboardEventFlags::QueueInputEvent,
-                )
-                .with_input_type(InputType::DeleteByCut)
-            },
-            "paste" => {
-                // These steps are from <https://www.w3.org/TR/clipboard-apis/#paste-action>:
-                let Some(data_transfer) = clipboard_event.get_clipboard_data() else {
-                    return ClipboardEventReaction::empty();
-                };
-                let Some(drag_data_store) = data_transfer.data_store() else {
-                    return ClipboardEventReaction::empty();
-                };
-
-                // Step 3.1: If there is a selection or cursor in an editable context where pasting is
-                // enabled, then:
-                // TODO: Our TextInput always has a selection or an input point. It's likely that this
-                // shouldn't be the case when the entry loses the cursor.
-
-                // Step 3.1.1: Insert the most suitable content found on the clipboard, if any, into the
-                // context.
-                // TODO: Only text content is currently supported, but other data types should be supported
-                // in the future.
-                let Some(text_content) =
-                    drag_data_store
-                        .iter_item_list()
-                        .find_map(|item| match item {
-                            Kind::Text { data, .. } => Some(data.to_string()),
-                            _ => None,
-                        })
-                else {
-                    return ClipboardEventReaction::empty();
-                };
-                if text_content.is_empty() {
-                    return ClipboardEventReaction::empty();
-                }
-
-                self.insert(&text_content);
-
-                // Step 3.1.2: Queue tasks to fire any events that should fire due to the
-                // modification, see § 5.3 Integration with other scripts and events for details.
-                ClipboardEventReaction::new(ClipboardEventFlags::QueueInputEvent)
-                    .with_text(text_content)
-                    .with_input_type(InputType::InsertFromPaste)
-            },
-        _ => ClipboardEventReaction::empty(),)
-    }
-
-    /// <https://w3c.github.io/uievents/#event-type-input>
-    pub(crate) fn queue_input_event(
-        &self,
-        target: &EventTarget,
-        data: Option<String>,
-        is_composing: IsComposing,
-        input_type: InputType,
-    ) {
-        let global = target.global();
-        let target = Trusted::new(target);
-        global.task_manager().user_interaction_task_source().queue(
-            task!(fire_input_event: move |cx| {
-                let target = target.root();
-                let global = target.global();
-                let window = global.as_window();
-                let event = InputEvent::new(
-                    cx,
-                    window,
-                    None,
-                    atom!("input"),
-                    true,
-                    false,
-                    Some(window),
-                    0,
-                    data.map(DOMString::from),
-                    is_composing.into(),
-                    input_type.as_str().into(),
-                );
-                let event = event.upcast::<Event>();
-                event.set_composed(true);
-                event.fire(cx, &target);
-            }),
-        );
-    }
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
@@ -1216,12 +1017,12 @@ impl TextInputSelectionDragHandler {
         }
 
         if let Some(input) = self.0.downcast::<HTMLInputElement>() {
-            input.textinput_mut().drag_moved(input, hit_test_result);
+            input.text_input_mut().drag_moved(input, hit_test_result);
             input.maybe_update_shared_selection();
             true
         } else if let Some(text_area) = self.0.downcast::<HTMLTextAreaElement>() {
             text_area
-                .textinput_mut()
+                .text_input_mut()
                 .drag_moved(text_area, hit_test_result);
             text_area.maybe_update_shared_selection();
             true

@@ -532,7 +532,8 @@ class CGMethodCall(CGThing):
             # possibleSignatures[0]
             caseBody: list[CGThing] = [
                 CGArgumentConverter(possibleSignatures[0][1][i],
-                                    i, "args", "argc", descriptor)
+                                    i, "args", "argc", descriptor,
+                                    descriptor.useRcPromise)
                 for i in range(0, distinguishingIndex)]
 
             # Select the right overload from our set.
@@ -904,7 +905,8 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
         innerInfo = getJSToNativeConversionInfo(innerContainerType(type),
                                                 descriptorProvider,
                                                 isMember="Sequence",
-                                                isAutoRooted=isAutoRooted)
+                                                isAutoRooted=isAutoRooted,
+                                                useRcPromise=useRcPromise)
         assert innerInfo.declType is not None
         declType = wrapInNativeContainerType(type, innerInfo.declType)
         config = getConversionConfigForType(type, innerContainerType(type).hasEnforceRange(), isClamp, treatNullAs)
@@ -1436,6 +1438,7 @@ class CGArgumentConverter(CGThing):
     """
     converter: CGThing
     def __init__(self, argument: IDLArgument | FakeArgument, index: int, args: str, argc: str, descriptorProvider: DescriptorProvider,
+                 useRcPromise: bool,
                  invalidEnumValueFatal: bool=True) -> None:
         CGThing.__init__(self)
         assert not argument.defaultValue or argument.optional
@@ -1451,7 +1454,8 @@ class CGArgumentConverter(CGThing):
             defaultValue=argument.defaultValue,
             isMember="Variadic" if argument.variadic else False,
             isAutoRooted=type_needs_auto_root(argument.type),
-            allowTreatNonObjectAsNull=argument.allowTreatNonCallableAsNull())
+            allowTreatNonObjectAsNull=argument.allowTreatNonCallableAsNull(),
+            useRcPromise=useRcPromise)
         template = info.template
         default = info.default
         declType = info.declType
@@ -4415,6 +4419,7 @@ class CGPerSignatureCall(CGThing):
         cgThings: list[CGThing] = []
         cgThings.extend([CGArgumentConverter(arguments[i], i, self.getArgs(),
                                              self.getArgc(), self.descriptor,
+                                             self.descriptor.useRcPromise,
                                              invalidEnumValueFatal=not setter) for
                          i in range(argConversionStartsAt, self.argCount)])
 
@@ -7270,10 +7275,11 @@ class CGInterfaceTrait(CGThing):
 
 
 class CGWeakReferenceableTrait(CGThing):
-    def __init__(self, descriptor: Descriptor) -> None:
+    def __init__(self, descriptor: Descriptor, generic: bool = False) -> None:
         CGThing.__init__(self)
         assert descriptor.weakReferenceable
-        self.code = f"impl WeakReferenceable for {descriptor.interface.identifier.name} {{}}"
+        generic_mark =  ["<D: DomTypes>", "<D>"] if generic else ["",""]
+        self.code = f"impl{generic_mark[0]} WeakReferenceable for {descriptor.interface.identifier.name}{generic_mark[1]} {{}}"
 
     def define(self) -> str:
         return self.code
@@ -8178,7 +8184,7 @@ class CGConcreteBindingRoot(CGThing):
 
 
             if d.weakReferenceable:
-                cgthings.append(CGWeakReferenceableTrait(d))
+                cgthings.append(CGWeakReferenceableTrait(d, generic = generic))
 
             if (
                 not d.interface.isIteratorInterface() and

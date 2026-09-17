@@ -48,8 +48,7 @@ fn test_basic_accessibility_update() {
 
     webview.set_accessibility_active(true);
 
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| webview.load_status() != LoadStatus::Complete);
 
     let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     let tree = build_tree(updates);
@@ -66,8 +65,7 @@ fn test_activate_accessibility_after_layout() {
         .url(Url::parse("data:text/html,<!DOCTYPE html>").unwrap())
         .build();
 
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| webview.load_status() != LoadStatus::Complete);
 
     webview.set_accessibility_active(true);
 
@@ -90,8 +88,7 @@ fn test_navigate_creates_new_accessibility_update() {
         .build();
     webview.set_accessibility_active(true);
 
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| webview.load_status() != LoadStatus::Complete);
 
     let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     let mut tree = build_tree(updates);
@@ -105,9 +102,8 @@ fn test_navigate_creates_new_accessibility_update() {
 
     assert_eq!(text_node.value().as_deref(), Some("page 1"));
 
-    let load_webview = webview.clone();
     webview.load(page_2_url.clone());
-    servo_test.spin(move || load_webview.url() != Some(page_2_url.clone()));
+    servo_test.spin(|| webview.url() != Some(page_2_url.clone()));
 
     let new_updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     for tree_update in new_updates {
@@ -141,8 +137,7 @@ fn test_accessibility_after_navigate_and_back() {
         .build();
     webview.set_accessibility_active(true);
 
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| webview.load_status() != LoadStatus::Complete);
 
     let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     let mut tree = build_tree(updates);
@@ -157,9 +152,8 @@ fn test_accessibility_after_navigate_and_back() {
 
     assert_eq!(text_node.value().as_deref(), Some("page 1"));
 
-    let load_webview = webview.clone();
     webview.load(page_2_url.clone());
-    servo_test.spin(move || load_webview.url() != Some(page_2_url.clone()));
+    servo_test.spin(|| webview.url() != Some(page_2_url.clone()));
 
     let new_updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     for tree_update in new_updates {
@@ -173,9 +167,8 @@ fn test_accessibility_after_navigate_and_back() {
 
     assert_eq!(text_node.value().as_deref(), Some("page 2"));
 
-    let back_webview = webview.clone();
     webview.go_back(1);
-    servo_test.spin(move || back_webview.url() != Some(page_1_url.clone()));
+    servo_test.spin(|| webview.url() != Some(page_1_url.clone()));
 
     let new_updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     for tree_update in new_updates {
@@ -825,7 +818,6 @@ fn test_accessibility_bounds_updated_after_renderer_scroll() {
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let main = find_first_matching_node(root, |node| node.role() == Role::Main)
         .expect("Document should contain a main element");
-    let main_id = main.locate().0; // Maps to layout's NodeId
     assert_rect_eq(
         main.raw_bounds().expect("main should have bounds"),
         Rect::new(10.0, 100.0, 110.0, 150.0),
@@ -863,7 +855,6 @@ fn test_accessibility_bounds_updated_after_script_scroll() {
     let root = assert_tree_structure_and_get_root_web_area(&tree);
     let main = find_first_matching_node(root, |node| node.role() == Role::Main)
         .expect("Document should contain a main element");
-    let main_id = main.locate().0; // Maps to layout's NodeId
     assert_rect_eq(
         main.raw_bounds().expect("main should have bounds"),
         Rect::new(10.0, 100.0, 110.0, 150.0),
@@ -900,8 +891,7 @@ fn test_accessibility_build_initial_tree_after_scroll() {
         .delegate(delegate.clone())
         .url(Url::parse(url).unwrap())
         .build();
-    let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| webview.load_status() != LoadStatus::Complete);
 
     // A scroll injected before the scene is built is silently dropped, and the
     // tree asserted below would be the one built without it.
@@ -972,8 +962,7 @@ fn test_accessibility_bounds_are_computed_for_inline_elements() {
     let url = "data:text/html,<!DOCTYPE html>\
                <h1>We really <em>really <strong>really</strong></em> like owls</h1>";
 
-    let (servo_test, delegate, webview, mut tree) = build_webview_and_tree(url);
-
+    let (_, _, _, tree) = build_webview_and_tree(url);
     let root = assert_tree_structure_and_get_root_web_area(&tree);
 
     let heading = find_first_matching_node(root, |node| node.role() == Role::Heading)
@@ -984,7 +973,6 @@ fn test_accessibility_bounds_are_computed_for_inline_elements() {
     );
     assert!(heading.has_bounds());
 
-    let heading_children: Vec<_> = heading.children().collect();
     let em = find_first_matching_node(heading, |node| node.role() == GenericContainer)
         .expect("Heading should have one GenericContainer child");
     assert!(em.has_bounds());
@@ -1060,7 +1048,7 @@ fn build_webview_and_tree(
         .build();
     webview.set_accessibility_active(true);
     let load_webview = webview.clone();
-    servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
+    servo_test.spin(|| load_webview.load_status() != LoadStatus::Complete);
 
     let updates = wait_for_min_updates(&servo_test, delegate.clone(), 2);
     let tree = build_tree(updates);
@@ -1077,10 +1065,7 @@ fn wait_for_min_updates(
     delegate: Rc<WebViewDelegateImpl>,
     min_num_updates: usize,
 ) -> Vec<TreeUpdate> {
-    let captured_delegate = delegate.clone();
-    servo_test.spin(move || {
-        captured_delegate.last_accesskit_tree_updates.borrow().len() < min_num_updates
-    });
+    servo_test.spin(|| delegate.last_accesskit_tree_updates.borrow().len() < min_num_updates);
 
     delegate
         .last_accesskit_tree_updates
@@ -1191,5 +1176,5 @@ fn wait_for_webview_scene_to_be_up_to_date(servo_test: &ServoTest, webview: &Web
         assert!(result.is_ok());
         callback_waiting.set(false);
     });
-    servo_test.spin(move || waiting.get());
+    servo_test.spin(|| waiting.get());
 }
