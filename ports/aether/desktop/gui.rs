@@ -3,9 +3,19 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::collections::HashMap;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos"
+))]
 use std::fs;
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos"
+))]
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -18,12 +28,22 @@ use egui::{
     Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel, Vec2,
     WidgetInfo, WidgetType, pos2,
 };
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos"
+))]
 use egui::{FontData, FontFamily};
 use egui_glow::{CallbackFn, EguiGlow};
 use egui_winit::EventResponse;
 use euclid::{Length, Point2D, Rect, Scale, Size2D};
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos"
+))]
 use log::info;
 use log::warn;
 use servo::{
@@ -87,7 +107,12 @@ fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "macos"
+))]
 fn load_cjk_fonts(font_candidates: &[(&str, &str)]) -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     let mut loaded_font_names = Vec::new();
@@ -175,9 +200,13 @@ fn configure_fonts() -> FontDefinitions {
 
 #[cfg(target_os = "macos")]
 fn configure_fonts() -> FontDefinitions {
-    // TODO: Default proportional fonts: ["Ubuntu-Light", "NotoEmoji-Regular", "emoji-icon-font"]
-    // does not support CJK. Add them for Mac.
-    FontDefinitions::default()
+    load_cjk_fonts(&[
+        (
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+            "Apple SD Gothic Neo",
+        ), // Korean
+        ("/System/Library/Fonts/STHeiti Medium.ttc", "STHeiti Medium"), // Chinese + Japanese
+    ])
 }
 
 impl Drop for Gui {
@@ -515,16 +544,16 @@ impl Gui {
                                         if cfg!(target_os = "macos") {
                                             i.clone().consume_key(Modifiers::COMMAND, Key::L)
                                         } else {
-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L)
-                                                || i.clone().consume_key(Modifiers::ALT, Key::D)
+                                            i.clone().consume_key(Modifiers::COMMAND, Key::L) ||
+                                                i.clone().consume_key(Modifiers::ALT, Key::D)
                                         }
                                     }) {
                                         // The focus request immediately makes gained_focus return true.
                                         location_field.request_focus();
                                     }
                                     // Select address bar text when it's focused (click or shortcut).
-                                    if location_field.gained_focus()
-                                        && let Some(mut state) =
+                                    if location_field.gained_focus() &&
+                                        let Some(mut state) =
                                             TextEditState::load(ui.ctx(), location_id)
                                     {
                                         // Select the whole input.
@@ -535,8 +564,8 @@ impl Gui {
                                         state.store(ui.ctx(), location_id);
                                     }
                                     // Navigate to address when enter is pressed in the address bar.
-                                    if location_field.lost_focus()
-                                        && ui.input(|i| i.clone().key_pressed(Key::Enter))
+                                    if location_field.lost_focus() &&
+                                        ui.input(|i| i.clone().key_pressed(Key::Enter))
                                     {
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::Go(location.clone()),
@@ -631,8 +660,8 @@ impl Gui {
                 }
             }
             let size = Size2D::new(available_rect.width(), available_rect.height()) * scale;
-            if let Some(webview) = window.active_webview()
-                && size != webview.size()
+            if let Some(webview) = window.active_webview() &&
+                size != webview.size()
             {
                 // `rect` is sized to just the WebView viewport, which is required by
                 // `OffscreenRenderingContext` See:
@@ -758,10 +787,10 @@ impl Gui {
         //       because logical OR would short-circuit if any of the functions return true.
         //       We want to ensure that all functions are called. The "bitwise OR" operator
         //       does not short-circuit.
-        self.update_load_status(window)
-            | self.update_location_in_toolbar(window)
-            | self.update_status_text(window)
-            | self.update_can_go_back_and_forward(window)
+        self.update_load_status(window) |
+            self.update_location_in_toolbar(window) |
+            self.update_status_text(window) |
+            self.update_can_go_back_and_forward(window)
     }
 
     /// Returns true if a redraw is required after handling the provided event.

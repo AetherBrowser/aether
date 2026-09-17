@@ -35,12 +35,12 @@ fn main() {
         if #[cfg(not(any(target_os = "android", target_env = "ohos")))] {
             aether::main()
         } else {
-            // Android: see ports/servoshell/egl/android/mod.rs.
-            // OpenHarmony: see ports/servoshell/egl/ohos/mod.rs.
+            // Android: see ports/aether/egl/android/mod.rs.
+            // OpenHarmony: see ports/aether/egl/ohos/mod.rs.
             println!(
-                "Cannot run the servoshell `bin` executable on platforms such as \
+                "Cannot run the aether `bin` executable on platforms such as \
                  Android or OpenHarmony. On these platforms you need to compile \
-                 the servoshell library as a `cdylib` and integrate it with the \
+                 the aether library as a `cdylib` and integrate it with the \
                  platform app code into an `apk` (android) or `hap` (OpenHarmony).\
                  For Android `mach build` will do these steps automatically for you."
             );
