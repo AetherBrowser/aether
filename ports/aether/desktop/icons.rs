@@ -87,6 +87,7 @@ pub(crate) enum ToolbarIcon {
     Back,
     Forward,
     Home,
+    Menu,
     Reload,
     Stop,
 }
@@ -97,6 +98,7 @@ impl ToolbarIcon {
             Self::Back => include_bytes!("../../../resources/icons/back.svg"),
             Self::Forward => include_bytes!("../../../resources/icons/forward.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
+            Self::Menu => include_bytes!("../../../resources/icons/menu.svg"),
             Self::Reload => include_bytes!("../../../resources/icons/reload.svg"),
             Self::Stop => include_bytes!("../../../resources/icons/stop-reload.svg"),
         }
@@ -107,6 +109,7 @@ impl ToolbarIcon {
             Self::Back => "toolbar-back",
             Self::Forward => "toolbar-forward",
             Self::Home => "toolbar-home",
+            Self::Menu => "toolbar-menu",
             Self::Reload => "toolbar-reload",
             Self::Stop => "toolbar-stop",
         }
@@ -229,6 +232,17 @@ mod tests {
         assert!(
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "home icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn menu_svg_rasterizes() {
+        let image =
+            rasterize_svg(ToolbarIcon::Menu.svg_bytes(), 32).expect("menu.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "menu icon should not be fully transparent"
         );
     }
 
