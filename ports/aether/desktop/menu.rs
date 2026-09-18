@@ -143,8 +143,9 @@ impl AppMenu {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use euclid::Point2D;
+
+    use super::*;
 
     #[test]
     fn default_menu_is_closed() {

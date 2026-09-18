@@ -645,10 +645,9 @@ impl HeadedWindow {
                 if self.gui.borrow().is_app_menu_open() {
                     match event {
                         WindowEvent::MouseInput { .. } => consumed = true,
-                        WindowEvent::KeyboardInput { event: key_event, .. }
-                            if key_event.logical_key ==
-                                LogicalKey::Named(WinitNamedKey::Escape) =>
-                        {
+                        WindowEvent::KeyboardInput {
+                            event: key_event, ..
+                        } if key_event.logical_key == LogicalKey::Named(WinitNamedKey::Escape) => {
                             consumed = true;
                         },
                         _ => {},
