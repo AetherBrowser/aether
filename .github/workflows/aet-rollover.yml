@@ -1,0 +1,20 @@
+name: Move unfinished items to next iteration
+on:
+  schedule:
+    - cron: '0 0 * * 1' # Each monday at 0 utc
+  workflow_dispatch:
+
+jobs:
+  move-items:
+    name: Move unfinished tasks
+    runs-on: self-hosted
+    steps:
+      - uses: blombard/move-to-next-iteration@v0.7.0
+        with:
+          owner: "AetherBrowser"
+          number: 4
+          token: ${{ secrets.PROJECT_PAT }}
+          iteration-field: "Iteration"
+          iteration: "last"
+          new-iteration: "current"
+          excluded-statuses: "Done"
