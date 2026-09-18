@@ -58,7 +58,7 @@ use winit::window::Window;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache, add_toolbar_button};
-use crate::desktop::menu::AppMenu;
+use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
 
@@ -661,8 +661,10 @@ impl Gui {
 
                 *toolbar_height = Length::new(outer.response.rect.max.y);
 
-                if let Some(button) = &menu_button {
-                    app_menu.update(button);
+                if let Some(button) = &menu_button &&
+                    let Some(AppMenuAction::NewTab) = app_menu.update(button)
+                {
+                    window.queue_user_interface_command(UserInterfaceCommand::NewWebView);
                 }
             } else {
                 app_menu.close_ui(ctx);

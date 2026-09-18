@@ -4,20 +4,34 @@
 
 //! Application hamburger menu. Add new entries in [`AppMenu::contents`].
 
-use egui::{Button, CornerRadius, Id, Popup, RectAlign, Sense, Stroke, TextWrapMode, Vec2, vec2};
+use egui::{
+    Button, CornerRadius, Id, Popup, RectAlign, Sense, Stroke, TextWrapMode, Vec2, WidgetInfo,
+    WidgetType, vec2,
+};
 use euclid::Point2D;
 use servo::DeviceIndependentPixel;
 
 /// Matches other chrome menus (see `dialog.rs`).
 const APP_MENU_MIN_WIDTH: f32 = 350.0;
 
-/// Empty panel height so the menu block is visible before items are added.
 const APP_MENU_MIN_HEIGHT: f32 = 50.0;
 
 /// Gap between the toolbar button and the panel.
 const APP_MENU_OFFSET: f32 = 4.0;
 
+/// Rounded hover/press fill on menu rows, matching toolbar buttons.
+const APP_MENU_ITEM_CORNER_RADIUS: u8 = 4;
+
+/// Padding between a menu label and its hover/press rectangle.
+/// Matches the 5px inset used by browser tabs.
+const APP_MENU_ITEM_PADDING: f32 = 5.0;
+
 const APP_MENU_ID: &str = "app_menu";
+
+/// An action chosen in the application menu.
+pub(crate) enum AppMenuAction {
+    NewTab,
+}
 
 /// Application menu opened from the toolbar hamburger button.
 pub(crate) struct AppMenu {
@@ -54,7 +68,7 @@ impl AppMenu {
     }
 
     /// Toggle the panel from the toolbar button and draw it when open.
-    pub(crate) fn update(&mut self, button: &egui::Response) {
+    pub(crate) fn update(&mut self, button: &egui::Response) -> Option<AppMenuAction> {
         let inner = Popup::menu(button)
             .id(Id::new(APP_MENU_ID))
             .align(RectAlign::BOTTOM_END)
@@ -62,31 +76,48 @@ impl AppMenu {
             .width(APP_MENU_MIN_WIDTH)
             .show(|ui| {
                 ui.set_min_size(vec2(APP_MENU_MIN_WIDTH, APP_MENU_MIN_HEIGHT));
-                Self::contents(ui);
+                Self::contents(ui)
             });
 
         match inner {
             Some(response) => {
                 self.open = true;
                 self.rect = response.response.rect;
+                response.inner
             },
-            None => self.close(),
+            None => {
+                self.close();
+                None
+            },
         }
     }
 
     /// Menu body. Insert new items with [`Self::item`].
-    fn contents(ui: &mut egui::Ui) {
+    fn contents(ui: &mut egui::Ui) -> Option<AppMenuAction> {
         ui.set_min_width(APP_MENU_MIN_WIDTH);
         ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().button_padding = vec2(APP_MENU_ITEM_PADDING, APP_MENU_ITEM_PADDING);
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = ui.visuals().panel_fill;
         ui.style_mut().visuals.widgets.inactive.bg_fill = ui.visuals().panel_fill;
+
+        let new_tab = Self::item(ui, "New Tab");
+        new_tab.widget_info(|| {
+            let mut info = WidgetInfo::new(WidgetType::Button);
+            info.label = Some("New Tab".into());
+            info
+        });
+        if new_tab.clicked() {
+            ui.close();
+            return Some(AppMenuAction::NewTab);
+        }
+
+        None
     }
 
     /// A full-width row ready to host a menu action.
-    #[expect(dead_code)]
     fn item(ui: &mut egui::Ui, label: &str) -> egui::Response {
         let button = Button::new(label)
-            .corner_radius(CornerRadius::ZERO)
+            .corner_radius(CornerRadius::same(APP_MENU_ITEM_CORNER_RADIUS))
             .stroke(Stroke::NONE)
             .wrap_mode(TextWrapMode::Extend)
             .min_size(Vec2 {
