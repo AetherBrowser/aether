@@ -661,10 +661,16 @@ impl Gui {
 
                 *toolbar_height = Length::new(outer.response.rect.max.y);
 
-                if let Some(button) = &menu_button &&
-                    let Some(AppMenuAction::NewTab) = app_menu.update(button)
-                {
-                    window.queue_user_interface_command(UserInterfaceCommand::NewWebView);
+                if let Some(button) = &menu_button {
+                    match app_menu.update(button) {
+                        Some(AppMenuAction::NewTab) => {
+                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView);
+                        },
+                        Some(AppMenuAction::NewWindow) => {
+                            window.queue_user_interface_command(UserInterfaceCommand::NewWindow);
+                        },
+                        None => {},
+                    }
                 }
             } else {
                 app_menu.close_ui(ctx);
