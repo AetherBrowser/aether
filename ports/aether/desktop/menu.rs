@@ -31,6 +31,7 @@ const APP_MENU_ID: &str = "app_menu";
 /// An action chosen in the application menu.
 pub(crate) enum AppMenuAction {
     NewTab,
+    NewWindow,
 }
 
 /// Application menu opened from the toolbar hamburger button.
@@ -100,18 +101,29 @@ impl AppMenu {
         ui.style_mut().visuals.widgets.inactive.weak_bg_fill = ui.visuals().panel_fill;
         ui.style_mut().visuals.widgets.inactive.bg_fill = ui.visuals().panel_fill;
 
-        let new_tab = Self::item(ui, "New Tab");
-        new_tab.widget_info(|| {
-            let mut info = WidgetInfo::new(WidgetType::Button);
-            info.label = Some("New Tab".into());
-            info
-        });
-        if new_tab.clicked() {
-            ui.close();
-            return Some(AppMenuAction::NewTab);
+        if let Some(action) = Self::action_item(ui, "New Tab", AppMenuAction::NewTab) {
+            return Some(action);
+        }
+        if let Some(action) = Self::action_item(ui, "New Window", AppMenuAction::NewWindow) {
+            return Some(action);
         }
 
         None
+    }
+
+    fn action_item(ui: &mut egui::Ui, label: &str, action: AppMenuAction) -> Option<AppMenuAction> {
+        let response = Self::item(ui, label);
+        response.widget_info(|| {
+            let mut info = WidgetInfo::new(WidgetType::Button);
+            info.label = Some(label.into());
+            info
+        });
+        if response.clicked() {
+            ui.close();
+            Some(action)
+        } else {
+            None
+        }
     }
 
     /// A full-width row ready to host a menu action.
