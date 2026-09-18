@@ -58,6 +58,7 @@ use winit::window::Window;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache, add_toolbar_button};
+use crate::desktop::menu::AppMenu;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
 
@@ -92,6 +93,9 @@ pub struct Gui {
 
     /// Rasterized SVG toolbar icons, cached across frames.
     toolbar_icons: ToolbarIconCache,
+
+    /// Hamburger menu opened from the toolbar.
+    app_menu: AppMenu,
 
     /// AccessKit tree updates pending the next egui tick.
     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
@@ -267,6 +271,7 @@ impl Gui {
             can_go_forward: false,
             favicon_textures: Default::default(),
             toolbar_icons: Default::default(),
+            app_menu: Default::default(),
             pending_accesskit_updates: vec![],
         }
     }
@@ -299,12 +304,16 @@ impl Gui {
         self.toolbar_height
     }
 
-    /// Return true iff the given position is over the egui toolbar.
+    /// Return true iff the given position is over the egui toolbar or the open app menu.
     pub(crate) fn is_in_egui_toolbar_rect(
         &self,
         position: Point2D<f32, DeviceIndependentPixel>,
     ) -> bool {
-        position.y < self.toolbar_height.get()
+        position.y < self.toolbar_height.get() || self.app_menu.contains_pointer(position)
+    }
+
+    pub(crate) fn is_app_menu_open(&self) -> bool {
+        self.app_menu.is_open()
     }
 
     /// Create a toolbar button: icon/text at rest, rounded square on hover, darker on press.
@@ -416,6 +425,7 @@ impl Gui {
             location_dirty,
             favicon_textures,
             toolbar_icons,
+            app_menu,
             ..
         } = self;
 
@@ -427,6 +437,7 @@ impl Gui {
             // when not displaying the URL bar: https://github.com/servo/servo/issues/32443
             // Show toolbar unless fullscreen is from document (web API)
             if !headed_window.is_fullscreen_from_document() {
+                let mut menu_button = None;
                 let frame = egui::Frame::default()
                     .fill(ctx.style().visuals.window_fill)
                     .inner_margin(4.0);
@@ -519,6 +530,17 @@ impl Gui {
                                 ui.available_size(),
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    let menu_button_response = toolbar_icons
+                                        .button(ui, ToolbarIcon::Menu)
+                                        .on_hover_text("Menu");
+                                    menu_button_response.widget_info(|| {
+                                        let mut info = WidgetInfo::new(WidgetType::Button);
+                                        info.label = Some("Menu".into());
+                                        info.selected = Some(app_menu.is_open());
+                                        info
+                                    });
+                                    menu_button = Some(menu_button_response);
+
                                     let mut experimental_preferences_enabled =
                                         state.experimental_preferences_enabled();
                                     let prefs_toggle = ui
@@ -638,7 +660,12 @@ impl Gui {
                 });
 
                 *toolbar_height = Length::new(outer.response.rect.max.y);
+
+                if let Some(button) = &menu_button {
+                    app_menu.update(button);
+                }
             } else {
+                app_menu.close_ui(ctx);
                 *toolbar_height = Length::default();
             }
 

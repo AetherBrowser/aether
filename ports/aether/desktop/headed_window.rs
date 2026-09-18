@@ -551,6 +551,10 @@ impl HeadedWindow {
             {
                 return true;
             }
+            // The app menu overlays the page, so it must receive pointer events while open.
+            if self.gui.borrow().is_app_menu_open() {
+                return true;
+            }
             // Otherwise, if the cursor is over the egui interface, forward the event.
             self.last_mouse_position
                 .get()
@@ -603,7 +607,10 @@ impl HeadedWindow {
             {
                 self.gui.borrow().surrender_focus();
             },
-            WindowEvent::KeyboardInput { .. } if !self.gui.borrow().has_keyboard_focus() => {
+            WindowEvent::KeyboardInput { .. }
+                if !self.gui.borrow().has_keyboard_focus() &&
+                    !self.gui.borrow().is_app_menu_open() =>
+            {
                 // Keyboard events should go to the WebView unless some other GUI
                 // component has keyboard focus.
             },
@@ -633,6 +640,19 @@ impl HeadedWindow {
                     // TODO how do we handle the tab key? (see doc for consumed)
                     // Note that servo doesn’t yet support tabbing through links and inputs
                     consumed = response.consumed;
+                }
+                // Clicks and Escape while the menu is open must not reach the page.
+                if self.gui.borrow().is_app_menu_open() {
+                    match event {
+                        WindowEvent::MouseInput { .. } => consumed = true,
+                        WindowEvent::KeyboardInput { event: key_event, .. }
+                            if key_event.logical_key ==
+                                LogicalKey::Named(WinitNamedKey::Escape) =>
+                        {
+                            consumed = true;
+                        },
+                        _ => {},
+                    }
                 }
             },
         }
