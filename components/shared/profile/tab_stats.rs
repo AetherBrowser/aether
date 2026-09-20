@@ -48,12 +48,11 @@ fn now_ms() -> u64 {
 pub fn current_thread_id() -> u32 {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        if let Ok(link) = fs::read_link("/proc/thread-self") {
-            if let Some(name) = link.file_name().and_then(|name| name.to_str()) {
-                if let Ok(tid) = name.parse() {
-                    return tid;
-                }
-            }
+        if let Ok(link) = fs::read_link("/proc/thread-self")
+            && let Some(name) = link.file_name().and_then(|name| name.to_str())
+            && let Ok(tid) = name.parse()
+        {
+            return tid;
         }
     }
     std::process::id()
