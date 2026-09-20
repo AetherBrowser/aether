@@ -4,7 +4,12 @@
 
 //! Snapshot of the browser process tree for `servo:processes`.
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "windows"
+))]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -330,15 +335,19 @@ fn collect_linux_process_tree() -> Vec<RawProcess> {
     keep_descendant_processes(root_pid, by_pid)
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
-fn keep_descendant_processes(root_pid: u32, by_pid: HashMap<u32, RawProcess>) -> Vec<RawProcess> {
+#[cfg(any(
+    test,
+    target_os = "linux",
+    target_os = "android",
+    target_os = "windows"
+))]
+fn descendant_pids(root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> HashSet<u32> {
     let mut keep = HashSet::from([root_pid]);
     let mut queue = VecDeque::from([root_pid]);
     while let Some(pid) = queue.pop_front() {
-        let children: Vec<u32> = by_pid
-            .values()
-            .filter(|process| process.ppid == pid && process.pid != pid)
-            .map(|process| process.pid)
+        let children: Vec<u32> = parent_by_pid
+            .iter()
+            .filter_map(|(&child, &ppid)| (ppid == pid && child != pid).then_some(child))
             .collect();
         for child in children {
             if keep.insert(child) {
@@ -346,7 +355,25 @@ fn keep_descendant_processes(root_pid: u32, by_pid: HashMap<u32, RawProcess>) ->
             }
         }
     }
+    keep
+}
 
+/// PIDs that should get a full process/thread query. `None` means the root is
+/// missing from the snapshot and the caller should use [`collect_fallback`].
+#[cfg(any(test, target_os = "windows"))]
+fn sampled_process_pids(root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> Option<HashSet<u32>> {
+    parent_by_pid
+        .contains_key(&root_pid)
+        .then(|| descendant_pids(root_pid, parent_by_pid))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+fn keep_descendant_processes(root_pid: u32, by_pid: HashMap<u32, RawProcess>) -> Vec<RawProcess> {
+    let parent_by_pid: HashMap<u32, u32> = by_pid
+        .iter()
+        .map(|(&pid, process)| (pid, process.ppid))
+        .collect();
+    let keep = descendant_pids(root_pid, &parent_by_pid);
     by_pid
         .into_iter()
         .filter_map(|(pid, process)| keep.contains(&pid).then_some(process))
@@ -433,6 +460,14 @@ mod windows_sampler {
             }
         }
 
+        let parent_by_pid: HashMap<u32, u32> = entries
+            .iter()
+            .map(|(&pid, (ppid, _))| (pid, *ppid))
+            .collect();
+        let Some(keep) = super::sampled_process_pids(root_pid, &parent_by_pid) else {
+            return super::collect_fallback();
+        };
+
         let mut threads_by_pid: HashMap<u32, Vec<u32>> = HashMap::new();
         let mut thread = THREADENTRY32 {
             dwSize: size_of::<THREADENTRY32>() as u32,
@@ -440,10 +475,12 @@ mod windows_sampler {
         };
         if unsafe { Thread32First(snapshot.0, &mut thread) } != 0 {
             loop {
-                threads_by_pid
-                    .entry(thread.th32OwnerProcessID)
-                    .or_default()
-                    .push(thread.th32ThreadID);
+                if keep.contains(&thread.th32OwnerProcessID) {
+                    threads_by_pid
+                        .entry(thread.th32OwnerProcessID)
+                        .or_default()
+                        .push(thread.th32ThreadID);
+                }
                 if unsafe { Thread32Next(snapshot.0, &mut thread) } == 0 {
                     break;
                 }
@@ -455,13 +492,16 @@ mod windows_sampler {
             .map(|(_, exe)| exe.clone())
             .unwrap_or_default();
         let mut by_pid = HashMap::new();
-        for (pid, (ppid, exe)) in entries {
+        for pid in keep {
+            let Some((ppid, exe)) = entries.get(&pid) else {
+                continue;
+            };
             by_pid.insert(
                 pid,
                 read_windows_process(
                     pid,
-                    ppid,
-                    &exe,
+                    *ppid,
+                    exe,
                     &root_exe,
                     pid == root_pid,
                     threads_by_pid.remove(&pid).unwrap_or_default(),
@@ -469,9 +509,6 @@ mod windows_sampler {
             );
         }
 
-        if !by_pid.contains_key(&root_pid) {
-            return super::collect_fallback();
-        }
         keep_descendant_processes(root_pid, by_pid)
     }
 
@@ -1050,6 +1087,67 @@ mod tests {
             assert!(memory <= previous_memory);
             previous_memory = memory;
         }
+    }
+
+    fn parent_map(pairs: &[(u32, u32)]) -> HashMap<u32, u32> {
+        pairs.iter().copied().collect()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    fn raw_process(pid: u32, ppid: u32) -> RawProcess {
+        RawProcess {
+            pid,
+            ppid,
+            name: format!("proc-{pid}"),
+            memory: None,
+            cpu_ticks: 0,
+            threads: vec![],
+        }
+    }
+
+    #[test]
+    fn descendant_pids_keeps_nested_children_only() {
+        let parents = parent_map(&[(10, 1), (11, 10), (12, 10), (13, 11), (99, 1), (0, 0)]);
+        assert_eq!(
+            descendant_pids(10, &parents),
+            HashSet::from([10, 11, 12, 13])
+        );
+    }
+
+    #[test]
+    fn descendant_pids_ignores_self_parent_cycles() {
+        let parents = parent_map(&[(10, 10), (11, 10)]);
+        assert_eq!(descendant_pids(10, &parents), HashSet::from([10, 11]));
+    }
+
+    #[test]
+    fn sampled_process_pids_falls_back_when_root_is_absent() {
+        let parents = parent_map(&[(11, 10), (12, 1), (99, 1)]);
+        assert!(sampled_process_pids(10, &parents).is_none());
+    }
+
+    #[test]
+    fn sampled_process_pids_returns_only_descendants() {
+        let parents = parent_map(&[(10, 1), (11, 10), (12, 11), (99, 1), (0, 0)]);
+        assert_eq!(
+            sampled_process_pids(10, &parents).unwrap(),
+            HashSet::from([10, 11, 12])
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[test]
+    fn keep_descendant_processes_drops_unrelated_pids() {
+        let mut by_pid = HashMap::new();
+        for (pid, ppid) in [(10, 1), (11, 10), (99, 1)] {
+            by_pid.insert(pid, raw_process(pid, ppid));
+        }
+        let mut pids: Vec<u32> = keep_descendant_processes(10, by_pid)
+            .iter()
+            .map(|process| process.pid)
+            .collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![10, 11]);
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
