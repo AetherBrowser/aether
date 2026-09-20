@@ -4,7 +4,9 @@
 
 //! Snapshot of the browser process tree for `servo:processes`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -186,32 +188,40 @@ fn attach_tabs_from(
             .iter()
             .filter(|stats| stats.webview_id == tab.webview_id)
             .collect();
-        let pid = matching
-            .first()
-            .map(|stats| stats.pid)
-            .unwrap_or(fallback_pid);
-        let mut memory = 0_u64;
-        let mut cpu_sum = 0.0_f64;
-        let mut cpu_known = false;
-        for stats in &matching {
-            tab_tids.insert((stats.pid, stats.tid));
-            memory = memory.saturating_add(stats.js_heap_bytes);
-            if let Some(cpu) = thread_cpu(processes, stats.pid, stats.tid) {
-                cpu_sum += cpu;
-                cpu_known = true;
-            }
+        if matching.is_empty() {
+            let name = tab_display_name(tab);
+            tabs_by_pid.entry(fallback_pid).or_default().push(json!({
+                "name": name,
+                "url": tab.url,
+                "memory": Value::Null,
+                "cpu": Value::Null,
+            }));
+            continue;
         }
-        let name = if tab.title.is_empty() {
-            format!("Tab: {}", display_url(&tab.url))
-        } else {
-            format!("Tab: {}", tab.title)
-        };
-        tabs_by_pid.entry(pid).or_default().push(json!({
-            "name": name,
-            "url": tab.url,
-            "memory": if matching.is_empty() { Value::Null } else { json!(memory) },
-            "cpu": if cpu_known { json!((cpu_sum * 10.0).round() / 10.0) } else { Value::Null },
-        }));
+
+        let mut stats_by_pid: HashMap<u32, Vec<&ScriptTabStats>> = HashMap::new();
+        for stats in matching {
+            stats_by_pid.entry(stats.pid).or_default().push(stats);
+        }
+        for (pid, group) in stats_by_pid {
+            let mut memory = 0_u64;
+            let mut cpu_sum = 0.0_f64;
+            let mut cpu_known = false;
+            for stats in &group {
+                tab_tids.insert((stats.pid, stats.tid));
+                memory = memory.saturating_add(stats.js_heap_bytes);
+                if let Some(cpu) = thread_cpu(processes, stats.pid, stats.tid) {
+                    cpu_sum += cpu;
+                    cpu_known = true;
+                }
+            }
+            tabs_by_pid.entry(pid).or_default().push(json!({
+                "name": tab_display_name(tab),
+                "url": tab.url,
+                "memory": json!(memory),
+                "cpu": if cpu_known { json!((cpu_sum * 10.0).round() / 10.0) } else { Value::Null },
+            }));
+        }
     }
 
     for process in processes.iter_mut() {
@@ -230,6 +240,14 @@ fn attach_tabs_from(
                 !tab_tids.contains(&(pid, tid))
             });
         }
+    }
+}
+
+fn tab_display_name(tab: &EmbedderTab) -> String {
+    if tab.title.is_empty() {
+        format!("Tab: {}", display_url(&tab.url))
+    } else {
+        format!("Tab: {}", tab.title)
     }
 }
 
@@ -265,7 +283,11 @@ fn collect_processes() -> Vec<RawProcess> {
     {
         collect_linux_process_tree()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(target_os = "windows")]
+    {
+        collect_windows_process_tree()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
     {
         collect_fallback()
     }
@@ -305,6 +327,14 @@ fn collect_linux_process_tree() -> Vec<RawProcess> {
         return collect_fallback();
     }
 
+    keep_descendant_processes(root_pid, by_pid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+fn keep_descendant_processes(
+    root_pid: u32,
+    mut by_pid: HashMap<u32, RawProcess>,
+) -> Vec<RawProcess> {
     let mut keep = HashSet::from([root_pid]);
     let mut queue = VecDeque::from([root_pid]);
     while let Some(pid) = queue.pop_front() {
@@ -324,6 +354,251 @@ fn collect_linux_process_tree() -> Vec<RawProcess> {
         .into_iter()
         .filter_map(|(pid, process)| keep.contains(&pid).then_some(process))
         .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn collect_windows_process_tree() -> Vec<RawProcess> {
+    windows_sampler::collect()
+}
+
+#[cfg(target_os = "windows")]
+mod windows_sampler {
+    use std::collections::HashMap;
+    use std::mem::size_of;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, FALSE, FILETIME, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    };
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::ProcessStatus::{
+        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, GetThreadDescription, GetThreadTimes, OpenProcess, OpenThread,
+        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        THREAD_QUERY_LIMITED_INFORMATION,
+    };
+
+    use super::{RawProcess, RawThread, display_name, keep_descendant_processes};
+
+    struct Handle(HANDLE);
+
+    impl Handle {
+        fn new(handle: HANDLE) -> Option<Self> {
+            if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+                None
+            } else {
+                Some(Self(handle))
+            }
+        }
+    }
+
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            // SAFETY: `Handle` is only constructed for valid, owned kernel handles.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    pub(super) fn collect() -> Vec<RawProcess> {
+        let root_pid = std::process::id();
+        let snapshot = Handle::new(unsafe {
+            CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0)
+        });
+        let Some(snapshot) = snapshot else {
+            return super::collect_fallback();
+        };
+
+        let mut entries = HashMap::new();
+        let mut process = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if unsafe { Process32FirstW(snapshot.0, &mut process) } == 0 {
+            return super::collect_fallback();
+        }
+        loop {
+            entries.insert(
+                process.th32ProcessID,
+                (
+                    process.th32ParentProcessID,
+                    wide_to_string(&process.szExeFile),
+                ),
+            );
+            if unsafe { Process32NextW(snapshot.0, &mut process) } == 0 {
+                break;
+            }
+        }
+
+        let mut threads_by_pid: HashMap<u32, Vec<u32>> = HashMap::new();
+        let mut thread = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        if unsafe { Thread32First(snapshot.0, &mut thread) } != 0 {
+            loop {
+                threads_by_pid
+                    .entry(thread.th32OwnerProcessID)
+                    .or_default()
+                    .push(thread.th32ThreadID);
+                if unsafe { Thread32Next(snapshot.0, &mut thread) } == 0 {
+                    break;
+                }
+            }
+        }
+
+        let root_exe = entries
+            .get(&root_pid)
+            .map(|(_, exe)| exe.clone())
+            .unwrap_or_default();
+        let mut by_pid = HashMap::new();
+        for (pid, (ppid, exe)) in entries {
+            by_pid.insert(
+                pid,
+                read_windows_process(
+                    pid,
+                    ppid,
+                    &exe,
+                    &root_exe,
+                    pid == root_pid,
+                    threads_by_pid.remove(&pid).unwrap_or_default(),
+                ),
+            );
+        }
+
+        if !by_pid.contains_key(&root_pid) {
+            return super::collect_fallback();
+        }
+        keep_descendant_processes(root_pid, by_pid)
+    }
+
+    fn read_windows_process(
+        pid: u32,
+        ppid: u32,
+        exe: &str,
+        root_exe: &str,
+        is_root: bool,
+        thread_ids: Vec<u32>,
+    ) -> RawProcess {
+        let handle =
+            Handle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) });
+        let image = handle
+            .as_ref()
+            .and_then(|handle| query_image_path(handle.0))
+            .unwrap_or_else(|| exe.to_owned());
+        let same_binary = Path::new(&image).file_name() == Path::new(root_exe).file_name() &&
+            Path::new(&image).file_name().is_some();
+        let mut cmdline = vec![image.clone()];
+        if !is_root && same_binary {
+            cmdline.push("--content-process".to_owned());
+        }
+        let comm = Path::new(&image)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(exe);
+        let (memory, cpu_ticks) = handle
+            .as_ref()
+            .map(|handle| {
+                (
+                    process_working_set(handle.0),
+                    process_cpu_ticks(handle.0).unwrap_or(0),
+                )
+            })
+            .unwrap_or((None, 0));
+
+        let threads = thread_ids
+            .into_iter()
+            .filter_map(read_windows_thread)
+            .collect();
+
+        RawProcess {
+            pid,
+            ppid,
+            name: display_name(is_root, &cmdline, comm),
+            memory,
+            cpu_ticks,
+            threads,
+        }
+    }
+
+    fn read_windows_thread(tid: u32) -> Option<RawThread> {
+        let handle =
+            Handle::new(unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, tid) })?;
+        Some(RawThread {
+            tid,
+            name: thread_name(handle.0).unwrap_or_else(|| format!("Thread {tid}")),
+            cpu_ticks: process_cpu_ticks_for_thread(handle.0).unwrap_or(0),
+        })
+    }
+
+    fn process_working_set(handle: HANDLE) -> Option<u64> {
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        (unsafe { K32GetProcessMemoryInfo(handle, &mut counters, counters.cb) } != 0)
+            .then_some(counters.WorkingSetSize as u64)
+    }
+
+    fn process_cpu_ticks(handle: HANDLE) -> Option<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        (unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } != 0)
+            .then_some(filetime_ticks(kernel).saturating_add(filetime_ticks(user)))
+    }
+
+    fn process_cpu_ticks_for_thread(handle: HANDLE) -> Option<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        (unsafe { GetThreadTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } != 0)
+            .then_some(filetime_ticks(kernel).saturating_add(filetime_ticks(user)))
+    }
+
+    fn query_image_path(handle: HANDLE) -> Option<String> {
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        (unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) } != 0)
+            .then(|| String::from_utf16_lossy(&buf[..size as usize]))
+    }
+
+    fn thread_name(handle: HANDLE) -> Option<String> {
+        let mut description = std::ptr::null_mut();
+        let status = unsafe { GetThreadDescription(handle, &mut description) };
+        if status < 0 || description.is_null() {
+            return None;
+        }
+        let name = unsafe {
+            let mut len = 0;
+            while *description.add(len) != 0 {
+                len += 1;
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(description, len))
+        };
+        unsafe {
+            LocalFree(description.cast());
+        }
+        let name = name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
+    fn filetime_ticks(time: FILETIME) -> u64 {
+        ((time.dwHighDateTime as u64) << 32) | u64::from(time.dwLowDateTime)
+    }
+
+    fn wide_to_string(buf: &[u16]) -> String {
+        let len = buf.iter().position(|&unit| unit == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..len])
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -409,7 +684,12 @@ fn clock_ticks_per_second() -> f64 {
         let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
         if ticks > 0 { ticks as f64 } else { 100.0 }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[cfg(target_os = "windows")]
+    {
+        // GetProcessTimes / GetThreadTimes use 100-nanosecond FILETIME units.
+        10_000_000.0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
     {
         100.0
     }
@@ -716,6 +996,43 @@ mod tests {
     }
 
     #[test]
+    fn attach_tabs_keeps_one_entry_per_process_for_the_same_webview() {
+        let mut processes = vec![
+            process_json(
+                20,
+                "Content Process",
+                50,
+                vec![thread_json(1, "Script A", 1.0)],
+            ),
+            process_json(
+                21,
+                "Content Process",
+                40,
+                vec![thread_json(2, "Script B", 2.0)],
+            ),
+        ];
+        let tabs = vec![EmbedderTab {
+            webview_id: "shared".to_owned(),
+            title: "Shared".to_owned(),
+            url: "https://shared.test/".to_owned(),
+        }];
+        let stats = vec![
+            tab_stats(20, 1, "shared", 100),
+            tab_stats(21, 2, "shared", 250),
+        ];
+        attach_tabs_from(&mut processes, &tabs, &stats);
+
+        assert_eq!(processes[0]["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(processes[0]["tabs"][0]["memory"], 100);
+        assert_eq!(processes[0]["tabs"][0]["cpu"], 1.0);
+        assert_eq!(processes[1]["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(processes[1]["tabs"][0]["memory"], 250);
+        assert_eq!(processes[1]["tabs"][0]["cpu"], 2.0);
+        assert!(processes[0]["threads"].as_array().unwrap().is_empty());
+        assert!(processes[1]["threads"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn snapshot_json_contains_sorted_process_schema() {
         let json: Value = serde_json::from_str(&ProcessSampler::default().snapshot_json()).unwrap();
         assert!(json["cores"].as_f64().unwrap() >= 1.0);
@@ -759,5 +1076,26 @@ mod tests {
         let self_stat = parse_stat(&std::fs::read_to_string("/proc/self/stat").unwrap()).unwrap();
         assert!(!self_stat.comm.is_empty());
         assert!(current.threads.iter().all(|thread| thread.tid != root_pid));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_snapshot_includes_current_process_tree_only() {
+        let processes = collect_processes();
+        let root_pid = std::process::id();
+        let current = processes
+            .iter()
+            .find(|process| process.pid == root_pid)
+            .expect("current process should be listed");
+        assert_eq!(current.name, "Browser");
+        assert!(current.memory.unwrap_or(0) > 0);
+        assert!(
+            processes.iter().all(|process| process.pid != 0),
+            "the idle process should not appear in the tree"
+        );
+        assert!(
+            current.cpu_ticks > 0,
+            "the current process should have consumed some CPU time"
+        );
     }
 }

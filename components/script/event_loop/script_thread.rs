@@ -399,6 +399,10 @@ pub struct ScriptThread {
     #[no_trace]
     scheduled_update_the_rendering: RefCell<Option<TimerId>>,
 
+    /// Wake the event loop so idle tabs keep publishing `servo:processes` stats.
+    #[no_trace]
+    tab_stats_heartbeat: RefCell<Option<TimerId>>,
+
     /// Whether an animation tick or ScriptThread-triggered rendering update is pending. This might
     /// either be because the Servo renderer is managing animations and the [`ScriptThread`] has
     /// received a [`ScriptThreadMessage::TickAllAnimations`] message, because the [`ScriptThread`]
@@ -954,6 +958,7 @@ impl ScriptThread {
                     gpu_id_hub,
                     layout_factory,
                     scheduled_update_the_rendering: Default::default(),
+                    tab_stats_heartbeat: Default::default(),
                     needs_rendering_update: Arc::new(AtomicBool::new(false)),
                     debugger_global: debugger_global.as_traced(),
                     debugger_paused: Cell::new(false),
@@ -997,7 +1002,19 @@ impl ScriptThread {
         debug!("Stopped script thread.");
     }
 
+    fn schedule_tab_stats_heartbeat(&self) {
+        if let Some(timer_id) = self.tab_stats_heartbeat.borrow_mut().take() {
+            self.cancel_timer(timer_id);
+        }
+        let timer_id = self.schedule_timer(TimerEventRequest {
+            callback: Box::new(|| {}),
+            duration: Duration::from_secs(2),
+        });
+        *self.tab_stats_heartbeat.borrow_mut() = Some(timer_id);
+    }
+
     fn publish_tab_stats(&self, cx: &js::context::JSContext) {
+        self.schedule_tab_stats_heartbeat();
         thread_local!(static LAST_PUBLISH: Cell<Option<Instant>> = const { Cell::new(None) });
         let now = Instant::now();
         let should_publish = LAST_PUBLISH.with(|last| match last.get() {

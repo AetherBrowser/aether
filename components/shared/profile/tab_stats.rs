@@ -55,14 +55,50 @@ pub fn current_thread_id() -> u32 {
             return tid;
         }
     }
-    std::process::id()
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(unsafe_code)]
+        {
+            unsafe extern "system" {
+                fn GetCurrentThreadId() -> u32;
+            }
+            // SAFETY: GetCurrentThreadId is always available on Windows.
+            return unsafe { GetCurrentThreadId() };
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::id()
+    }
 }
 
 /// Publish (or refresh) stats for the current script thread.
 pub fn publish_script_tab_stats(stats: &ScriptTabStats) {
-    let _ = fs::create_dir_all(stats_dir());
-    if let Ok(json) = serde_json::to_string(stats) {
-        let _ = fs::write(stats_path(stats.pid, stats.tid), json);
+    let dir = stats_dir();
+    let _ = fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    let Ok(json) = serde_json::to_string(stats) else {
+        return;
+    };
+    let final_path = stats_path(stats.pid, stats.tid);
+    if final_path.is_symlink() {
+        return;
+    }
+    let tmp_path = dir.join(format!(
+        "{pid}-{tid}.{stamp}.tmp",
+        pid = stats.pid,
+        tid = stats.tid,
+        stamp = now_ms()
+    ));
+    if fs::write(&tmp_path, json).is_err() {
+        return;
+    }
+    if fs::rename(&tmp_path, &final_path).is_err() {
+        let _ = fs::remove_file(&tmp_path);
     }
 }
 
@@ -80,6 +116,9 @@ pub fn collect_script_tab_stats() -> Vec<ScriptTabStats> {
     let mut stats = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.extension().is_some_and(|extension| extension == "tmp") || path.is_symlink() {
+            continue;
+        }
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
@@ -188,6 +227,26 @@ mod tests {
         );
         assert!(!stats_path(stale_pid, stale_tid).exists());
         assert!(!stats_path(bad_pid, bad_tid).exists());
+    }
+
+    #[test]
+    fn collect_skips_temporary_publish_files() {
+        let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (pid, tid) = unique_ids();
+        let _ = fs::create_dir_all(stats_dir());
+        let tmp_path = stats_dir().join(format!("{pid}-{tid}.123.tmp"));
+        fs::write(&tmp_path, "{\"pid\":1}").unwrap();
+        let collected = collect_script_tab_stats();
+        assert!(
+            tmp_path.exists(),
+            "temporary files should not be collected or deleted"
+        );
+        let _ = fs::remove_file(&tmp_path);
+        assert!(
+            collected
+                .iter()
+                .all(|item| item.pid != pid || item.tid != tid)
+        );
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
