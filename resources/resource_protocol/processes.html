@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>servo:processes</title>
+    <style>
+      :root {
+        --bg: #f6f7f8;
+        --surface: #ffffff;
+        --text: #1b1b1b;
+        --muted: #5c5c5c;
+        --border: #d7d7d7;
+        --row-alt: #f0f2f4;
+        --accent: #1191e8;
+        --warn: #b45309;
+        --hot: #b42318;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121619;
+          --surface: #1c2126;
+          --text: #f5f5f5;
+          --muted: #b0b8c0;
+          --border: #2f3942;
+          --row-alt: #22292f;
+          --accent: #5cb6f0;
+          --warn: #f0b429;
+          --hot: #ff6b6b;
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: sans-serif;
+      }
+
+      main {
+        padding: 24px 16px 48px;
+      }
+
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 600;
+        margin: 0 0 20px;
+      }
+
+      table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      col.col-memory {
+        width: 8.5rem;
+      }
+
+      col.col-cpu {
+        width: 6.5rem;
+      }
+
+      th,
+      td {
+        padding: 10px 14px;
+        text-align: left;
+        vertical-align: middle;
+        border-right: 1px solid var(--border);
+      }
+
+      th:last-child,
+      td:last-child {
+        border-right: 0;
+      }
+
+      th {
+        font-weight: 600;
+        background: var(--row-alt);
+        border-bottom: 1px solid var(--border);
+      }
+
+      #sort-memory {
+        width: 8.5rem;
+      }
+
+      #sort-cpu {
+        width: 6.5rem;
+      }
+
+      td.name {
+        overflow: hidden;
+      }
+
+      .name-line {
+        overflow: hidden;
+      }
+
+      .name-title {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      th button {
+        background: none;
+        border: 0;
+        color: inherit;
+        font: inherit;
+        font-weight: 600;
+        padding: 0;
+        cursor: pointer;
+      }
+
+      th.numeric button {
+        width: 100%;
+        text-align: right;
+      }
+
+      th button:hover {
+        color: var(--accent);
+      }
+
+      th[aria-sort] button::after {
+        content: "";
+        margin-left: 0.4em;
+        font-size: 0.8em;
+      }
+
+      th[aria-sort="ascending"] button::after {
+        content: "▲";
+      }
+
+      th[aria-sort="descending"] button::after {
+        content: "▼";
+      }
+
+      tbody tr:nth-child(even) {
+        background: var(--row-alt);
+      }
+
+      .numeric {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: nowrap;
+      }
+
+      .thread .name,
+      .tab .name {
+        padding-left: 32px;
+        color: var(--muted);
+        font-weight: 400;
+      }
+
+      .tab .name {
+        color: var(--text);
+        font-weight: 500;
+      }
+
+      .tab-url {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--muted);
+        font-weight: 400;
+        font-size: 0.78em;
+        margin-top: 2px;
+      }
+
+      .pid {
+        float: right;
+        margin-left: 0.35em;
+        color: var(--muted);
+        font-weight: 400;
+        font-size: 0.85em;
+      }
+
+      .cpu-warn {
+        color: var(--warn);
+      }
+
+      .cpu-hot {
+        color: var(--hot);
+        font-weight: 600;
+      }
+
+      .error {
+        color: var(--hot);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Processes</h1>
+      <table>
+        <colgroup>
+          <col class="col-name" />
+          <col class="col-memory" />
+          <col class="col-cpu" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th id="sort-name">
+              <button type="button" data-sort="name">Name</button>
+            </th>
+            <th id="sort-memory" class="numeric">
+              <button type="button" data-sort="memory">Memory</button>
+            </th>
+            <th id="sort-cpu" class="numeric">
+              <button type="button" data-sort="cpu">CPU</button>
+            </th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <tr>
+            <td colspan="3">Loading…</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+    <script>
+      const rows = document.getElementById("rows");
+      const headers = {
+        name: document.getElementById("sort-name"),
+        memory: document.getElementById("sort-memory"),
+        cpu: document.getElementById("sort-cpu"),
+      };
+
+      let snapshot = { processes: [], cores: null };
+      let sortKey = null;
+      let sortDir = "asc";
+
+      function formatBytes(bytes) {
+        if (bytes === null || bytes === undefined) {
+          return "—";
+        }
+        if (bytes < 1024) {
+          return `${bytes} B`;
+        }
+        if (bytes < 1024 * 1024) {
+          return `${(bytes / 1024).toFixed(1)} KiB`;
+        }
+        if (bytes < 1024 * 1024 * 1024) {
+          return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+        }
+        return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+      }
+
+      function formatCpu(cpu) {
+        if (cpu === null || cpu === undefined) {
+          return "—";
+        }
+        return `${Number(cpu).toFixed(1)}%`;
+      }
+
+      function cpuClass(cpu) {
+        if (cpu === null || cpu === undefined) {
+          return "numeric";
+        }
+        if (cpu >= 50) {
+          return "numeric cpu-hot";
+        }
+        if (cpu >= 10) {
+          return "numeric cpu-warn";
+        }
+        return "numeric";
+      }
+
+      function td(text, className) {
+        const cell = document.createElement("td");
+        if (className) {
+          cell.className = className;
+        }
+        cell.textContent = text;
+        return cell;
+      }
+
+      function nameCell(name, id, extra) {
+        const cell = document.createElement("td");
+        cell.className = "name";
+        const line = document.createElement("div");
+        line.className = "name-line";
+        if (id !== undefined) {
+          const pid = document.createElement("span");
+          pid.className = "pid";
+          pid.textContent = `(${id})`;
+          line.append(pid);
+        }
+        const title = document.createElement("span");
+        title.className = "name-title";
+        title.textContent = name;
+        title.title = name;
+        title.dataset.full = name;
+        line.append(title);
+        cell.append(line);
+        if (extra) {
+          const url = document.createElement("span");
+          url.className = "tab-url";
+          url.textContent = extra;
+          url.title = extra;
+          url.dataset.full = extra;
+          cell.append(url);
+        }
+        return cell;
+      }
+
+      function ellipsize(el) {
+        const full = el.dataset.full || el.textContent;
+        el.textContent = full;
+        if (el.clientWidth <= 0 || el.scrollWidth <= el.clientWidth) {
+          return;
+        }
+        let lo = 0;
+        let hi = full.length;
+        while (lo < hi) {
+          const mid = Math.ceil((lo + hi) / 2);
+          el.textContent = `${full.slice(0, mid)}…`;
+          if (el.scrollWidth <= el.clientWidth) {
+            lo = mid;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        el.textContent = lo > 0 ? `${full.slice(0, lo)}…` : "…";
+      }
+
+      function ellipsizeNames() {
+        for (const el of rows.querySelectorAll(".name-title, .tab-url")) {
+          ellipsize(el);
+        }
+      }
+
+      function sortValue(item, key) {
+        if (key === "name") {
+          return (item.name || "").toLowerCase();
+        }
+        if (key === "memory") {
+          return typeof item.memory === "number" ? item.memory : -1;
+        }
+        return typeof item.cpu === "number" ? item.cpu : -1;
+      }
+
+      function compareItems(a, b, key, dir) {
+        const av = sortValue(a, key);
+        const bv = sortValue(b, key);
+        let result;
+        if (typeof av === "string" || typeof bv === "string") {
+          result = String(av).localeCompare(String(bv), undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+        } else {
+          result = av - bv;
+        }
+        return dir === "asc" ? result : -result;
+      }
+
+      function sortedProcesses(processes) {
+        const copy = processes.map((process) => ({
+          ...process,
+          tabs: Array.isArray(process.tabs) ? process.tabs.slice() : [],
+          threads: Array.isArray(process.threads) ? process.threads.slice() : [],
+        }));
+        if (!sortKey) {
+          return copy;
+        }
+        copy.sort((a, b) => compareItems(a, b, sortKey, sortDir));
+        for (const process of copy) {
+          process.tabs.sort((a, b) => compareItems(a, b, sortKey, sortDir));
+          process.threads.sort((a, b) => {
+            if (sortKey === "memory") {
+              return compareItems(a, b, "name", sortDir);
+            }
+            return compareItems(a, b, sortKey, sortDir);
+          });
+        }
+        return copy;
+      }
+
+      function updateSortHeaders() {
+        for (const [key, header] of Object.entries(headers)) {
+          if (sortKey === key) {
+            header.setAttribute(
+              "aria-sort",
+              sortDir === "asc" ? "ascending" : "descending"
+            );
+          } else {
+            header.removeAttribute("aria-sort");
+          }
+        }
+      }
+
+      function render() {
+        const processes = sortedProcesses(
+          Array.isArray(snapshot.processes) ? snapshot.processes : []
+        );
+        rows.replaceChildren();
+        updateSortHeaders();
+
+        for (const process of processes) {
+          const row = document.createElement("tr");
+          row.className = "process";
+          row.append(
+            nameCell(process.name || "Process", process.pid),
+            td(formatBytes(process.memory), "numeric"),
+            td(formatCpu(process.cpu), cpuClass(process.cpu))
+          );
+          rows.append(row);
+
+          const tabs = Array.isArray(process.tabs) ? process.tabs : [];
+          for (const tab of tabs) {
+            const tabRow = document.createElement("tr");
+            tabRow.className = "tab";
+            tabRow.append(
+              nameCell(tab.name || "Tab", undefined, tab.url),
+              td(formatBytes(tab.memory), "numeric"),
+              td(formatCpu(tab.cpu), cpuClass(tab.cpu))
+            );
+            rows.append(tabRow);
+          }
+
+          const threads = Array.isArray(process.threads) ? process.threads : [];
+          for (const thread of threads) {
+            const threadRow = document.createElement("tr");
+            threadRow.className = "thread";
+            threadRow.append(
+              nameCell(thread.name || "Thread", thread.tid),
+              td("—", "numeric"),
+              td(formatCpu(thread.cpu), cpuClass(thread.cpu))
+            );
+            rows.append(threadRow);
+          }
+        }
+
+        if (!processes.length) {
+          const empty = document.createElement("tr");
+          empty.append(td("No processes found.", ""));
+          empty.firstChild.colSpan = 3;
+          rows.append(empty);
+        }
+
+        requestAnimationFrame(ellipsizeNames);
+      }
+
+      function setSort(key) {
+        if (sortKey === key) {
+          sortDir = sortDir === "asc" ? "desc" : "asc";
+        } else {
+          sortKey = key;
+          sortDir = "asc";
+        }
+        render();
+      }
+
+      for (const header of Object.values(headers)) {
+        const button = header.querySelector("button");
+        button.addEventListener("click", () => setSort(button.dataset.sort));
+      }
+
+      async function refresh() {
+        if (document.hidden) {
+          return;
+        }
+        try {
+          const response = await fetch("servo:process-list");
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          snapshot = await response.json();
+          render();
+        } catch (error) {
+          rows.replaceChildren();
+          const empty = document.createElement("tr");
+          empty.append(td(`Could not load process list: ${error.message}`, "error"));
+          empty.firstChild.colSpan = 3;
+          rows.append(empty);
+        }
+      }
+
+      refresh();
+      setInterval(refresh, 1000);
+      window.addEventListener("resize", ellipsizeNames);
+    </script>
+  </body>
+</html>

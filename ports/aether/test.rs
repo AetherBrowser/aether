@@ -332,3 +332,10 @@ fn test_location_bar_accepts_new_tab_url() {
     .expect("new tab URL should parse");
     assert_eq!(url.as_str(), "servo:newtab");
 }
+
+#[test]
+fn test_location_bar_accepts_processes_url() {
+    let url = location_bar_input_to_url("servo:processes", "https://duckduckgo.com/html/?q=%s")
+        .expect("processes URL should parse");
+    assert_eq!(url.as_str(), "servo:processes");
+}

@@ -55,10 +55,10 @@ use http::header::REFRESH;
 use hyper_serde::Serde;
 use js::context::{JSContext, NoGC};
 use js::glue::GetWindowProxyClass;
-use js::jsapi::{GCReason, JSContext as UnsafeJSContext};
+use js::jsapi::{GCReason, JSContext as UnsafeJSContext, JSGCParamKey};
 use js::jsval::UndefinedValue;
 use js::rust::ParentRuntime;
-use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, SetWindowProxyClass};
+use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, JS_GetGCParameter, SetWindowProxyClass};
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
@@ -73,6 +73,10 @@ use net_traits::{
 use paint_api::{CrossProcessPaintApi, PinchZoomInfos, PipelineExitSource};
 use percent_encoding::percent_decode;
 use profile_traits::mem::{ProcessReports, ReportsChan, perform_memory_report};
+use profile_traits::tab_stats::{
+    ScriptTabStats, current_thread_id, publish_script_tab_stats, unix_time_ms,
+    unpublish_script_tab_stats,
+};
 use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -986,10 +990,60 @@ impl ScriptThread {
     pub(crate) fn start(&self, cx: &mut js::context::JSContext) {
         debug!("Starting script thread.");
         while self.handle_msgs(cx) {
-            // Go on...
+            self.publish_tab_stats(cx);
             debug!("Running script thread.");
         }
+        unpublish_script_tab_stats(std::process::id(), current_thread_id());
         debug!("Stopped script thread.");
+    }
+
+    fn publish_tab_stats(&self, cx: &js::context::JSContext) {
+        thread_local!(static LAST_PUBLISH: Cell<Option<Instant>> = const { Cell::new(None) });
+        let now = Instant::now();
+        let should_publish = LAST_PUBLISH.with(|last| match last.get() {
+            Some(previous)
+                if now.saturating_duration_since(previous) < Duration::from_millis(400) =>
+            {
+                false
+            },
+            _ => {
+                last.set(Some(now));
+                true
+            },
+        });
+        if !should_publish {
+            return;
+        }
+
+        let mut chosen: Option<(String, String)> = None;
+        for (_, document) in self.documents.borrow().iter() {
+            if !document.is_fully_active() {
+                continue;
+            }
+            let webview_id = document.webview_id();
+            let browsing_context_id = document.window().window_proxy().browsing_context_id();
+            if BrowsingContextId::from(webview_id) != browsing_context_id {
+                continue;
+            }
+            chosen = Some((webview_id.to_string(), document.url().to_string()));
+            break;
+        }
+        if chosen.is_none() {
+            if let Some(load) = self.incomplete_loads.borrow().first() {
+                chosen = Some((load.webview_id.to_string(), load.load_data.url.to_string()));
+            }
+        }
+        let Some((webview_id, url)) = chosen else {
+            return;
+        };
+        publish_script_tab_stats(&ScriptTabStats {
+            pid: std::process::id(),
+            tid: current_thread_id(),
+            webview_id,
+            url,
+            js_heap_bytes: unsafe { JS_GetGCParameter(cx, JSGCParamKey::JSGC_BYTES) as u64 },
+            updated_ms: unix_time_ms(),
+        });
     }
 
     /// Process input events as part of a "update the rendering task".

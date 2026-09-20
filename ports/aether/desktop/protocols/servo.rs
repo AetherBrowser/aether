@@ -9,9 +9,12 @@
 //! - servo:config
 //! - servo:newtab
 //! - servo:preferences
+//! - servo:processes
+//! - servo:process-list
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 
 use headers::{ContentType, HeaderMapExt};
 use servo::UserAgentPlatform;
@@ -20,11 +23,21 @@ use servo::protocol_handler::{
     Response, ResponseBody,
 };
 
+use crate::desktop::protocols::processes::ProcessSampler;
 use crate::desktop::protocols::resource::ResourceProtocolHandler;
 use crate::prefs::EXPERIMENTAL_PREFS;
 
-#[derive(Default)]
-pub struct ServoProtocolHandler {}
+pub struct ServoProtocolHandler {
+    process_sampler: Mutex<ProcessSampler>,
+}
+
+impl Default for ServoProtocolHandler {
+    fn default() -> Self {
+        Self {
+            process_sampler: Mutex::new(ProcessSampler::default()),
+        }
+    }
+}
 
 impl ProtocolHandler for ServoProtocolHandler {
     fn privileged_paths(&self) -> &'static [&'static str] {
@@ -70,6 +83,21 @@ impl ProtocolHandler for ServoProtocolHandler {
                 context,
                 "/license.html",
             ),
+
+            "processes" => ResourceProtocolHandler::response_for_path(
+                request,
+                done_chan,
+                context,
+                "/processes.html",
+            ),
+
+            "process-list" => {
+                let body = match self.process_sampler.lock() {
+                    Ok(mut sampler) => sampler.snapshot_json(),
+                    Err(poisoned) => poisoned.into_inner().snapshot_json(),
+                };
+                json_response(request, body)
+            },
 
             "experimental-preferences" => {
                 let pref_list = EXPERIMENTAL_PREFS

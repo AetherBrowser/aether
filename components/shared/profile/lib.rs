@@ -12,6 +12,7 @@ pub mod generic_callback;
 pub mod generic_channel;
 pub mod ipc;
 pub mod mem;
+pub mod tab_stats;
 pub mod time;
 
 /// Measure the given callback with the time profiler and (if enabled) tracing.
