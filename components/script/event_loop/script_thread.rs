@@ -1045,10 +1045,10 @@ impl ScriptThread {
             chosen = Some((webview_id.to_string(), document.url().to_string()));
             break;
         }
-        if chosen.is_none() {
-            if let Some(load) = self.incomplete_loads.borrow().first() {
-                chosen = Some((load.webview_id.to_string(), load.load_data.url.to_string()));
-            }
+        if chosen.is_none() &&
+            let Some(load) = self.incomplete_loads.borrow().first()
+        {
+            chosen = Some((load.webview_id.to_string(), load.load_data.url.to_string()));
         }
         let Some((webview_id, url)) = chosen else {
             return;
