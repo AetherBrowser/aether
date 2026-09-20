@@ -331,10 +331,7 @@ fn collect_linux_process_tree() -> Vec<RawProcess> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
-fn keep_descendant_processes(
-    root_pid: u32,
-    by_pid: HashMap<u32, RawProcess>,
-) -> Vec<RawProcess> {
+fn keep_descendant_processes(root_pid: u32, by_pid: HashMap<u32, RawProcess>) -> Vec<RawProcess> {
     let mut keep = HashSet::from([root_pid]);
     let mut queue = VecDeque::from([root_pid]);
     while let Some(pid) = queue.pop_front() {
