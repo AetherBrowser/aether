@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use serde_json::{Value, json};
-use servo::profile_traits::tab_stats::collect_script_tab_stats;
+use servo::profile_traits::tab_stats::{ScriptTabStats, collect_script_tab_stats};
 
 static EMBEDDER_TABS: Mutex<Vec<EmbedderTab>> = Mutex::new(Vec::new());
 
@@ -119,7 +119,11 @@ impl ProcessSampler {
             }));
         }
 
-        attach_tabs(&mut json_processes);
+        attach_tabs_from(
+            &mut json_processes,
+            &embedder_tabs(),
+            &collect_script_tab_stats(),
+        );
 
         json_processes.sort_by(|a, b| {
             let memory_a = a["memory"].as_u64().unwrap_or(0);
@@ -159,8 +163,11 @@ fn cpu_percent(
     json!(((percent.clamp(0.0, 100.0)) * 10.0).round() / 10.0)
 }
 
-fn attach_tabs(processes: &mut [Value]) {
-    let script_stats = collect_script_tab_stats();
+fn attach_tabs_from(
+    processes: &mut [Value],
+    tabs: &[EmbedderTab],
+    script_stats: &[ScriptTabStats],
+) {
     let mut tab_tids: HashSet<(u32, u32)> = HashSet::new();
     let mut tabs_by_pid: HashMap<u32, Vec<Value>> = HashMap::new();
     let fallback_pid = processes
@@ -174,7 +181,7 @@ fn attach_tabs(processes: &mut [Value]) {
         })
         .unwrap_or(0) as u32;
 
-    for tab in embedder_tabs() {
+    for tab in tabs {
         let matching: Vec<_> = script_stats
             .iter()
             .filter(|stats| stats.webview_id == tab.webview_id)
@@ -466,6 +473,42 @@ fn display_name(is_root: bool, cmdline: &[String], comm: &str) -> String {
 mod tests {
     use super::*;
 
+    fn previous_sample(key: SampleKey, ticks: u64) -> HashMap<SampleKey, u64> {
+        let mut previous = HashMap::new();
+        previous.insert(key, ticks);
+        previous
+    }
+
+    fn process_json(pid: u32, name: &str, memory: u64, threads: Vec<Value>) -> Value {
+        json!({
+            "pid": pid,
+            "name": name,
+            "memory": memory,
+            "cpu": 1.0,
+            "threads": threads,
+            "tabs": [],
+        })
+    }
+
+    fn thread_json(tid: u32, name: &str, cpu: f64) -> Value {
+        json!({
+            "tid": tid,
+            "name": name,
+            "cpu": cpu,
+        })
+    }
+
+    fn tab_stats(pid: u32, tid: u32, webview_id: &str, js_heap_bytes: u64) -> ScriptTabStats {
+        ScriptTabStats {
+            pid,
+            tid,
+            webview_id: webview_id.to_owned(),
+            url: "https://example.com/".to_owned(),
+            js_heap_bytes,
+            updated_ms: 1,
+        }
+    }
+
     #[test]
     fn parse_stat_reads_comm_ppid_and_cpu_ticks() {
         let stat = parse_stat(
@@ -478,8 +521,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_stat_keeps_parentheses_inside_comm() {
+        let stat = parse_stat("9 (foo (bar) baz) S 1 9 9 0 -1 0 0 0 0 0 3 4 0 0 20 0 1 0 0 0 0 0")
+            .unwrap();
+        assert_eq!(stat.comm, "foo (bar) baz");
+        assert_eq!(stat.ppid, 1);
+        assert_eq!(stat.cpu_ticks, 7);
+    }
+
+    #[test]
+    fn parse_stat_rejects_truncated_input() {
+        assert!(parse_stat("").is_none());
+        assert!(parse_stat("1234 missing-comm").is_none());
+        assert!(parse_stat("1234 (name) S 1").is_none());
+    }
+
+    #[test]
     fn display_name_uses_browser_and_content_labels() {
         assert_eq!(display_name(true, &[], "aether"), "Browser");
+        assert_eq!(
+            display_name(
+                true,
+                &["/usr/bin/aether".to_owned(), "--content-process".to_owned()],
+                "aether"
+            ),
+            "Browser"
+        );
         assert_eq!(
             display_name(
                 false,
@@ -492,12 +559,21 @@ mod tests {
             display_name(false, &["/usr/bin/helper".to_owned()], "helper"),
             "helper"
         );
+        assert_eq!(display_name(false, &[], "gpu-process"), "gpu-process");
+        assert_eq!(display_name(false, &[], ""), "Process");
+    }
+
+    #[test]
+    fn display_url_prefers_host_then_path() {
+        assert_eq!(display_url("https://example.com/path?q=1"), "example.com");
+        assert_eq!(display_url("file:///tmp/page.html"), "/tmp/page.html");
+        assert_eq!(display_url("servo:processes"), "processes");
+        assert_eq!(display_url("not a url"), "not a url");
     }
 
     #[test]
     fn cpu_percent_divides_by_core_count() {
-        let mut previous = HashMap::new();
-        previous.insert(SampleKey::Process(1), 0);
+        let previous = previous_sample(SampleKey::Process(1), 0);
         // 100 ticks in 1s at 100 Hz is 1 core-second. With 4 cores that is 25%.
         let value = cpu_percent(Some(&previous), SampleKey::Process(1), 100, 1.0, 100.0, 4.0);
         assert_eq!(value, json!(25.0));
@@ -507,21 +583,181 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_contains_processes_array() {
+    fn cpu_percent_is_null_without_a_previous_sample() {
+        assert_eq!(
+            cpu_percent(None, SampleKey::Process(1), 100, 1.0, 100.0, 4.0),
+            Value::Null
+        );
+        let previous = previous_sample(SampleKey::Process(2), 0);
+        assert_eq!(
+            cpu_percent(Some(&previous), SampleKey::Process(1), 100, 1.0, 100.0, 4.0),
+            Value::Null
+        );
+        let previous = previous_sample(SampleKey::Process(1), 0);
+        assert_eq!(
+            cpu_percent(Some(&previous), SampleKey::Process(1), 100, 0.0, 100.0, 4.0),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn cpu_percent_clamps_and_rounds() {
+        let previous = previous_sample(SampleKey::Process(1), 0);
+        assert_eq!(
+            cpu_percent(Some(&previous), SampleKey::Process(1), 800, 1.0, 100.0, 4.0),
+            json!(100.0)
+        );
+        // 13 ticks / 100 Hz / 4 cores = 3.25% -> 3.3.
+        assert_eq!(
+            cpu_percent(Some(&previous), SampleKey::Process(1), 13, 1.0, 100.0, 4.0),
+            json!(3.3)
+        );
+        let decreasing = previous_sample(SampleKey::Process(1), 50);
+        assert_eq!(
+            cpu_percent(
+                Some(&decreasing),
+                SampleKey::Process(1),
+                10,
+                1.0,
+                100.0,
+                4.0
+            ),
+            json!(0.0)
+        );
+    }
+
+    #[test]
+    fn attach_tabs_uses_title_or_url_and_falls_back_to_browser() {
+        let mut processes = vec![
+            process_json(10, "Browser", 100, vec![]),
+            process_json(20, "Content Process", 50, vec![]),
+        ];
+        let tabs = vec![
+            EmbedderTab {
+                webview_id: "tab-1".to_owned(),
+                title: "Example".to_owned(),
+                url: "https://example.com/page".to_owned(),
+            },
+            EmbedderTab {
+                webview_id: "tab-2".to_owned(),
+                title: String::new(),
+                url: "https://docs.rs/aether".to_owned(),
+            },
+        ];
+        attach_tabs_from(&mut processes, &tabs, &[]);
+
+        assert_eq!(processes[0]["tabs"][0]["name"], "Tab: Example");
+        assert_eq!(processes[0]["tabs"][0]["url"], "https://example.com/page");
+        assert!(processes[0]["tabs"][0]["memory"].is_null());
+        assert!(processes[0]["tabs"][0]["cpu"].is_null());
+        assert_eq!(processes[0]["tabs"][1]["name"], "Tab: docs.rs");
+        assert!(processes[1]["tabs"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn attach_tabs_matches_script_thread_and_hides_it() {
+        let mut processes = vec![process_json(
+            20,
+            "Content Process",
+            50,
+            vec![thread_json(7, "Script", 4.2), thread_json(8, "Layout", 1.0)],
+        )];
+        let tabs = vec![EmbedderTab {
+            webview_id: "wv-1".to_owned(),
+            title: "News".to_owned(),
+            url: "https://news.example/".to_owned(),
+        }];
+        attach_tabs_from(&mut processes, &tabs, &[tab_stats(20, 7, "wv-1", 1024)]);
+
+        assert_eq!(processes[0]["tabs"].as_array().unwrap().len(), 1);
+        assert_eq!(processes[0]["tabs"][0]["memory"], 1024);
+        assert_eq!(processes[0]["tabs"][0]["cpu"], 4.2);
+        let threads = processes[0]["threads"].as_array().unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0]["name"], "Layout");
+    }
+
+    #[test]
+    fn attach_tabs_sorts_by_memory_and_sums_cpu_across_threads() {
+        let mut processes = vec![process_json(
+            20,
+            "Content Process",
+            50,
+            vec![
+                thread_json(1, "Script A", 1.25),
+                thread_json(2, "Script B", 2.25),
+            ],
+        )];
+        let tabs = vec![
+            EmbedderTab {
+                webview_id: "small".to_owned(),
+                title: "Small".to_owned(),
+                url: "https://small.test/".to_owned(),
+            },
+            EmbedderTab {
+                webview_id: "large".to_owned(),
+                title: "Large".to_owned(),
+                url: "https://large.test/".to_owned(),
+            },
+        ];
+        let stats = vec![
+            tab_stats(20, 1, "small", 100),
+            tab_stats(20, 2, "large", 500),
+        ];
+        attach_tabs_from(&mut processes, &tabs, &stats);
+
+        let attached = processes[0]["tabs"].as_array().unwrap();
+        assert_eq!(attached[0]["name"], "Tab: Large");
+        assert_eq!(attached[0]["memory"], 500);
+        assert_eq!(attached[0]["cpu"], 2.3);
+        assert_eq!(attached[1]["name"], "Tab: Small");
+        assert_eq!(attached[1]["cpu"], 1.3);
+        assert!(processes[0]["threads"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn snapshot_json_contains_sorted_process_schema() {
         let json: Value = serde_json::from_str(&ProcessSampler::default().snapshot_json()).unwrap();
-        assert!(json["processes"].is_array());
         assert!(json["cores"].as_f64().unwrap() >= 1.0);
+        let processes = json["processes"].as_array().expect("processes array");
+        assert!(!processes.is_empty());
+
+        let mut previous_memory = u64::MAX;
+        for process in processes {
+            assert!(process["pid"].as_u64().is_some());
+            assert!(process["name"].as_str().is_some());
+            assert!(process.get("memory").is_some());
+            assert!(process.get("cpu").is_some());
+            assert!(process["cpu"].is_null(), "first sample has no CPU delta");
+            assert!(process["threads"].is_array());
+            assert!(process["tabs"].is_array());
+            assert!(process.get("memory_details").is_none());
+            let memory = process["memory"].as_u64().unwrap_or(0);
+            assert!(memory <= previous_memory);
+            previous_memory = memory;
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn linux_snapshot_includes_current_process() {
+    fn linux_snapshot_includes_current_process_tree_only() {
         let processes = collect_processes();
+        let root_pid = std::process::id();
         let current = processes
             .iter()
-            .find(|process| process.pid == std::process::id())
+            .find(|process| process.pid == root_pid)
             .expect("current process should be listed");
         assert_eq!(current.name, "Browser");
         assert!(current.memory.unwrap_or(0) > 0);
+        assert!(
+            processes
+                .iter()
+                .all(|process| process.pid != 1 || root_pid == 1),
+            "unrelated init process should not appear in the tree"
+        );
+
+        let self_stat = parse_stat(&std::fs::read_to_string("/proc/self/stat").unwrap()).unwrap();
+        assert!(!self_stat.comm.is_empty());
+        assert!(current.threads.iter().all(|thread| thread.tid != root_pid));
     }
 }

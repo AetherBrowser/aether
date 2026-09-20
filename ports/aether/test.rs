@@ -339,3 +339,17 @@ fn test_location_bar_accepts_processes_url() {
         .expect("processes URL should parse");
     assert_eq!(url.as_str(), "servo:processes");
 }
+
+#[test]
+fn processes_page_lists_sortable_columns_and_json_endpoint() {
+    let html = include_str!("../../resources/resource_protocol/processes.html");
+    assert!(html.contains("data-sort=\"name\""));
+    assert!(html.contains("data-sort=\"memory\""));
+    assert!(html.contains("data-sort=\"cpu\""));
+    assert!(html.contains("servo:process-list"));
+    assert!(html.contains("text-overflow: ellipsis"));
+    assert!(
+        !html.contains("Updating every second"),
+        "status subtitle should stay off the page"
+    );
+}

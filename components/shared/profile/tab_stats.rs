@@ -48,9 +48,9 @@ fn now_ms() -> u64 {
 pub fn current_thread_id() -> u32 {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        if let Ok(link) = fs::read_link("/proc/thread-self")
-            && let Some(name) = link.file_name().and_then(|name| name.to_str())
-            && let Ok(tid) = name.parse()
+        if let Ok(link) = fs::read_link("/proc/thread-self") &&
+            let Some(name) = link.file_name().and_then(|name| name.to_str()) &&
+            let Ok(tid) = name.parse()
         {
             return tid;
         }
@@ -99,4 +99,109 @@ pub fn collect_script_tab_stats() -> Vec<ScriptTabStats> {
 /// Current time in milliseconds since the Unix epoch.
 pub fn unix_time_ms() -> u64 {
     now_ms()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    struct Published {
+        pid: u32,
+        tid: u32,
+    }
+
+    impl Drop for Published {
+        fn drop(&mut self) {
+            unpublish_script_tab_stats(self.pid, self.tid);
+        }
+    }
+
+    fn unique_ids() -> (u32, u32) {
+        // Keep these out of the real PID range so leftover files cannot match a live process.
+        static NEXT: Mutex<u32> = Mutex::new(4_000_000);
+        let mut next = NEXT.lock().unwrap();
+        let pid = *next;
+        *next += 1;
+        (pid, pid.wrapping_add(1_000_000))
+    }
+
+    fn sample(pid: u32, tid: u32, age_ms: u64, heap: u64) -> ScriptTabStats {
+        ScriptTabStats {
+            pid,
+            tid,
+            webview_id: format!("wv-{pid}-{tid}"),
+            url: "https://example.com/".to_owned(),
+            js_heap_bytes: heap,
+            updated_ms: unix_time_ms().saturating_sub(age_ms),
+        }
+    }
+
+    #[test]
+    fn publish_then_collect_returns_fresh_stats() {
+        let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (pid, tid) = unique_ids();
+        let stats = sample(pid, tid, 0, 4096);
+        publish_script_tab_stats(&stats);
+        let _cleanup = Published { pid, tid };
+
+        let collected = collect_script_tab_stats();
+        let found = collected
+            .iter()
+            .find(|item| item.pid == pid && item.tid == tid)
+            .expect("published stats should be collected");
+        assert_eq!(found.webview_id, stats.webview_id);
+        assert_eq!(found.url, stats.url);
+        assert_eq!(found.js_heap_bytes, 4096);
+    }
+
+    #[test]
+    fn unpublish_removes_stats() {
+        let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (pid, tid) = unique_ids();
+        publish_script_tab_stats(&sample(pid, tid, 0, 1));
+        unpublish_script_tab_stats(pid, tid);
+        assert!(
+            collect_script_tab_stats()
+                .iter()
+                .all(|item| item.pid != pid || item.tid != tid)
+        );
+    }
+
+    #[test]
+    fn collect_drops_stale_and_invalid_files() {
+        let _guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (stale_pid, stale_tid) = unique_ids();
+        let (bad_pid, bad_tid) = unique_ids();
+        publish_script_tab_stats(&sample(stale_pid, stale_tid, STALE_MS + 1_000, 8));
+        let _ = fs::create_dir_all(stats_dir());
+        fs::write(stats_path(bad_pid, bad_tid), "{not-json").unwrap();
+
+        let collected = collect_script_tab_stats();
+        assert!(
+            collected
+                .iter()
+                .all(|item| item.pid != stale_pid && item.pid != bad_pid)
+        );
+        assert!(!stats_path(stale_pid, stale_tid).exists());
+        assert!(!stats_path(bad_pid, bad_tid).exists());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn current_thread_id_matches_proc() {
+        let tid = current_thread_id();
+        assert_ne!(tid, 0);
+        let link = fs::read_link("/proc/thread-self").unwrap();
+        let expected = link
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        assert_eq!(tid, expected);
+    }
 }
