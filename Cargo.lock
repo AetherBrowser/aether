@@ -9273,6 +9273,7 @@ dependencies = [
  "log",
  "malloc_size_of_derive",
  "serde",
+ "serde_json",
  "servo-allocator",
  "servo-base",
  "servo-malloc-size-of",

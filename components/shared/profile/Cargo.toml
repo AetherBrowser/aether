@@ -23,6 +23,7 @@ log = { workspace = true }
 malloc_size_of = { workspace = true }
 malloc_size_of_derive = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 servo-allocator = { workspace = true }
 servo-base = { workspace = true }
 time = { workspace = true }
