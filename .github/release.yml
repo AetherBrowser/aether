@@ -5,3 +5,4 @@ changelog:
     authors:
       - dependabot[bot]
       - servo-wpt-sync
+      - github-actions[bot]
