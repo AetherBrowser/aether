@@ -1,28 +1,28 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="Servo Tech Demo"
-           Manufacturer="The Servo Authors"
-           UpgradeCode="060cd15d-eab1-4614-b438-3988e3efdcf1"
+  <Package Name="Aether"
+           Manufacturer="The Aether Project Developers"
+           UpgradeCode="7c3a9e2f-4b81-4d6a-9f13-2e8c5a1b0d47"
            Language="1033"
            Codepage="1252"
            Version="0.6.0"
            InstallerVersion="200">
     <SummaryInformation Keywords="Installer"
-                        Description="Servo Tech Demo Installer"
-                        Manufacturer="The Servo Authors"/>
+                        Description="Aether Installer"
+                        Manufacturer="The Aether Project Developers"/>
     <MajorUpgrade AllowDowngrades="yes"/>
     <Media Id="1"
-           Cabinet="Servo.cab"
+           Cabinet="Aether.cab"
            EmbedCab="yes"/>
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="Servo" Name="Servo">
-        <Directory Id="INSTALLDIR" Name="Servo Tech Demo">
-            <Component Id="Servo"
-                       Guid="95bcea71-78bb-4ec8-9766-44bc01443840"
+      <Directory Id="Aether" Name="Aether">
+        <Directory Id="INSTALLDIR" Name="Aether">
+            <Component Id="Aether"
+                       Guid="a14f6c82-9e30-4c5b-b7d1-6f2a8e4c91b5"
                        Bitness="always64">
-              <File Id="ServoEXE"
-                    Name="servoshell.exe"
+              <File Id="AetherEXE"
+                    Name="${binary_name}"
                     DiskId="1"
-                    Source="${windowize(exe_path)}\servoshell.exe"
+                    Source="${windowize(exe_path)}\${binary_name}"
                     KeyPath="yes">
               </File>
 	            ${include_dependencies()}
@@ -34,33 +34,33 @@
       </StandardDirectory>
 
       <StandardDirectory Id="ProgramMenuFolder">
-        <Directory Id="ProgramMenuDir" Name="Servo Tech Demo">
-          <Component Id="ProgramMenuDir" Guid="e04737ce-16eb-4977-9b4c-ed2db8a5a77d">
+        <Directory Id="ProgramMenuDir" Name="Aether">
+          <Component Id="ProgramMenuDir" Guid="d8b2e1a4-5c70-4f19-8a3e-1b6d9c4f2e80">
             <RemoveFolder Id="ProgramMenuDir" On="both"/>
             <RegistryValue Root="HKCU"
-                           Key="Software\Servo\Servo Tech Demo"
+                           Key="Software\Aether\Aether"
                            Type="string"
                            Value=""
                            KeyPath="yes"/>
-            <Shortcut Id="StartMenuServoTechDemo"
+            <Shortcut Id="StartMenuAether"
               Directory="ProgramMenuDir"
-              Name="Servo Tech Demo"
-              Target="[INSTALLDIR]servoshell.exe"
+              Name="Aether"
+              Target="[INSTALLDIR]${binary_name}"
               WorkingDirectory="INSTALLDIR"
-              Icon="servoshell.exe"/>
+              Icon="${binary_name}"/>
           </Component>
         </Directory>
       </StandardDirectory>
 
       <Feature Id="Complete" Level="1">
-        <ComponentRef Id="Servo"/>
+        <ComponentRef Id="Aether"/>
          % for c in components:
          <ComponentRef Id="${c}"/>
          % endfor
         <ComponentRef Id="ProgramMenuDir"/>
       </Feature>
 
-      <Icon Id="servoshell.exe" SourceFile="${windowize(exe_path)}\servoshell.exe"/>
+      <Icon Id="${binary_name}" SourceFile="${windowize(exe_path)}\${binary_name}"/>
     </Package>
 </Wix>
 <%!
@@ -68,7 +68,6 @@ import os
 import os.path as path
 import re
 import uuid
-from servo.platform import host_triple
 
 def make_id(s):
     s = s.replace("-", "_").replace("/", "_").replace("\\", "_")
@@ -82,8 +81,8 @@ def listdirs(directory):
     return [f for f in os.listdir(directory)
             if path.isdir(path.join(directory, f))]
 
-def listdeps(temp_dir):
-    return [path.join(temp_dir, f) for f in os.listdir(temp_dir) if os.path.isfile(path.join(temp_dir, f)) and f != "servoshell.exe"]
+def listdeps(temp_dir, exe_name):
+    return [path.join(temp_dir, f) for f in os.listdir(temp_dir) if os.path.isfile(path.join(temp_dir, f)) and f != exe_name]
 
 def windowize(p):
     if not p.startswith("/"):
@@ -94,7 +93,7 @@ components = []
 %>
 
 <%def name="include_dependencies()">
-% for f in listdeps(dir_to_temp):
+% for f in listdeps(dir_to_temp, binary_name):
               <File Id="${make_id(path.basename(f)).replace(".","").replace("+","x")}"
                     Name="${path.basename(f)}"
                     Source="${f}"

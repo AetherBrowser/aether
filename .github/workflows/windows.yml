@@ -236,14 +236,14 @@ jobs:
         run: .\mach package --profile ${{ inputs.profile }}
       # These files are available
       # MSI Installer: C:\a\aether\aether\target\${{ inputs.profile }}\msi\Installer.msi
-      # Bundle: C:\a\aether\aether\target\${{ inputs.profile }}\msi\ServoShell.exe
-      # Zip: C:\a\aether\aether\target\${{ inputs.profile }}\msi\ServoShell.zip
+      # Bundle: C:\a\aether\aether\target\${{ inputs.profile }}\msi\Aether.exe
+      # Zip: C:\a\aether\aether\target\${{ inputs.profile }}\msi\Aether.zip
       - name: Upload artifact for mach package
         uses: actions/upload-artifact@v7
         id: upload-exe
         with:
           name: ${{ inputs.profile }}-binary-windows
-          path: C:\\a\\aether\\aether\\target\\${{ inputs.profile }}\\msi\\ServoShell.exe
+          path: C:\\a\\aether\\aether\\target\\${{ inputs.profile }}\\msi\\Aether.exe
           if-no-files-found: error
       - name: Upload artifact for mach package (zip)
         uses: actions/upload-artifact@v7
@@ -251,7 +251,7 @@ jobs:
         if: ${{ inputs.upload_zip }}
         with:
           name: ${{ inputs.profile }}-binary-windows-zip
-          path: C:\\a\\aether\\aether\\target\\${{ inputs.profile }}\\msi\\ServoShell.zip
+          path: C:\\a\\aether\\aether\\target\\${{ inputs.profile }}\\msi\\Aether.zip
           if-no-files-found: error
       - name: Collect artifact IDs needed by the release workflow
         id: artifact_ids
@@ -271,7 +271,7 @@ jobs:
       target: 'windows'
       profile: ${{ inputs.profile }}
       compressed-file-path: ''
-      binary-path: ${{ inputs.profile }}-binary-windows/ServoShell.exe
+      binary-path: ${{ inputs.profile }}-binary-windows/Aether.exe
       file-size: true
       speedometer: false
       dromaeo: false

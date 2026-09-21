@@ -1,11 +1,11 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
-  <Bundle Name="ServoShell"
+  <Bundle Name="Aether"
           Version="1.0"
-          UpgradeCode="91b09c7e-6c0d-4166-b806-1dc724acf728">
+          UpgradeCode="3e9f1c7a-2d46-4b8e-a015-7c4d8e2f6a91">
 
     <Variable Name="InstallFolder"
           Type="formatted"
-          Value="[ProgramFiles64Folder]Servo\Servo Tech Demo"
+          Value="[ProgramFiles64Folder]Aether\Aether"
           bal:Overridable="yes" />
 
     <BootstrapperApplication>
@@ -18,7 +18,7 @@
       <MsiPackage
           SourceFile="Installer.msi"
           Compressed="yes"
-          DisplayName="ServoShell"
+          DisplayName="Aether"
           ForcePerMachine="yes">
         <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
       </MsiPackage>
