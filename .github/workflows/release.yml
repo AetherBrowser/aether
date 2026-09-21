@@ -34,7 +34,7 @@ env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   RELEASE_ASSET_PREFIX: aether
-  RELEASE_REPO: ${{ github.repository_owner }}/${{ inputs.regular_release && 'aether' || 'aether-nightly-build' }}
+  RELEASE_REPO: ${{ github.repository_owner }}/${{ inputs.regular_release && 'aether' || 'aether-nightly-builds' }}
 
 jobs:
   create-draft-release:
@@ -134,9 +134,9 @@ jobs:
       # - build-android
       - build-linux
       - build-linux-arm64
-      # - build-mac
-      # - build-mac-arm64
-      # - build-ohos
+      - build-mac
+      - build-mac-arm64
+      - build-ohos
       - build-win
 
   publish-crates-io:
@@ -238,35 +238,35 @@ jobs:
     needs: &upload-artifacts-needs
       - create-draft-release
       - build-win
-      # - build-mac
-      # - build-mac-arm64
+      - build-mac
+      - build-mac-arm64
       - build-linux
       - build-linux-arm64
       # - build-android
-      # - build-ohos
+      - build-ohos
     strategy: &upload-artifacts-strategy
       fail-fast: false
       matrix:
         include:
           - artifact_ids: ${{ needs.build-win.outputs.artifact_ids }}
             artifact_platform: windows-msvc
-          # - artifact_ids: ${{ needs.build-mac.outputs.artifact_ids }}
-          #   artifact_platform: mac
-          # - artifact_ids: ${{ needs.build-mac-arm64.outputs.artifact_ids }}
-          #   artifact_platform: mac-arm64
+          - artifact_ids: ${{ needs.build-mac.outputs.artifact_ids }}
+            artifact_platform: mac
+          - artifact_ids: ${{ needs.build-mac-arm64.outputs.artifact_ids }}
+            artifact_platform: mac-arm64
           - artifact_ids: ${{ needs.build-linux.outputs.artifact_ids }}
             artifact_platform: linux
           - artifact_ids: ${{ needs.build-linux-arm64.outputs.artifact_ids }}
             artifact_platform: linux-arm64
           # - artifact_ids: ${{ needs.build-android.outputs.artifact_ids }}
           #   artifact_platform: android
-          # - artifact_ids: ${{ needs.build-ohos.outputs.artifact_ids }}
-          #   artifact_platform: ohos
+          - artifact_ids: ${{ needs.build-ohos.outputs.artifact_ids }}
+            artifact_platform: ohos
     env:
       ARTIFACT_IDS: ${{ matrix.artifact_ids }}
       ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
       GITHUB_RELEASE_ID: ${{ needs.create-draft-release.outputs.release-id }}
-      RELEASE_REPO: ${{ github.repository_owner }}/aether-nightly-build
+      RELEASE_REPO: ${{ github.repository_owner }}/aether-nightly-builds
       RELEASE_REPO_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
       RELEASE_ASSET_PREFIX: aether
       S3_UPLOAD_CREDENTIALS: ${{ secrets.S3_UPLOAD_CREDENTIALS }}
@@ -326,23 +326,23 @@ jobs:
     steps: *upload-artifacts-steps
 
 
-  # build-mac:
-  #   # This job is only useful when run on upstream aether.
-  #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (macOS)
-  #   uses: ./.github/workflows/mac.yml
-  #   with:
-  #     profile: "production"
-  #     force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+  build-mac:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (macOS)
+    uses: ./.github/workflows/mac.yml
+    with:
+      profile: "production"
+      force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
-  # build-mac-arm64:
-  #   # This job is only useful when run on upstream aether.
-  #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (macOS Arm64)
-  #   uses: ./.github/workflows/mac-arm64.yml
-  #   with:
-  #     profile: "production"
-  #     force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+  build-mac-arm64:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (macOS Arm64)
+    uses: ./.github/workflows/mac-arm64.yml
+    with:
+      profile: "production"
+      force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
   build-linux:
     # This job is only useful when run on upstream aether.
@@ -371,12 +371,12 @@ jobs:
   #     profile: "production"
   #   secrets: inherit
 
-  # build-ohos:
-  #   # This job is only useful when run on upstream aether.
-  #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (OpenHarmony)
-  #   uses: ./.github/workflows/ohos.yml
-  #   with:
-  #     profile: "production"
-  #     upload_library: true
-  #   secrets: inherit
+  build-ohos:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (OpenHarmony)
+    uses: ./.github/workflows/ohos.yml
+    with:
+      profile: "production"
+      upload_library: true
+    secrets: inherit
