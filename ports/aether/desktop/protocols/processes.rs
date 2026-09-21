@@ -4,12 +4,7 @@
 
 //! Snapshot of the browser process tree for `servo:processes`.
 
-#[cfg(any(
-    test,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "windows"
-))]
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -284,7 +279,7 @@ fn display_url(url: &str) -> String {
 }
 
 fn collect_processes() -> Vec<RawProcess> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     {
         collect_linux_process_tree()
     }
@@ -292,7 +287,11 @@ fn collect_processes() -> Vec<RawProcess> {
     {
         collect_windows_process_tree()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        collect_macos_process_tree()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         collect_fallback()
     }
@@ -309,7 +308,7 @@ fn collect_fallback() -> Vec<RawProcess> {
     }]
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn collect_linux_process_tree() -> Vec<RawProcess> {
     let root_pid = std::process::id();
     let mut by_pid = HashMap::new();
@@ -335,12 +334,7 @@ fn collect_linux_process_tree() -> Vec<RawProcess> {
     keep_descendant_processes(root_pid, by_pid)
 }
 
-#[cfg(any(
-    test,
-    target_os = "linux",
-    target_os = "android",
-    target_os = "windows"
-))]
+#[cfg(any(test, target_os = "linux", target_os = "windows"))]
 fn descendant_pids(root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> HashSet<u32> {
     let mut keep = HashSet::from([root_pid]);
     let mut queue = VecDeque::from([root_pid]);
@@ -367,7 +361,7 @@ fn sampled_process_pids(root_pid: u32, parent_by_pid: &HashMap<u32, u32>) -> Opt
         .then(|| descendant_pids(root_pid, parent_by_pid))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn keep_descendant_processes(root_pid: u32, by_pid: HashMap<u32, RawProcess>) -> Vec<RawProcess> {
     let parent_by_pid: HashMap<u32, u32> = by_pid
         .iter()
@@ -635,7 +629,257 @@ mod windows_sampler {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "macos")]
+fn collect_macos_process_tree() -> Vec<RawProcess> {
+    macos_sampler::collect()
+}
+
+#[cfg(target_os = "macos")]
+mod macos_sampler {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::mem::{MaybeUninit, size_of};
+    use std::path::Path;
+    use std::ptr;
+
+    use super::{RawProcess, RawThread, display_name, parse_procargs2};
+
+    const PROC_PIDLISTTHREADS: libc::c_int = 6;
+
+    pub(super) fn collect() -> Vec<RawProcess> {
+        let root_pid = std::process::id();
+        let Some(root) = read_macos_process(root_pid, true, None) else {
+            return super::collect_fallback();
+        };
+        let root_exe = process_image_path(root_pid).unwrap_or_default();
+        let mut by_pid = HashMap::new();
+        by_pid.insert(root_pid, root);
+        for pid in descendant_pids(root_pid) {
+            if pid == root_pid {
+                continue;
+            }
+            if let Some(process) = read_macos_process(pid, false, Some(&root_exe)) {
+                by_pid.insert(pid, process);
+            }
+        }
+        by_pid.into_values().collect()
+    }
+
+    fn descendant_pids(root_pid: u32) -> HashSet<u32> {
+        let mut keep = HashSet::from([root_pid]);
+        let mut queue = VecDeque::from([root_pid]);
+        while let Some(pid) = queue.pop_front() {
+            for child in list_child_pids(pid) {
+                if keep.insert(child) {
+                    queue.push_back(child);
+                }
+            }
+        }
+        keep
+    }
+
+    fn list_child_pids(ppid: u32) -> Vec<u32> {
+        let needed = unsafe { libc::proc_listchildpids(ppid as libc::pid_t, ptr::null_mut(), 0) };
+        if needed <= 0 {
+            return Vec::new();
+        }
+        let count = (needed as usize / size_of::<libc::pid_t>()).saturating_add(8);
+        let mut buf = vec![0 as libc::pid_t; count];
+        let written = unsafe {
+            libc::proc_listchildpids(
+                ppid as libc::pid_t,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * size_of::<libc::pid_t>()) as libc::c_int,
+            )
+        };
+        if written <= 0 {
+            return Vec::new();
+        }
+        buf.into_iter()
+            .take(written as usize / size_of::<libc::pid_t>())
+            .filter_map(|pid| (pid > 0).then_some(pid as u32))
+            .collect()
+    }
+
+    fn read_macos_process(pid: u32, is_root: bool, root_exe: Option<&str>) -> Option<RawProcess> {
+        let info = proc_taskallinfo(pid)?;
+        let image = process_image_path(pid).unwrap_or_else(|| process_comm(&info));
+        let mut cmdline = read_macos_cmdline(pid);
+        if cmdline.is_empty() {
+            cmdline.push(image.clone());
+            if !is_root &&
+                let Some(root_exe) = root_exe &&
+                Path::new(&image).file_name().is_some() &&
+                Path::new(&image).file_name() == Path::new(root_exe).file_name()
+            {
+                cmdline.push("--content-process".to_owned());
+            }
+        }
+        let comm = Path::new(&image)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| process_comm(&info));
+        Some(RawProcess {
+            pid,
+            ppid: info.pbsd.pbi_ppid,
+            name: display_name(is_root, &cmdline, &comm),
+            memory: Some(info.ptinfo.pti_resident_size),
+            cpu_ticks: info
+                .ptinfo
+                .pti_total_user
+                .saturating_add(info.ptinfo.pti_total_system),
+            threads: list_thread_ids(pid)
+                .into_iter()
+                .filter(|&tid| tid != u64::from(pid))
+                .filter_map(|thread_id| read_macos_thread(pid, thread_id))
+                .collect(),
+        })
+    }
+
+    fn read_macos_thread(pid: u32, thread_id: u64) -> Option<RawThread> {
+        let info = proc_threadinfo(pid, thread_id)?;
+        let name = c_chars_to_string(&info.pth_name);
+        Some(RawThread {
+            tid: thread_id as u32,
+            name: if name.is_empty() {
+                format!("Thread {thread_id}")
+            } else {
+                name
+            },
+            cpu_ticks: info.pth_user_time.saturating_add(info.pth_system_time),
+        })
+    }
+
+    fn list_thread_ids(pid: u32) -> Vec<u64> {
+        let needed = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                PROC_PIDLISTTHREADS,
+                0,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if needed <= 0 {
+            return Vec::new();
+        }
+        let count = (needed as usize / size_of::<u64>()).saturating_add(8);
+        let mut buf = vec![0u64; count];
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                PROC_PIDLISTTHREADS,
+                0,
+                buf.as_mut_ptr().cast(),
+                (buf.len() * size_of::<u64>()) as libc::c_int,
+            )
+        };
+        if written <= 0 {
+            return Vec::new();
+        }
+        buf.into_iter()
+            .take(written as usize / size_of::<u64>())
+            .filter(|tid| *tid != 0)
+            .collect()
+    }
+
+    fn proc_taskallinfo(pid: u32) -> Option<libc::proc_taskallinfo> {
+        let mut info = MaybeUninit::<libc::proc_taskallinfo>::uninit();
+        let size = size_of::<libc::proc_taskallinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTASKALLINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        (written == size).then(|| unsafe { info.assume_init() })
+    }
+
+    fn proc_threadinfo(pid: u32, thread_id: u64) -> Option<libc::proc_threadinfo> {
+        let mut info = MaybeUninit::<libc::proc_threadinfo>::uninit();
+        let size = size_of::<libc::proc_threadinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTHREADINFO,
+                thread_id,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        (written == size).then(|| unsafe { info.assume_init() })
+    }
+
+    fn process_image_path(pid: u32) -> Option<String> {
+        let mut buf = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let written = unsafe {
+            libc::proc_pidpath(
+                pid as libc::c_int,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+            )
+        };
+        (written > 0).then(|| String::from_utf8_lossy(&buf[..written as usize]).into_owned())
+    }
+
+    fn process_comm(info: &libc::proc_taskallinfo) -> String {
+        let name = c_chars_to_string(&info.pbsd.pbi_name);
+        if name.is_empty() {
+            c_chars_to_string(&info.pbsd.pbi_comm)
+        } else {
+            name
+        }
+    }
+
+    fn read_macos_cmdline(pid: u32) -> Vec<String> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        let mut size = 0usize;
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                ptr::null_mut(),
+                &mut size,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 || size < 4 {
+            return Vec::new();
+        }
+        let mut buf = vec![0u8; size];
+        let status = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                buf.as_mut_ptr().cast(),
+                &mut size,
+                ptr::null_mut(),
+                0,
+            )
+        };
+        if status != 0 || size < 4 {
+            return Vec::new();
+        }
+        buf.truncate(size);
+        parse_procargs2(&buf)
+    }
+
+    fn c_chars_to_string(buf: &[libc::c_char]) -> String {
+        let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.len()) };
+        let end = bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn read_linux_process(pid: u32, is_root: bool) -> Option<RawProcess> {
     let stat = parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
     let cmdline = read_cmdline(pid);
@@ -668,7 +912,7 @@ fn read_linux_process(pid: u32, is_root: bool) -> Option<RawProcess> {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn read_linux_thread(pid: u32, tid: u32) -> Option<RawThread> {
     let comm = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/comm"))
         .ok()?
@@ -682,7 +926,7 @@ fn read_linux_thread(pid: u32, tid: u32) -> Option<RawThread> {
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn read_cmdline(pid: u32) -> Vec<String> {
     std::fs::read(format!("/proc/{pid}/cmdline"))
         .unwrap_or_default()
@@ -692,14 +936,14 @@ fn read_cmdline(pid: u32) -> Vec<String> {
         .collect()
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn read_rss_bytes(pid: u32) -> Option<u64> {
     let contents = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
     let resident_pages: u64 = contents.split_whitespace().nth(1)?.parse().ok()?;
     Some(resident_pages.saturating_mul(page_size()))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(target_os = "linux")]
 fn page_size() -> u64 {
     let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if size > 0 { size as u64 } else { 4096 }
@@ -713,7 +957,7 @@ fn cpu_core_count() -> f64 {
 }
 
 fn clock_ticks_per_second() -> f64 {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     {
         let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
         if ticks > 0 { ticks as f64 } else { 100.0 }
@@ -723,26 +967,25 @@ fn clock_ticks_per_second() -> f64 {
         // GetProcessTimes / GetThreadTimes use 100-nanosecond FILETIME units.
         10_000_000.0
     }
-    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        // libproc task/thread times are nanoseconds.
+        1_000_000_000.0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         100.0
     }
 }
 
-#[cfg_attr(
-    not(any(test, target_os = "linux", target_os = "android")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 struct StatFields {
     comm: String,
     ppid: u32,
     cpu_ticks: u64,
 }
 
-#[cfg_attr(
-    not(any(test, target_os = "linux", target_os = "android")),
-    allow(dead_code)
-)]
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 fn parse_stat(contents: &str) -> Option<StatFields> {
     let start = contents.find('(')?;
     let end = contents.rfind(')')?;
@@ -759,6 +1002,40 @@ fn parse_stat(contents: &str) -> Option<StatFields> {
         ppid,
         cpu_ticks: utime.saturating_add(stime),
     })
+}
+
+#[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))]
+fn parse_procargs2(buf: &[u8]) -> Vec<String> {
+    if buf.len() < 4 {
+        return Vec::new();
+    }
+    let argc = i32::from_ne_bytes(buf[0..4].try_into().unwrap_or_default());
+    if argc <= 0 {
+        return Vec::new();
+    }
+    let mut pos = 4;
+    while pos < buf.len() && buf[pos] != 0 {
+        pos += 1;
+    }
+    pos += 1;
+    while pos < buf.len() && buf[pos] == 0 {
+        pos += 1;
+    }
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        if pos >= buf.len() {
+            break;
+        }
+        let start = pos;
+        while pos < buf.len() && buf[pos] != 0 {
+            pos += 1;
+        }
+        if start < pos {
+            args.push(String::from_utf8_lossy(&buf[start..pos]).into_owned());
+        }
+        pos += 1;
+    }
+    args
 }
 
 fn display_name(is_root: bool, cmdline: &[String], comm: &str) -> String {
@@ -875,6 +1152,24 @@ mod tests {
         );
         assert_eq!(display_name(false, &[], "gpu-process"), "gpu-process");
         assert_eq!(display_name(false, &[], ""), "Process");
+    }
+
+    #[test]
+    fn parse_procargs2_reads_argc_and_argv() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3i32.to_ne_bytes());
+        buf.extend_from_slice(b"/usr/bin/aether\0\0\0");
+        buf.extend_from_slice(b"/usr/bin/aether\0--content-process\0ipc-name\0");
+        assert_eq!(
+            parse_procargs2(&buf),
+            vec![
+                "/usr/bin/aether".to_owned(),
+                "--content-process".to_owned(),
+                "ipc-name".to_owned()
+            ]
+        );
+        assert!(parse_procargs2(&[]).is_empty());
+        assert!(parse_procargs2(&0i32.to_ne_bytes()).is_empty());
     }
 
     #[test]
@@ -1093,7 +1388,7 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn raw_process(pid: u32, ppid: u32) -> RawProcess {
         RawProcess {
             pid,
@@ -1135,7 +1430,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "windows"))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn keep_descendant_processes_drops_unrelated_pids() {
         let mut by_pid = HashMap::new();
@@ -1150,7 +1445,7 @@ mod tests {
         assert_eq!(pids, vec![10, 11]);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_snapshot_includes_current_process_tree_only() {
         let processes = collect_processes();
@@ -1192,5 +1487,27 @@ mod tests {
             current.cpu_ticks > 0,
             "the current process should have consumed some CPU time"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_snapshot_includes_current_process_tree_only() {
+        let processes = collect_processes();
+        let root_pid = std::process::id();
+        let current = processes
+            .iter()
+            .find(|process| process.pid == root_pid)
+            .expect("current process should be listed");
+        assert_eq!(current.name, "Browser");
+        assert!(current.memory.unwrap_or(0) > 0);
+        assert!(
+            processes.iter().all(|process| process.pid != 0),
+            "kernel_task should not appear in the tree"
+        );
+        assert!(
+            current.cpu_ticks > 0,
+            "the current process should have consumed some CPU time"
+        );
+        assert!(current.threads.iter().all(|thread| thread.tid != root_pid));
     }
 }

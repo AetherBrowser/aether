@@ -66,6 +66,20 @@ pub fn current_thread_id() -> u32 {
             return unsafe { GetCurrentThreadId() };
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        #[allow(unsafe_code)]
+        {
+            unsafe extern "C" {
+                fn pthread_threadid_np(thread: usize, thread_id: *mut u64) -> i32;
+            }
+            let mut tid = 0u64;
+            // SAFETY: a null pthread_t (0) queries the calling thread.
+            if unsafe { pthread_threadid_np(0, &mut tid) } == 0 && tid != 0 {
+                return tid as u32;
+            }
+        }
+    }
     #[cfg(not(target_os = "windows"))]
     {
         std::process::id()
