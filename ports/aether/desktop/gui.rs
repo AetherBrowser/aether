@@ -57,7 +57,7 @@ use winit::window::Window;
 
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
-use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache, add_toolbar_button};
+use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::ServoShellWindow;
@@ -316,16 +316,12 @@ impl Gui {
         self.app_menu.is_open()
     }
 
-    /// Create a toolbar button: icon/text at rest, rounded square on hover, darker on press.
-    fn toolbar_button(text: &str) -> egui::Button<'_> {
-        egui::Button::new(text)
-    }
-
     /// Draws a browser tab, checking for clicks and queues appropriate [`UserInterfaceCommand`]s.
     /// Using a custom widget here would've been nice, but it doesn't seem as though egui
     /// supports that, so we arrange multiple Widgets in a way that they look connected.
     fn browser_tab(
         ui: &mut egui::Ui,
+        toolbar_icons: &mut ToolbarIconCache,
         window: &ServoShellWindow,
         webview: WebView,
         favicon_texture: Option<egui::load::SizedTexture>,
@@ -381,9 +377,11 @@ impl Gui {
                     ui.label(&label);
                 });
 
-            let close_button = tab_frame
-                .content_ui
-                .add(egui::Button::new("X").fill(egui::Color32::TRANSPARENT));
+            let close_button = tab_frame.content_ui.add(
+                toolbar_icons
+                    .image_button(&tab_frame.content_ui, ToolbarIcon::Close)
+                    .fill(egui::Color32::TRANSPARENT),
+            );
             close_button.widget_info(|| {
                 let mut info = WidgetInfo::new(WidgetType::Button);
                 info.label = Some("Close".into());
@@ -626,11 +624,18 @@ impl Gui {
                                             .get(&id)
                                             .map(|(_, favicon)| favicon)
                                             .copied();
-                                        Self::browser_tab(ui, window, webview, favicon);
+                                        Self::browser_tab(
+                                            ui,
+                                            toolbar_icons,
+                                            window,
+                                            webview,
+                                            favicon,
+                                        );
                                     }
 
-                                    let new_tab_button =
-                                        add_toolbar_button(ui, Gui::toolbar_button("+"));
+                                    let new_tab_button = toolbar_icons
+                                        .button(ui, ToolbarIcon::Plus)
+                                        .on_hover_text("New tab");
                                     new_tab_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
                                         info.label = Some("New tab".into());
@@ -639,19 +644,6 @@ impl Gui {
                                     if new_tab_button.clicked() {
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::NewWebView,
-                                        );
-                                    }
-
-                                    let new_window_button =
-                                        add_toolbar_button(ui, Gui::toolbar_button("⊞"));
-                                    new_window_button.widget_info(|| {
-                                        let mut info = WidgetInfo::new(WidgetType::Button);
-                                        info.label = Some("New window".into());
-                                        info
-                                    });
-                                    if new_window_button.clicked() {
-                                        window.queue_user_interface_command(
-                                            UserInterfaceCommand::NewWindow,
                                         );
                                     }
                                 },
