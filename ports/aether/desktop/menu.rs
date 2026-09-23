@@ -166,4 +166,19 @@ mod tests {
         assert!(!menu.is_open());
         assert!(!menu.contains_pointer(Point2D::new(0.0, 0.0)));
     }
+
+    #[test]
+    fn open_menu_contains_pointer_only_inside_its_rect() {
+        let mut menu = AppMenu::default();
+        menu.open = true;
+        menu.rect = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(110.0, 80.0));
+
+        assert!(menu.contains_pointer(Point2D::new(10.0, 20.0)));
+        assert!(menu.contains_pointer(Point2D::new(60.0, 40.0)));
+        assert!(!menu.contains_pointer(Point2D::new(0.0, 0.0)));
+        assert!(!menu.contains_pointer(Point2D::new(110.0, 40.0)));
+
+        menu.open = false;
+        assert!(!menu.contains_pointer(Point2D::new(60.0, 40.0)));
+    }
 }
