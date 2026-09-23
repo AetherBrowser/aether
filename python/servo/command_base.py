@@ -368,9 +368,7 @@ class CommandBase(object):
             self._alias_packaged_cdylib(output_dir, binary_name)
 
         if not path.exists(binary_path):
-            raise BuildNotFound(
-                f"No Servo binary found at `{binary_path}`. Perhaps you forgot to run `./mach build`?"
-            )
+            raise BuildNotFound(f"No Servo binary found at `{binary_path}`. Perhaps you forgot to run `./mach build`?")
 
         return binary_path
 
