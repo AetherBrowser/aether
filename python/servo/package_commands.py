@@ -285,7 +285,7 @@ class PackageCommands(CommandBase):
             print("Copying files")
             copy_packaged_resources(dir_to_root, dir_to_resources)
             shutil.copy2(
-                path.join(dir_to_root, "ports/servoshell/platform/macos/Info.plist"),
+                path.join(dir_to_root, "ports", self.port.value, "platform", "macos", "Info.plist"),
                 path.join(dir_to_app, "Contents", "Info.plist"),
             )
 
@@ -295,7 +295,7 @@ class PackageCommands(CommandBase):
             shutil.copy2(binary_path, content_dir)
 
             print("Packaging GStreamer...")
-            dmg_binary = path.join(content_dir, "servoshell")
+            dmg_binary = path.join(content_dir, path.basename(binary_path))
             servo.gstreamer.package_gstreamer_dylibs(dmg_binary, lib_dir, self.target)
 
             print("Adding version to Credits.rtf")
