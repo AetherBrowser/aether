@@ -318,6 +318,14 @@ impl Gui {
         self.app_menu.is_open()
     }
 
+    /// Whether the pointer is over the open application menu, which overlays the page.
+    pub(crate) fn app_menu_contains_pointer(
+        &self,
+        position: Point2D<f32, DeviceIndependentPixel>,
+    ) -> bool {
+        self.app_menu.contains_pointer(position)
+    }
+
     /// Draws a browser tab, checking for clicks and queues appropriate [`UserInterfaceCommand`]s.
     /// Using a custom widget here would've been nice, but it doesn't seem as though egui
     /// supports that, so we arrange multiple Widgets in a way that they look connected.
