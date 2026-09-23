@@ -9,22 +9,35 @@
 //! - servo:config
 //! - servo:newtab
 //! - servo:preferences
+//! - servo:processes
+//! - servo:process-list
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Mutex;
 
 use headers::{ContentType, HeaderMapExt};
 use servo::UserAgentPlatform;
 use servo::protocol_handler::{
-    DoneChannel, FetchContext, NetworkError, ProtocolHandler, Request, ResourceFetchTiming,
-    Response, ResponseBody,
+    DoneChannel, FetchContext, NetworkError, Origin, ProtocolHandler, Referrer, Request,
+    ResourceFetchTiming, Response, ResponseBody,
 };
 
+use crate::desktop::protocols::processes::ProcessSampler;
 use crate::desktop::protocols::resource::ResourceProtocolHandler;
 use crate::prefs::EXPERIMENTAL_PREFS;
 
-#[derive(Default)]
-pub struct ServoProtocolHandler {}
+pub struct ServoProtocolHandler {
+    process_sampler: Mutex<ProcessSampler>,
+}
+
+impl Default for ServoProtocolHandler {
+    fn default() -> Self {
+        Self {
+            process_sampler: Mutex::new(ProcessSampler::default()),
+        }
+    }
+}
 
 impl ProtocolHandler for ServoProtocolHandler {
     fn privileged_paths(&self) -> &'static [&'static str] {
@@ -71,6 +84,26 @@ impl ProtocolHandler for ServoProtocolHandler {
                 "/license.html",
             ),
 
+            "processes" => ResourceProtocolHandler::response_for_path(
+                request,
+                done_chan,
+                context,
+                "/processes.html",
+            ),
+
+            "process-list" => {
+                if request_is_from_web_content(request) {
+                    return Box::pin(std::future::ready(Response::network_error(
+                        NetworkError::ResourceLoadError("Forbidden".to_owned()),
+                    )));
+                }
+                let body = match self.process_sampler.lock() {
+                    Ok(mut sampler) => sampler.snapshot_json(),
+                    Err(poisoned) => poisoned.into_inner().snapshot_json(),
+                };
+                json_response(request, body)
+            },
+
             "experimental-preferences" => {
                 let pref_list = EXPERIMENTAL_PREFS
                     .iter()
@@ -89,6 +122,22 @@ impl ProtocolHandler for ServoProtocolHandler {
                 NetworkError::ResourceLoadError("Invalid shortcut".to_owned()),
             ))),
         }
+    }
+}
+
+fn request_is_from_web_content(request: &Request) -> bool {
+    fn is_web_scheme(scheme: &str) -> bool {
+        matches!(scheme, "http" | "https" | "ftp" | "ws" | "wss")
+    }
+
+    if let Origin::Origin(origin) = &request.origin &&
+        origin.scheme().is_some_and(is_web_scheme)
+    {
+        return true;
+    }
+    match &request.referrer {
+        Referrer::Client(url) | Referrer::ReferrerUrl(url) => is_web_scheme(url.scheme()),
+        Referrer::NoReferrer => false,
     }
 }
 

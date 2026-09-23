@@ -179,8 +179,34 @@ impl App {
             self.state = AppState::ShuttingDown;
             return false;
         }
+        publish_open_tabs(state);
         true
     }
+}
+
+fn publish_open_tabs(state: &RunningAppState) {
+    let mut tabs = Vec::new();
+    for window in state.windows().values() {
+        for (webview_id, webview) in window.webviews() {
+            let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
+            let title = webview
+                .page_title()
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| {
+                    if url.is_empty() {
+                        "New Tab".to_owned()
+                    } else {
+                        url.clone()
+                    }
+                });
+            tabs.push(protocols::processes::EmbedderTab {
+                webview_id: webview_id.to_string(),
+                title,
+                url,
+            });
+        }
+    }
+    protocols::processes::publish_embedder_tabs(tabs);
 }
 
 impl ApplicationHandler<AppEvent> for App {
