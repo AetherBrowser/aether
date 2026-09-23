@@ -60,9 +60,7 @@ use crate::desktop::headed_window;
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
-use crate::window::{
-    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url,
-};
+use crate::window::{ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url};
 
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
