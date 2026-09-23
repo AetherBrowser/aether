@@ -60,7 +60,9 @@ use crate::desktop::headed_window;
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
-use crate::window::{ServoShellWindow, TopLevelWebViewCreationRequest, new_tab_url};
+use crate::window::{
+    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url,
+};
 
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
@@ -643,7 +645,11 @@ impl Gui {
                                     });
                                     if new_tab_button.clicked() {
                                         window.queue_user_interface_command(
-                                            UserInterfaceCommand::NewWebView,
+                                            UserInterfaceCommand::NewWebView(
+                                                TopLevelWebViewCreationRequest::WithUrl(
+                                                    new_tab_url(),
+                                                ),
+                                            ),
                                         );
                                     }
                                 },
@@ -656,7 +662,9 @@ impl Gui {
                 if let Some(button) = &menu_button {
                     match app_menu.update(button) {
                         Some(AppMenuAction::NewTab) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView);
+                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
+                                TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
+                            ));
                         },
                         Some(AppMenuAction::NewWindow) => {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWindow(
@@ -664,8 +672,8 @@ impl Gui {
                             ));
                         },
                         Some(AppMenuAction::History) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::Go(
-                                "servo:history".into(),
+                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
+                                TopLevelWebViewCreationRequest::WithUrl(history_url()),
                             ));
                         },
                         None => {},
