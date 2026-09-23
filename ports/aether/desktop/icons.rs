@@ -14,7 +14,7 @@ use resvg::{tiny_skia, usvg};
 /// Logical size of a toolbar icon, in egui points.
 const TOOLBAR_ICON_SIZE: f32 = 14.0;
 
-/// Toolbar button hit target, matching [`super::gui::Gui::toolbar_button`].
+/// Toolbar button hit target.
 const TOOLBAR_BUTTON_SIZE: f32 = 20.0;
 
 /// Rounded square used to mark a toolbar button on hover and press.
@@ -85,9 +85,11 @@ fn toolbar_button_fill_color(
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
     Back,
+    Close,
     Forward,
     Home,
     Menu,
+    Plus,
     Reload,
     Stop,
 }
@@ -96,9 +98,11 @@ impl ToolbarIcon {
     fn svg_bytes(self) -> &'static [u8] {
         match self {
             Self::Back => include_bytes!("../../../resources/icons/back.svg"),
+            Self::Close => include_bytes!("../../../resources/icons/close.svg"),
             Self::Forward => include_bytes!("../../../resources/icons/forward.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
             Self::Menu => include_bytes!("../../../resources/icons/menu.svg"),
+            Self::Plus => include_bytes!("../../../resources/icons/plus.svg"),
             Self::Reload => include_bytes!("../../../resources/icons/reload.svg"),
             Self::Stop => include_bytes!("../../../resources/icons/stop-reload.svg"),
         }
@@ -107,9 +111,11 @@ impl ToolbarIcon {
     fn texture_name(self) -> &'static str {
         match self {
             Self::Back => "toolbar-back",
+            Self::Close => "toolbar-close",
             Self::Forward => "toolbar-forward",
             Self::Home => "toolbar-home",
             Self::Menu => "toolbar-menu",
+            Self::Plus => "toolbar-plus",
             Self::Reload => "toolbar-reload",
             Self::Stop => "toolbar-stop",
         }
@@ -124,6 +130,12 @@ pub(crate) struct ToolbarIconCache {
 
 impl ToolbarIconCache {
     pub(crate) fn button(&mut self, ui: &mut egui::Ui, icon: ToolbarIcon) -> egui::Response {
+        let button = self.image_button(ui, icon);
+        add_toolbar_button(ui, button)
+    }
+
+    /// Icon button without the toolbar hover square, for chrome that paints its own background.
+    pub(crate) fn image_button(&mut self, ui: &egui::Ui, icon: ToolbarIcon) -> egui::Button<'_> {
         let pixel_size = (TOOLBAR_ICON_SIZE * ui.pixels_per_point()).round().max(1.0) as u32;
         let button = match self.texture(ui.ctx(), icon, pixel_size) {
             Some(handle) => {
@@ -136,7 +148,7 @@ impl ToolbarIconCache {
             },
             None => egui::Button::new(""),
         };
-        add_toolbar_button(ui, button.image_tint_follows_text_color(true))
+        button.image_tint_follows_text_color(true)
     }
 
     fn texture(
@@ -214,6 +226,17 @@ mod tests {
     }
 
     #[test]
+    fn close_svg_rasterizes() {
+        let image =
+            rasterize_svg(ToolbarIcon::Close.svg_bytes(), 32).expect("close.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "close icon should not be fully transparent"
+        );
+    }
+
+    #[test]
     fn forward_svg_rasterizes() {
         let image = rasterize_svg(ToolbarIcon::Forward.svg_bytes(), 32)
             .expect("forward.svg should rasterize");
@@ -243,6 +266,17 @@ mod tests {
         assert!(
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "menu icon should not be fully transparent"
+        );
+    }
+
+    #[test]
+    fn plus_svg_rasterizes() {
+        let image =
+            rasterize_svg(ToolbarIcon::Plus.svg_bytes(), 32).expect("plus.svg should rasterize");
+        assert_eq!(image.size, [32, 32]);
+        assert!(
+            image.pixels.iter().any(|pixel| pixel.a() > 0),
+            "plus icon should not be fully transparent"
         );
     }
 
