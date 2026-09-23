@@ -46,6 +46,7 @@ webcrypto = [
     "dep:elliptic-curve",
     "dep:hkdf",
     "dep:k12",
+    "dep:keccak",
     "dep:ml-dsa",
     "dep:ml-kem",
     "dep:ocb3",
@@ -57,6 +58,8 @@ webcrypto = [
     "dep:sha1",
     "dep:sha2",
     "dep:sha3",
+    "dep:sponge-cursor",
+    "dep:x-wing",
     "dep:x25519-dalek",
     "dep:x448",
     "dep:zeroize",
@@ -71,7 +74,6 @@ webgl = [
 webgpu = [
     "dep:script_webgpu",
     "dep:webgpu_traits",
-    "dep:wgpu-types",
     "script_bindings/webgpu",
     "script_traits/webgpu",
 ]
@@ -137,7 +139,7 @@ js = { workspace = true }
 jstraceable_derive = { workspace = true }
 k12 = { workspace = true, optional = true }
 keyboard-types = { workspace = true }
-keccak = { workspace = true }
+keccak = { workspace = true, optional = true }
 layout_api = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
@@ -193,7 +195,7 @@ sha1 = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 sha3 = { workspace = true, optional = true }
 smallvec = { workspace = true }
-sponge-cursor = { workspace = true }
+sponge-cursor = { workspace = true, optional = true }
 storage_traits = { workspace = true }
 strum = { workspace = true }
 stylo = { workspace = true }
@@ -217,7 +219,7 @@ webdriver = { workspace = true }
 webgpu_traits = { workspace = true, optional = true }
 webrender_api = { workspace = true }
 webxr-api = { workspace = true, optional = true }
-wgpu-types = { workspace = true, optional = true }
+x-wing = { workspace = true, optional = true }
 x25519-dalek = { workspace = true, optional = true }
 x448 = { workspace = true, optional = true }
 xml5ever = { workspace = true }

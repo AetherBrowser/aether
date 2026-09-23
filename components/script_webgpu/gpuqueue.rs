@@ -29,8 +29,9 @@ use script_bindings::error::{Error, Fallible};
 use script_bindings::interfaces::{GlobalScopeHelpers, PromiseHelpers};
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
 use script_bindings::root::DomRoot;
+use script_bindings::routed_promise::RoutedPromiseListener;
 use servo_base::generic_channel::GenericSharedMemory;
-use webgpu_traits::{WebGPU, WebGPUQueue, WebGPURequest};
+use webgpu_traits::{COPY_BUFFER_ALIGNMENT, TextureFormat, WebGPU, WebGPUQueue, WebGPURequest};
 
 use crate::JSTraceable;
 use crate::dom::bindings::root::Dom;
@@ -42,7 +43,7 @@ use crate::gpudevice::GPUDevice;
 use crate::traits::{
     Equivalence, HtmlCanvasElementTrait, HtmlImageElementTrait, ImageBitmapTrait, ImageDataTrait,
     OffscreenCanvasTrait, OriginIsCleanTrait, WebGPUHTMLVideoTrait, WebGPUPromise,
-    WebGPUPromiseCallbackTrait, WebGPURootedPromiseTrait,
+    WebGPUPromiseCallbackTrait,
 };
 
 #[dom_struct]
@@ -165,9 +166,7 @@ where
             )));
         }
 
-        if !((content_size * sizeof_element as u64)
-            .is_multiple_of(wgpu_types::COPY_BUFFER_ALIGNMENT))
-        {
+        if !((content_size * sizeof_element as u64).is_multiple_of(COPY_BUFFER_ALIGNMENT)) {
             return Err(Error::Operation(Some(
                 "`contentSize` as bytes is not a multiple of 4 bytes".into(),
             )));
@@ -359,18 +358,15 @@ where
         };
         // this is out ouf spec, but we currently do not support more
         let texture_descriptor = destination.parent.texture.wgpu_texture_descriptor();
-        let target_snapshot_format =
-            match texture_descriptor.format {
-                wgpu_types::TextureFormat::Bgra8Unorm |
-                wgpu_types::TextureFormat::Bgra8UnormSrgb => SnapshotPixelFormat::BGRA,
-                wgpu_types::TextureFormat::Rgba8Unorm |
-                wgpu_types::TextureFormat::Rgba8UnormSrgb => SnapshotPixelFormat::RGBA,
-                _ => {
-                    return Err(Error::Operation(Some(
-                        "Unsupported texture format for copy".to_string(),
-                    )));
-                },
-            };
+        let target_snapshot_format = match texture_descriptor.format {
+            TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb => SnapshotPixelFormat::BGRA,
+            TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb => SnapshotPixelFormat::RGBA,
+            _ => {
+                return Err(Error::Operation(Some(
+                    "Unsupported texture format for copy".to_string(),
+                )));
+            },
+        };
         let usable_snapshot = usable_snapshot.map(|mut snapshot| {
             if source.flipY {
                 pixels::flip_y_rgba8_image_inplace(snapshot.size(), snapshot.as_raw_bytes_mut());
@@ -413,7 +409,7 @@ where
         cx: &mut JSContext,
     ) -> <D::Promise as PromiseHelpers<D>>::StackRoot {
         let global = self.global_from_reflector();
-        let promise = <D::Promise as PromiseHelpers<D>>::StackRoot::new_rooted(cx, &global);
+        let promise = D::Promise::new_rooted(cx, &global);
         let callback = promise.callback_promise_dom_manipulation_task_source(self);
 
         if let Err(e) = self
@@ -427,5 +423,16 @@ where
             warn!("QueueOnSubmittedWorkDone failed with {e}")
         }
         promise
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, ()> for GPUQueue<D> {
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        _response: (),
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        promise.resolve_native(cx, &());
     }
 }

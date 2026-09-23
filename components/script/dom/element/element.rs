@@ -58,7 +58,7 @@ use style::selector_parser::{RestyleDamage, SelectorParser, Snapshot};
 use style::shared_lock::Locked;
 use style::stylesheets::layer_rule::LayerOrder;
 use style::stylesheets::{CssRuleType, UrlExtraData};
-use style::values::computed::Overflow;
+use style::values::computed::{Overflow, UserSelect};
 use style::values::generics::NonNegative;
 use style::values::generics::position::PreferredRatio;
 use style::values::generics::ratio::Ratio;
@@ -73,6 +73,7 @@ use xml5ever::serialize::TraversalScope::{
 
 use crate::conversions::Convert;
 use crate::css::stylesheet_loader::StylesheetOwner;
+use crate::dom::RootedPromise;
 use crate::dom::activation::Activatable;
 use crate::dom::animation::Animation;
 use crate::dom::animations::keyframeeffect::KeyframeEffect;
@@ -168,7 +169,6 @@ use crate::dom::node::{
     NodeTraits, UnbindContext,
 };
 use crate::dom::nodelist::NodeList;
-use crate::dom::promise::Promise;
 use crate::dom::range::Range;
 use crate::dom::raredata::ElementRareData;
 use crate::dom::sanitizer::Sanitizer;
@@ -1095,6 +1095,24 @@ impl Element {
                 .display
                 .is_none()
         })
+    }
+
+    /// Returns the computed value of the [`user-select`] property. Returns `None` if the
+    /// element is unstyled.
+    ///
+    /// [`user-select`]: <https://drafts.csswg.org/css-ui-4/#propdef-user-select>
+    pub(crate) fn computed_user_select(&self) -> Option<UserSelect> {
+        Some(
+            self.style_data
+                .borrow()
+                .as_ref()?
+                .element_data
+                .borrow()
+                .styles
+                .primary()
+                .get_ui()
+                .user_select,
+        )
     }
 
     pub(crate) fn check_style_on_self_or_eager_pseudos(
@@ -4111,7 +4129,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     }
 
     /// <https://fullscreen.spec.whatwg.org/#dom-element-requestfullscreen>
-    fn RequestFullscreen(&self, cx: &mut CurrentRealm) -> Rc<Promise> {
+    fn RequestFullscreen(&self, cx: &mut CurrentRealm) -> RootedPromise {
         let doc = self.owner_document();
         doc.enter_fullscreen(cx, self)
     }

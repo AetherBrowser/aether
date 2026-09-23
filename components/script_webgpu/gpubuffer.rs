@@ -20,9 +20,13 @@ use script_bindings::codegen::GenericBindings::WebGPUBinding::{
 use script_bindings::error::{Error, Fallible};
 use script_bindings::interfaces::{PromiseHelpers, StackRootPromiseHelpers};
 use script_bindings::reflector::{DomGlobalGeneric, Reflector, reflect_dom_object_with_wrap};
+use script_bindings::routed_promise::RoutedPromiseListener;
 use script_bindings::trace::RootedTraceableBox;
 use servo_base::generic_channel::GenericSharedMemory;
-use webgpu_traits::{HostMap, Mapping, WebGPU, WebGPUBuffer, WebGPURequest};
+use webgpu_traits::{
+    BufferAccessError, BufferAddress, BufferDescriptor, BufferUsages, COPY_BUFFER_ALIGNMENT,
+    HostMap, MAP_ALIGNMENT, Mapping, WebGPU, WebGPUBuffer, WebGPURequest,
+};
 
 use crate::datablock::DataBlock;
 use crate::dom::bindings::root::{Dom, DomRoot};
@@ -169,10 +173,10 @@ where
         device: &D::GPUDevice,
         descriptor: &GPUBufferDescriptor,
     ) -> Fallible<DomRoot<GPUBuffer<D>>> {
-        let desc = wgpu_types::BufferDescriptor {
+        let desc = BufferDescriptor {
             label: (&descriptor.parent).convert(),
-            size: descriptor.size as wgpu_types::BufferAddress,
-            usage: wgpu_types::BufferUsages::from_bits_retain(descriptor.usage),
+            size: descriptor.size as BufferAddress,
+            usage: BufferUsages::from_bits_retain(descriptor.usage),
             mapped_at_creation: descriptor.mappedAtCreation,
         };
         let id = <D::GPUDevice as DomGlobalGeneric<D>>::global_from_reflector(device)
@@ -352,7 +356,7 @@ where
             .map(RootedTraceableBox::new)
             .ok_or(Error::Operation(Some("No active buffer map".into())))?;
 
-        if !(offset.is_multiple_of(wgpu_types::MAP_ALIGNMENT)) {
+        if !(offset.is_multiple_of(MAP_ALIGNMENT)) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -362,7 +366,7 @@ where
             )));
         }
 
-        if !(range_size % wgpu_types::COPY_BUFFER_ALIGNMENT == 0) {
+        if !(range_size % COPY_BUFFER_ALIGNMENT == 0) {
             self.mapping
                 .safe_borrow_mut(cx)
                 .replace(*mapping.into_box());
@@ -448,7 +452,6 @@ where
 impl<D> GPUBuffer<D>
 where
     D: Equivalence,
-    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
 {
     pub fn map_failure(
         &self,
@@ -513,6 +516,20 @@ where
                 self.pending_map.safe_borrow_mut(cx).take();
                 p.resolve_native(cx, &());
             },
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, Result<Mapping, BufferAccessError>> for GPUBuffer<D> {
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: Result<Mapping, BufferAccessError>,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(mapping) => self.map_success(cx, promise, mapping),
+            Err(_) => self.map_failure(cx, promise),
         }
     }
 }

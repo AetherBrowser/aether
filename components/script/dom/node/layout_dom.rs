@@ -259,7 +259,9 @@ impl<'dom> LayoutDom<'dom, Node> {
         }
 
         let unsafe_self = self.unsafe_get();
-        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) {
+        if !unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) ||
+            unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
+        {
             return None;
         }
 
@@ -293,6 +295,12 @@ impl<'dom> LayoutDom<'dom, Node> {
         // For now, never paint a caret for document selection.
         // This will change as we improve `contenteditable` support.
         false
+    }
+
+    pub(crate) fn replaced_is_selected(&self) -> bool {
+        let unsafe_self = self.unsafe_get();
+        unsafe_self.get_flag(NodeFlags::OVERLAPS_DOCUMENT_SELECTION) &&
+            !unsafe_self.get_flag(NodeFlags::SELECTION_INHIBITED)
     }
 
     pub(crate) fn image_url(self) -> Option<ServoUrl> {

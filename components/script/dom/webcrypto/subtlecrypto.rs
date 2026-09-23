@@ -20,6 +20,7 @@ mod ed25519_operation;
 mod ed448_operation;
 mod hkdf_operation;
 mod hmac_operation;
+mod hybrid_kem_operation;
 mod kangarootwelve_operation;
 mod kmac_operation;
 mod ml_dsa_operation;
@@ -37,7 +38,6 @@ mod x448_operation;
 
 use std::fmt::Display;
 use std::ptr;
-use std::rc::Rc;
 use std::str::FromStr;
 
 use base64ct::{Base64UrlUnpadded, Encoding};
@@ -140,6 +140,8 @@ enum CryptoAlgorithm {
     MlKem768,
     #[strum(serialize = "ML-KEM-1024")]
     MlKem1024,
+    #[strum(serialize = "MLKEM768-X25519")]
+    MlKem768X25519,
     #[strum(serialize = "ML-DSA-44")]
     MlDsa44,
     #[strum(serialize = "ML-DSA-65")]
@@ -385,7 +387,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         key: &CryptoKey,
         data: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm and key be the algorithm and key parameters passed to the
         // encrypt() method, respectively.
         // NOTE: We did that in method parameter.
@@ -396,7 +398,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<EncryptOperation>(cx, &algorithm) {
             Ok(normalized_algorithm) => normalized_algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -408,11 +410,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -469,7 +471,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         key: &CryptoKey,
         data: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm and key be the algorithm and key parameters passed to the
         // decrypt() method, respectively.
         // NOTE: We did that in method parameter.
@@ -480,7 +482,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<DecryptOperation>(cx, &algorithm) {
             Ok(normalized_algorithm) => normalized_algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -492,11 +494,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -553,7 +555,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         key: &CryptoKey,
         data: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm and key be the algorithm and key parameters passed to the sign()
         // method, respectively.
         // NOTE: We did that in method parameter.
@@ -564,7 +566,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<SignOperation>(cx, &algorithm) {
             Ok(normalized_algorithm) => normalized_algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -576,11 +578,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -637,7 +639,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         key: &CryptoKey,
         signature: ArrayBufferViewOrArrayBuffer,
         data: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm and key be the algorithm and key parameters passed to the verify()
         // method, respectively.
         // NOTE: We did that in method parameter.
@@ -648,7 +650,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<VerifyOperation>(cx, &algorithm) {
             Ok(algorithm) => algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -664,11 +666,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 6. Let realm be the relevant realm of this.
         // Step 7. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 8. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -722,7 +724,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         cx: &mut CurrentRealm,
         algorithm: AlgorithmIdentifier,
         data: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm be the algorithm parameter passed to the digest() method.
         // NOTE: We did that in method parameter.
 
@@ -732,7 +734,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<DigestOperation>(cx, &algorithm) {
             Ok(normalized_algorithm) => normalized_algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -744,11 +746,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -787,14 +789,14 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         extractable: bool,
         key_usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm, extractable and usages be the algorithm, extractable and
         // keyUsages parameters passed to the generateKey() method, respectively.
 
         // Step 2. Let normalizedAlgorithm be the result of normalizing an algorithm, with alg set
         // to algorithm and op set to "generateKey".
         // Step 3. If an error occurred, return a Promise rejected with normalizedAlgorithm.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
         let normalized_algorithm = match normalize_algorithm::<GenerateKeyOperation>(cx, &algorithm)
         {
             Ok(normalized_algorithm) => normalized_algorithm,
@@ -810,7 +812,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 6. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -892,7 +894,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         derived_key_type: AlgorithmIdentifier,
         extractable: bool,
         usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm, baseKey, derivedKeyType, extractable and usages be the algorithm,
         // baseKey, derivedKeyType, extractable and keyUsages parameters passed to the deriveKey()
         // method, respectively.
@@ -901,7 +903,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 2. Let normalizedAlgorithm be the result of normalizing an algorithm, with alg set
         // to algorithm and op set to "deriveBits".
         // Step 3. If an error occurred, return a Promise rejected with normalizedAlgorithm.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
         let normalized_algorithm = match normalize_algorithm::<DeriveBitsOperation>(cx, &algorithm)
         {
             Ok(normalized_algorithm) => normalized_algorithm,
@@ -944,7 +946,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 10. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_base_key = Trusted::new(base_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global().task_manager().dom_manipulation_task_source().queue(
             task!(derive_key: move |cx| {
                 let subtle = trusted_subtle.root();
@@ -1040,7 +1042,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         base_key: &CryptoKey,
         length: Option<u32>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let algorithm, baseKey and length, be the algorithm, baseKey and length
         // parameters passed to the deriveBits() method, respectively.
         // NOTE: We did that in method parameter.
@@ -1048,7 +1050,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 2. Let normalizedAlgorithm be the result of normalizing an algorithm, with alg set
         // to algorithm and op set to "deriveBits".
         // Step 3. If an error occurred, return a Promise rejected with normalizedAlgorithm.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
         let normalized_algorithm = match normalize_algorithm::<DeriveBitsOperation>(cx, &algorithm)
         {
             Ok(normalized_algorithm) => normalized_algorithm,
@@ -1065,7 +1067,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 5. Return promise and perform the remaining steps in parallel.
         let trsuted_subtle = Trusted::new(self);
         let trusted_base_key = Trusted::new(base_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -1122,7 +1124,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         algorithm: AlgorithmIdentifier,
         extractable: bool,
         key_usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let format, algorithm, extractable and usages, be the format, algorithm,
         // extractable and keyUsages parameters passed to the importKey() method, respectively.
 
@@ -1132,7 +1134,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         let normalized_algorithm = match normalize_algorithm::<ImportKeyOperation>(cx, &algorithm) {
             Ok(algorithm) => algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -1147,7 +1149,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                     ArrayBufferViewOrArrayBufferOrJsonWebKey::ArrayBuffer(_) => {
                         // Step 4.1. If the keyData parameter passed to the importKey() method is
                         // not a JsonWebKey dictionary, throw a TypeError.
-                        let promise = Promise::new_in_realm(cx);
+                        let promise = Promise::new_in_realm_rooted(cx);
                         promise.reject_error(
                             cx,
                             Error::Type(c"The keyData type does not match the format".to_owned()),
@@ -1166,7 +1168,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                         match jwk.stringify(cx) {
                             Ok(stringified) => Zeroizing::new(stringified.as_bytes().to_vec()),
                             Err(error) => {
-                                let promise = Promise::new_in_realm(cx);
+                                let promise = Promise::new_in_realm_rooted(cx);
                                 promise.reject_error(cx, error);
                                 return promise;
                             },
@@ -1180,7 +1182,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
                     // Step 4.1. If the keyData parameter passed to the importKey() method is a
                     // JsonWebKey dictionary, throw a TypeError.
                     ArrayBufferViewOrArrayBufferOrJsonWebKey::JsonWebKey(_) => {
-                        let promise = Promise::new_in_realm(cx);
+                        let promise = Promise::new_in_realm_rooted(cx);
                         promise.reject_error(
                             cx,
                             Error::Type(c"The keyData type does not match the format".to_owned()),
@@ -1202,11 +1204,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let this = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -1260,18 +1262,23 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
     }
 
     /// <https://w3c.github.io/webcrypto/#SubtleCrypto-method-exportKey>
-    fn ExportKey(&self, cx: &mut CurrentRealm, format: KeyFormat, key: &CryptoKey) -> Rc<Promise> {
+    fn ExportKey(
+        &self,
+        cx: &mut CurrentRealm,
+        format: KeyFormat,
+        key: &CryptoKey,
+    ) -> RootedPromise {
         // Step 1. Let format and key be the format and key parameters passed to the exportKey()
         // method, respectively.
         // NOTE: We did that in method parameter.
 
         // Step 2. Let realm be the relevant realm of this.
         // Step 3. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 4. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -1351,7 +1358,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         key: &CryptoKey,
         wrapping_key: &CryptoKey,
         algorithm: AlgorithmIdentifier,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let format, key, wrappingKey and algorithm be the format, key, wrappingKey and
         // wrapAlgorithm parameters passed to the wrapKey() method, respectively.
         // NOTE: We did that in method parameter.
@@ -1373,7 +1380,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<EncryptOperation>(cx, &algorithm) {
                 Ok(algorithm) => WrapKeyAlgorithmOrEncryptAlgorithm::EncryptAlgorithm(algorithm),
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -1382,13 +1389,13 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_key = Trusted::new(key);
         let trusted_wrapping_key = Trusted::new(wrapping_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -1528,7 +1535,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         unwrapped_key_algorithm: AlgorithmIdentifier,
         extractable: bool,
         usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let format, unwrappingKey, algorithm, unwrappedKeyAlgorithm, extractable and
         // usages, be the format, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm,
         // extractable and keyUsages parameters passed to the unwrapKey() method, respectively.
@@ -1551,7 +1558,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<DecryptOperation>(cx, &algorithm) {
                 Ok(algorithm) => UnwrapKeyAlgorithmOrDecryptAlgorithm::DecryptAlgorithm(algorithm),
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -1565,7 +1572,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<ImportKeyOperation>(cx, &unwrapped_key_algorithm) {
                 Ok(algorithm) => algorithm,
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -1577,12 +1584,12 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 8. Let realm be the relevant realm of this.
         // Step 9. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 10. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_unwrapping_key = Trusted::new(unwrapping_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global().task_manager().dom_manipulation_task_source().queue(
             task!(unwrap_key: move |cx| {
                 let subtle = trusted_subtle.root();
@@ -1710,7 +1717,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         shared_key_algorithm: AlgorithmIdentifier,
         extractable: bool,
         usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let encapsulationAlgorithm, encapsulationKey, sharedKeyAlgorithm, extractable
         // and usages be the encapsulationAlgorithm, encapsulationKey, sharedKeyAlgorithm,
         // extractable and keyUsages parameters passed to the encapsulateKey() method,
@@ -1720,7 +1727,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // with alg set to encapsulationAlgorithm and op set to "encapsulate".
         // Step 3. If an error occurred, return a Promise rejected with
         // normalizedEncapsulationAlgorithm.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
         let normalized_encapsulation_algorithm =
             match normalize_algorithm::<EncapsulateOperation>(cx, &encapsulation_algorithm) {
                 Ok(algorithm) => algorithm,
@@ -1750,7 +1757,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 8. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_encapsulated_key = Trusted::new(encapsulation_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global().task_manager().dom_manipulation_task_source().queue(
             task!(encapsulate_keys: move |cx| {
                 let subtle = trusted_subtle.root();
@@ -1854,7 +1861,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         cx: &mut CurrentRealm,
         encapsulation_algorithm: AlgorithmIdentifier,
         encapsulation_key: &CryptoKey,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let encapsulationAlgorithm and encapsulationKey be the encapsulationAlgorithm
         // and encapsulationKey parameters passed to the encapsulateBits() method, respectively.
 
@@ -1862,7 +1869,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // with alg set to encapsulationAlgorithm and op set to "encapsulate".
         // Step 3. If an error occurred, return a Promise rejected with
         // normalizedEncapsulationAlgorithm.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
         let normalized_encapsulation_algorithm =
             match normalize_algorithm::<EncapsulateOperation>(cx, &encapsulation_algorithm) {
                 Ok(algorithm) => algorithm,
@@ -1879,7 +1886,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         // Step 6. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_encapsulation_key = Trusted::new(encapsulation_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global().task_manager().dom_manipulation_task_source().queue(
             task!(derive_key: move |cx| {
                 let subtle = trusted_subtle.root();
@@ -1946,7 +1953,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         shared_key_algorithm: AlgorithmIdentifier,
         extractable: bool,
         usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let decapsulationAlgorithm, decapsulationKey, sharedKeyAlgorithm, extractable
         // and usages be the decapsulationAlgorithm, decapsulationKey, sharedKeyAlgorithm,
         // extractable and keyUsages parameters passed to the decapsulateKey() method,
@@ -1960,7 +1967,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<DecapsulateOperation>(cx, &decapsulation_algorithm) {
                 Ok(normalized_algorithm) => normalized_algorithm,
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -1974,7 +1981,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<ImportKeyOperation>(cx, &shared_key_algorithm) {
                 Ok(normalized_algorithm) => normalized_algorithm,
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -1986,12 +1993,12 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 7. Let realm be the relevant realm of this.
         // Step 8. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 9. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_decapsulation_key = Trusted::new(decapsulation_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -2082,7 +2089,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         decapsulation_algorithm: AlgorithmIdentifier,
         decapsulation_key: &CryptoKey,
         ciphertext: ArrayBufferViewOrArrayBuffer,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let decapsulationAlgorithm and decapsulationKey be the decapsulationAlgorithm
         // and decapsulationKey parameters passed to the decapsulateBits() method, respectively.
 
@@ -2094,7 +2101,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
             match normalize_algorithm::<DecapsulateOperation>(cx, &decapsulation_algorithm) {
                 Ok(normalized_algorithm) => normalized_algorithm,
                 Err(error) => {
-                    let promise = Promise::new_in_realm(cx);
+                    let promise = Promise::new_in_realm_rooted(cx);
                     promise.reject_error(cx, error);
                     return promise;
                 },
@@ -2106,12 +2113,12 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 5. Let realm be the relevant realm of this.
         // Step 6. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 7. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
         let trusted_decapsulation_key = Trusted::new(decapsulation_key);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         self.global()
             .task_manager()
             .dom_manipulation_task_source()
@@ -2176,7 +2183,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         cx: &mut CurrentRealm,
         key: &CryptoKey,
         usages: Vec<KeyUsage>,
-    ) -> Rc<Promise> {
+    ) -> RootedPromise {
         // Step 1. Let key and usages be the key and keyUsages parameters passed to the
         // getPublicKey() method, respectively.
 
@@ -2195,7 +2202,7 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
         ) {
             Ok(normalized_algorithm) => normalized_algorithm,
             Err(error) => {
-                let promise = Promise::new_in_realm(cx);
+                let promise = Promise::new_in_realm_rooted(cx);
                 promise.reject_error(cx, error);
                 return promise;
             },
@@ -2203,11 +2210,11 @@ impl SubtleCryptoMethods<crate::DomTypeHolder> for SubtleCrypto {
 
         // Step 4. Let realm be the relevant realm of this.
         // Step 5. Let promise be a new Promise.
-        let promise = Promise::new_in_realm(cx);
+        let promise = Promise::new_in_realm_rooted(cx);
 
         // Step 6. Return promise and perform the remaining steps in parallel.
         let trusted_subtle = Trusted::new(self);
-        let trusted_promise = TrustedPromise::new(promise.clone());
+        let trusted_promise = TrustedPromise::from(&promise);
         let trusted_key = Trusted::new(key);
         self.global()
             .task_manager()
@@ -5643,6 +5650,7 @@ enum GenerateKeyAlgorithm {
     AesKw(AesKeyGenParams),
     Hmac(HmacKeyGenParams),
     MlKem(Algorithm),
+    HybridKem(Algorithm),
     MlDsa(Algorithm),
     AesOcb(AesKeyGenParams),
     ChaCha20Poly1305(Algorithm),
@@ -5703,6 +5711,9 @@ impl NormalizedAlgorithm for GenerateKeyAlgorithm {
                     object.try_into_with_cx_and_name(cx, algorithm_name)?,
                 ))
             },
+            CryptoAlgorithm::MlKem768X25519 => Ok(GenerateKeyAlgorithm::HybridKem(
+                object.try_into_with_cx_and_name(cx, algorithm_name)?,
+            )),
             CryptoAlgorithm::MlDsa44 | CryptoAlgorithm::MlDsa65 | CryptoAlgorithm::MlDsa87 => Ok(
                 GenerateKeyAlgorithm::MlDsa(object.try_into_with_cx_and_name(cx, algorithm_name)?),
             ),
@@ -5739,6 +5750,7 @@ impl NormalizedAlgorithm for GenerateKeyAlgorithm {
             GenerateKeyAlgorithm::AesKw(algorithm) => algorithm.name,
             GenerateKeyAlgorithm::Hmac(algorithm) => algorithm.name,
             GenerateKeyAlgorithm::MlKem(algorithm) => algorithm.name,
+            GenerateKeyAlgorithm::HybridKem(algorithm) => algorithm.name,
             GenerateKeyAlgorithm::MlDsa(algorithm) => algorithm.name,
             GenerateKeyAlgorithm::AesOcb(algorithm) => algorithm.name,
             GenerateKeyAlgorithm::ChaCha20Poly1305(algorithm) => algorithm.name,
@@ -5770,7 +5782,9 @@ impl NormalizedAlgorithm for GenerateKeyAlgorithm {
             GenerateKeyAlgorithm::Hmac(normalized_algorithm) => {
                 normalized_algorithm.length.is_none_or(|length| length != 0)
             },
-            GenerateKeyAlgorithm::MlKem(_) | GenerateKeyAlgorithm::MlDsa(_) => true,
+            GenerateKeyAlgorithm::MlKem(_) |
+            GenerateKeyAlgorithm::HybridKem(_) |
+            GenerateKeyAlgorithm::MlDsa(_) => true,
             GenerateKeyAlgorithm::AesOcb(normalized_algorithm) => {
                 matches!(normalized_algorithm.length, 128 | 192 | 256)
             },
@@ -5854,6 +5868,10 @@ impl GenerateKeyAlgorithm {
                 ml_kem_operation::generate_key(cx, global, algorithm, extractable, usages)
                     .map(CryptoKeyOrCryptoKeyPair::CryptoKeyPair)
             },
+            GenerateKeyAlgorithm::HybridKem(algorithm) => {
+                hybrid_kem_operation::generate_key(cx, global, algorithm, extractable, usages)
+                    .map(CryptoKeyOrCryptoKeyPair::CryptoKeyPair)
+            },
             GenerateKeyAlgorithm::MlDsa(algorithm) => {
                 ml_dsa_operation::generate_key(cx, global, algorithm, extractable, usages)
                     .map(CryptoKeyOrCryptoKeyPair::CryptoKeyPair)
@@ -5901,6 +5919,7 @@ enum ImportKeyAlgorithm {
     Hkdf(Algorithm),
     Pbkdf2(Algorithm),
     MlKem(Algorithm),
+    HybridKem(Algorithm),
     MlDsa(Algorithm),
     AesOcb(Algorithm),
     ChaCha20Poly1305(Algorithm),
@@ -5968,6 +5987,9 @@ impl NormalizedAlgorithm for ImportKeyAlgorithm {
                     object.try_into_with_cx_and_name(cx, algorithm_name)?,
                 ))
             },
+            CryptoAlgorithm::MlKem768X25519 => Ok(ImportKeyAlgorithm::HybridKem(
+                object.try_into_with_cx_and_name(cx, algorithm_name)?,
+            )),
             CryptoAlgorithm::MlDsa44 | CryptoAlgorithm::MlDsa65 | CryptoAlgorithm::MlDsa87 => Ok(
                 ImportKeyAlgorithm::MlDsa(object.try_into_with_cx_and_name(cx, algorithm_name)?),
             ),
@@ -6009,6 +6031,7 @@ impl NormalizedAlgorithm for ImportKeyAlgorithm {
             ImportKeyAlgorithm::Hkdf(algorithm) => algorithm.name,
             ImportKeyAlgorithm::Pbkdf2(algorithm) => algorithm.name,
             ImportKeyAlgorithm::MlKem(algorithm) => algorithm.name,
+            ImportKeyAlgorithm::HybridKem(algorithm) => algorithm.name,
             ImportKeyAlgorithm::MlDsa(algorithm) => algorithm.name,
             ImportKeyAlgorithm::AesOcb(algorithm) => algorithm.name,
             ImportKeyAlgorithm::ChaCha20Poly1305(algorithm) => algorithm.name,
@@ -6040,6 +6063,7 @@ impl NormalizedAlgorithm for ImportKeyAlgorithm {
             ImportKeyAlgorithm::Hkdf(_) |
             ImportKeyAlgorithm::Pbkdf2(_) |
             ImportKeyAlgorithm::MlKem(_) |
+            ImportKeyAlgorithm::HybridKem(_) |
             ImportKeyAlgorithm::MlDsa(_) |
             ImportKeyAlgorithm::AesOcb(_) |
             ImportKeyAlgorithm::ChaCha20Poly1305(_) |
@@ -6155,6 +6179,15 @@ impl ImportKeyAlgorithm {
                 extractable,
                 usages,
             ),
+            ImportKeyAlgorithm::HybridKem(algorithm) => hybrid_kem_operation::import_key(
+                cx,
+                global,
+                algorithm,
+                format,
+                key_data,
+                extractable,
+                usages,
+            ),
             ImportKeyAlgorithm::MlDsa(algorithm) => ml_dsa_operation::import_key(
                 cx,
                 global,
@@ -6223,7 +6256,9 @@ impl ImportKeyAlgorithm {
                     })
             },
             ImportKeyAlgorithm::Hkdf(_) | ImportKeyAlgorithm::Pbkdf2(_) => false,
-            ImportKeyAlgorithm::MlKem(_) | ImportKeyAlgorithm::MlDsa(_) => true,
+            ImportKeyAlgorithm::MlKem(_) |
+            ImportKeyAlgorithm::HybridKem(_) |
+            ImportKeyAlgorithm::MlDsa(_) => true,
             ImportKeyAlgorithm::AesOcb(_) => !matches!(key_data_length, 128 | 192 | 256),
             ImportKeyAlgorithm::ChaCha20Poly1305(_) => key_data_length != 256,
             ImportKeyAlgorithm::Kmac(algorithm) => algorithm
@@ -6259,6 +6294,7 @@ enum ExportKeyAlgorithm {
     AesKw(Algorithm),
     Hmac(Algorithm),
     MlKem(Algorithm),
+    HybridKem(Algorithm),
     MlDsa(Algorithm),
     AesOcb(Algorithm),
     ChaCha20Poly1305(Algorithm),
@@ -6319,6 +6355,9 @@ impl NormalizedAlgorithm for ExportKeyAlgorithm {
                     object.try_into_with_cx_and_name(cx, algorithm_name)?,
                 ))
             },
+            CryptoAlgorithm::MlKem768X25519 => Ok(ExportKeyAlgorithm::HybridKem(
+                object.try_into_with_cx_and_name(cx, algorithm_name)?,
+            )),
             CryptoAlgorithm::MlDsa44 | CryptoAlgorithm::MlDsa65 | CryptoAlgorithm::MlDsa87 => Ok(
                 ExportKeyAlgorithm::MlDsa(object.try_into_with_cx_and_name(cx, algorithm_name)?),
             ),
@@ -6355,6 +6394,7 @@ impl NormalizedAlgorithm for ExportKeyAlgorithm {
             ExportKeyAlgorithm::AesKw(algorithm) => algorithm.name,
             ExportKeyAlgorithm::Hmac(algorithm) => algorithm.name,
             ExportKeyAlgorithm::MlKem(algorithm) => algorithm.name,
+            ExportKeyAlgorithm::HybridKem(algorithm) => algorithm.name,
             ExportKeyAlgorithm::MlDsa(algorithm) => algorithm.name,
             ExportKeyAlgorithm::AesOcb(algorithm) => algorithm.name,
             ExportKeyAlgorithm::ChaCha20Poly1305(algorithm) => algorithm.name,
@@ -6379,6 +6419,7 @@ impl NormalizedAlgorithm for ExportKeyAlgorithm {
             ExportKeyAlgorithm::AesKw(_) |
             ExportKeyAlgorithm::Hmac(_) |
             ExportKeyAlgorithm::MlKem(_) |
+            ExportKeyAlgorithm::HybridKem(_) |
             ExportKeyAlgorithm::MlDsa(_) |
             ExportKeyAlgorithm::AesOcb(_) |
             ExportKeyAlgorithm::ChaCha20Poly1305(_) |
@@ -6407,6 +6448,9 @@ impl ExportKeyAlgorithm {
             ExportKeyAlgorithm::AesKw(_algorithm) => aes_kw_operation::export_key(format, key),
             ExportKeyAlgorithm::Hmac(_algorithm) => hmac_operation::export_key(format, key),
             ExportKeyAlgorithm::MlKem(_algorithm) => ml_kem_operation::export_key(format, key),
+            ExportKeyAlgorithm::HybridKem(_algorithm) => {
+                hybrid_kem_operation::export_key(format, key)
+            },
             ExportKeyAlgorithm::MlDsa(_algorithm) => ml_dsa_operation::export_key(format, key),
             ExportKeyAlgorithm::AesOcb(_algorithm) => aes_ocb_operation::export_key(format, key),
             ExportKeyAlgorithm::ChaCha20Poly1305(_algorithm) => {

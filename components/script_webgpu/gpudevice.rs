@@ -18,14 +18,16 @@ use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::EventBinding::EventInit;
 use script_bindings::codegen::GenericBindings::EventHandlerBinding::EventHandlerNonNull;
 use script_bindings::codegen::GenericBindings::WebGPUBinding::{
-    GPUAdapterMethods, GPUBindGroupDescriptor, GPUBindGroupLayoutDescriptor, GPUBufferDescriptor,
+    GPUBindGroupDescriptor, GPUBindGroupLayoutDescriptor, GPUBufferDescriptor,
     GPUCommandEncoderDescriptor, GPUComputePipelineDescriptor, GPUDeviceLostReason,
     GPUDeviceMethods, GPUDeviceWrap, GPUErrorFilter, GPUExternalTextureDescriptor,
-    GPUPipelineLayoutDescriptor, GPUQuerySetDescriptor, GPURenderBundleEncoderDescriptor,
-    GPURenderPipelineDescriptor, GPUSamplerDescriptor, GPUShaderModuleDescriptor,
-    GPUTextureDescriptor, GPUTextureFormat, GPUUncapturedErrorEventInit, GPUVertexStepMode,
+    GPUPipelineErrorReason, GPUPipelineLayoutDescriptor, GPUQuerySetDescriptor,
+    GPURenderBundleEncoderDescriptor, GPURenderPipelineDescriptor, GPUSamplerDescriptor,
+    GPUShaderModuleDescriptor, GPUTextureDescriptor, GPUTextureFormat, GPUUncapturedErrorEventInit,
+    GPUVertexStepMode,
 };
 use script_bindings::codegen::GenericUnionTypes::GPUPipelineLayoutOrGPUAutoLayoutMode;
+use script_bindings::conversions::DerivedFrom;
 use script_bindings::error::Error;
 use script_bindings::inheritance::Castable;
 use script_bindings::interfaces::{
@@ -34,14 +36,18 @@ use script_bindings::interfaces::{
 use script_bindings::reflector::{
     DomGlobalGeneric, reflect_weak_referenceable_dom_object_with_cx_and_wrap,
 };
-use script_bindings::traits::DomEventTrait;
+use script_bindings::routed_promise::RoutedPromiseListener;
+use script_bindings::traits::{DomEventTrait, DomExceptionTrait};
 use script_bindings::{DomTypes, cformat, task};
 use stylo_atoms::atom;
 use webgpu_traits::{
-    FragmentState, RenderPipelineDescriptor, VertexBufferLayout, VertexState, WebGPU, WebGPUDevice,
-    WebGPUQueue, WebGPURequest,
+    BlendState, ColorTargetState, ColorWrites, DepthBiasState, DepthStencilState, Features,
+    FragmentState, Limits, MultisampleState, PopError, RenderPipelineDescriptor, StencilFaceState,
+    StencilState, TextureFormat, VertexAttribute, VertexBufferLayout, VertexState, VertexStepMode,
+    WebGPU, WebGPUComputePipeline, WebGPUComputePipelineResponse, WebGPUDevice,
+    WebGPUPoppedErrorScopeResponse, WebGPUQueue, WebGPURenderPipeline,
+    WebGPURenderPipelineResponse, WebGPURequest,
 };
-use wgpu_types::{self, TextureFormat};
 
 use super::gpudevicelostinfo::GPUDeviceLostInfo;
 use crate::PipelineLayout;
@@ -60,6 +66,7 @@ use crate::gpucomputepipeline::GPUComputePipeline;
 use crate::gpuconvert::WebGPUConvert;
 use crate::gpuerror::{AsWebGpu, GPUError};
 use crate::gpuexternaltexture::GPUExternalTexture;
+use crate::gpupipelineerror::GPUPipelineError;
 use crate::gpupipelinelayout::GPUPipelineLayout;
 use crate::gpuqueryset::GPUQuerySet;
 use crate::gpurenderbundleencoder::GPURenderBundleEncoder;
@@ -72,7 +79,6 @@ use crate::gputexture::GPUTexture;
 use crate::gpuuncapturederrorevent::GPUUncapturedErrorEvent;
 use crate::traits::{
     Equivalence, EventTargetTrait, WebGPUGlobalTrait, WebGPUPromise, WebGPUPromiseCallbackTrait,
-    WebGPURootedPromiseTrait, WebGPUTracedPromiseTrait,
 };
 
 macro_rules! event_handler(
@@ -90,13 +96,13 @@ macro_rules! event_handler(
 /// These are used to generate a event handler which has no special case.
 macro_rules! define_event_handler(
     ($handler: ty, $event_type: ident, $getter: ident, $setter: ident, $setter_fn: ident) => (
-        fn $getter(&self, cx: &mut js::context::JSContext) -> Option<::std::rc::Rc<$handler>> {
+        fn $getter(&self, cx: &mut js::context::JSContext) -> Option<script_bindings::callback::RootedCallback<$handler>> {
             use crate::dom::bindings::inheritance::Castable;
             let eventtarget = self.upcast::<D::EventTarget>();
             D::EventTarget::get_event_handler_common(eventtarget, cx, stringify!($event_type))
         }
 
-        fn $setter(&self, cx: &mut js::context::JSContext, listener: Option<::std::rc::Rc<$handler>>) {
+        fn $setter(&self, cx: &mut js::context::JSContext, listener: Option<script_bindings::callback::RootedCallback<$handler>>) {
             use crate::dom::bindings::inheritance::Castable;
             let eventtarget = self.upcast::<D::EventTarget>();
             eventtarget.$setter_fn(cx, stringify!($event_type), listener)
@@ -144,7 +150,6 @@ pub struct GPUDevice<D: DomTypes> {
 impl<D> GPUDevice<D>
 where
     D: Equivalence,
-    <D::Promise as PromiseHelpers<D>>::StackRoot: WebGPUPromise<D>,
     EventHandlerNonNull<D>: CallbackContainer<D>,
 {
     #[allow(clippy::too_many_arguments)]
@@ -181,8 +186,8 @@ where
         channel: WebGPU,
         adapter: &GPUAdapter<D>,
         extensions: HandleObject,
-        features: wgpu_types::Features,
-        limits: wgpu_types::Limits,
+        features: Features,
+        limits: Limits,
         device: WebGPUDevice,
         queue: WebGPUQueue,
         label: String,
@@ -190,8 +195,8 @@ where
         let queue = D::GPUQueue::new(cx, global, channel.clone(), queue);
         let limits = GPUSupportedLimits::new(cx, global, limits);
         let features = GPUSupportedFeatures::Constructor(cx, global, None, features).unwrap();
-        let adapter_info = GPUAdapterInfo::clone_from(cx, global, &adapter.Info());
-        let lost_promise = <D::Promise as PromiseHelpers<D>>::StackRoot::new_rooted(cx, global);
+        let adapter_info = GPUAdapterInfo::clone_from(cx, global, &adapter.info());
+        let lost_promise = D::Promise::new_rooted(cx, global);
         let device = reflect_weak_referenceable_dom_object_with_cx_and_wrap::<D, _, _>(
             cx,
             Rc::new(GPUDevice::new_inherited(
@@ -226,10 +231,6 @@ where
 
     pub fn queue_id(&self) -> WebGPUQueue {
         self.default_queue.id()
-    }
-
-    pub fn channel(&self) -> WebGPU {
-        self.droppable.channel.clone()
     }
 
     pub(crate) fn dispatch_error(&self, error: webgpu_traits::Error) {
@@ -289,10 +290,6 @@ where
         }
     }
 
-    pub(crate) fn is_lost(&self) -> bool {
-        self.lost_promise.borrow().is_fulfilled()
-    }
-
     pub(crate) fn get_pipeline_layout_data(
         &self,
         layout: &GPUPipelineLayoutOrGPUAutoLayoutMode<D>,
@@ -326,16 +323,14 @@ where
                             Some(VertexBufferLayout {
                                 array_stride: buffer.arrayStride,
                                 step_mode: match buffer.stepMode {
-                                    GPUVertexStepMode::Vertex => wgpu_types::VertexStepMode::Vertex,
-                                    GPUVertexStepMode::Instance => {
-                                        wgpu_types::VertexStepMode::Instance
-                                    },
+                                    GPUVertexStepMode::Vertex => VertexStepMode::Vertex,
+                                    GPUVertexStepMode::Instance => VertexStepMode::Instance,
                                 },
                                 attributes: Cow::Owned(
                                     buffer
                                         .attributes
                                         .iter()
-                                        .map(|att| wgpu_types::VertexAttribute {
+                                        .map(|att| VertexAttribute {
                                             format: att.format.convert(),
                                             offset: att.offset,
                                             shader_location: att.shaderLocation,
@@ -360,14 +355,13 @@ where
                                 .map(|state| {
                                     self.validate_texture_format_required_features(&state.format)
                                         .map(|format| {
-                                            Some(wgpu_types::ColorTargetState {
+                                            Some(ColorTargetState {
                                                 format,
-                                                write_mask:
-                                                    wgpu_types::ColorWrites::from_bits_retain(
-                                                        state.writeMask,
-                                                    ),
+                                                write_mask: ColorWrites::from_bits_retain(
+                                                    state.writeMask,
+                                                ),
                                                 blend: state.blend.as_ref().map(|blend| {
-                                                    wgpu_types::BlendState {
+                                                    BlendState {
                                                         color: (&blend.color).convert(),
                                                         alpha: (&blend.alpha).convert(),
                                                     }
@@ -386,19 +380,19 @@ where
                 .as_ref()
                 .map(|dss_desc| {
                     self.validate_texture_format_required_features(&dss_desc.format)
-                        .map(|format| wgpu_types::DepthStencilState {
+                        .map(|format| DepthStencilState {
                             format,
                             depth_write_enabled: dss_desc.depthWriteEnabled,
                             depth_compare: dss_desc.depthCompare.map(|dc| dc.convert()),
-                            stencil: wgpu_types::StencilState {
-                                front: wgpu_types::StencilFaceState {
+                            stencil: StencilState {
+                                front: StencilFaceState {
                                     compare: dss_desc.stencilFront.compare.convert(),
 
                                     fail_op: dss_desc.stencilFront.failOp.convert(),
                                     depth_fail_op: dss_desc.stencilFront.depthFailOp.convert(),
                                     pass_op: dss_desc.stencilFront.passOp.convert(),
                                 },
-                                back: wgpu_types::StencilFaceState {
+                                back: StencilFaceState {
                                     compare: dss_desc.stencilBack.compare.convert(),
                                     fail_op: dss_desc.stencilBack.failOp.convert(),
                                     depth_fail_op: dss_desc.stencilBack.depthFailOp.convert(),
@@ -407,7 +401,7 @@ where
                                 read_mask: dss_desc.stencilReadMask,
                                 write_mask: dss_desc.stencilWriteMask,
                             },
-                            bias: wgpu_types::DepthBiasState {
+                            bias: DepthBiasState {
                                 constant: dss_desc.depthBias,
                                 slope_scale: *dss_desc.depthBiasSlopeScale,
                                 clamp: *dss_desc.depthBiasClamp,
@@ -415,7 +409,7 @@ where
                         })
                 })
                 .transpose()?,
-            multisample: wgpu_types::MultisampleState {
+            multisample: MultisampleState {
                 count: descriptor.multisample.count,
                 mask: descriptor.multisample.mask as u64,
                 alpha_to_coverage_enabled: descriptor.multisample.alphaToCoverageEnabled,
@@ -423,6 +417,15 @@ where
             multiview_mask: None,
         };
         Ok(desc)
+    }
+}
+
+impl<D> GPUDevice<D>
+where
+    D: Equivalence,
+{
+    pub fn channel(&self) -> WebGPU {
+        self.droppable.channel.clone()
     }
 
     /// <https://gpuweb.github.io/gpuweb/#lose-the-device>
@@ -440,6 +443,10 @@ where
                 GPUDeviceLostInfo::<D>::new(cx, &*this.global_from_reflector(), msg.into(), reason);
             lost_promise.resolve_native(cx, &*lost);
         }));
+    }
+
+    pub(crate) fn is_lost(&self) -> bool {
+        self.lost_promise.borrow().is_fulfilled()
     }
 }
 
@@ -697,6 +704,134 @@ where
             {
                 warn!("Failed to send DestroyDevice ({:?}) ({})", self.id().0, e);
             }
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, WebGPUPoppedErrorScopeResponse> for GPUDevice<D>
+where
+    Self: DomGlobalGeneric<D>,
+    D::GPUError: Castable,
+    D::GPUValidationError: DerivedFrom<GPUError<D>>,
+    D::GPUOutOfMemoryError: DerivedFrom<GPUError<D>>,
+    D::GPUInternalError: DerivedFrom<GPUError<D>>,
+    D::DOMException: DomExceptionTrait,
+{
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: WebGPUPoppedErrorScopeResponse,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(None) | Err(PopError::Lost) => {
+                promise.resolve_native(cx, &None::<Option<GPUError<D>>>)
+            },
+            Err(PopError::Empty) => promise.reject_error(
+                cx,
+                Error::Operation(Some("Error scope stack is empty".into())),
+            ),
+            Ok(Some(error)) => {
+                let error = GPUError::<D>::from_error(cx, &self.global_from_reflector(), error);
+                promise.resolve_native(cx, &error);
+            },
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, WebGPUComputePipelineResponse> for GPUDevice<D>
+where
+    Self: DomGlobalGeneric<D>,
+    D::GPUError: Castable,
+    D::GPUValidationError: DerivedFrom<GPUError<D>>,
+    D::GPUOutOfMemoryError: DerivedFrom<GPUError<D>>,
+    D::GPUInternalError: DerivedFrom<GPUError<D>>,
+    D::DOMException: DomExceptionTrait,
+{
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: WebGPUComputePipelineResponse,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(pipeline) => {
+                let gpu_compute_pipeline = GPUComputePipeline::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    WebGPUComputePipeline(pipeline.id),
+                    pipeline.label.into(),
+                    self,
+                );
+                promise.resolve_native(cx, &gpu_compute_pipeline)
+            },
+            Err(webgpu_traits::Error::Validation(msg)) => {
+                let gpu_pipeline_error = GPUPipelineError::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    msg.into(),
+                    GPUPipelineErrorReason::Validation,
+                );
+                promise.reject_native(cx, &gpu_pipeline_error)
+            },
+            Err(webgpu_traits::Error::OutOfMemory(msg) | webgpu_traits::Error::Internal(msg)) => {
+                let gpu_pipeline_error = GPUPipelineError::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    msg.into(),
+                    GPUPipelineErrorReason::Internal,
+                );
+                promise.reject_native(cx, &gpu_pipeline_error)
+            },
+        }
+    }
+}
+
+impl<D: Equivalence> RoutedPromiseListener<D, WebGPURenderPipelineResponse> for GPUDevice<D>
+where
+    Self: DomGlobalGeneric<D>,
+    D::GPUError: Castable,
+    D::GPUValidationError: DerivedFrom<GPUError<D>>,
+    D::GPUOutOfMemoryError: DerivedFrom<GPUError<D>>,
+    D::GPUInternalError: DerivedFrom<GPUError<D>>,
+    D::DOMException: DomExceptionTrait,
+{
+    fn handle_response(
+        &self,
+        cx: &mut js::context::JSContext,
+        response: WebGPURenderPipelineResponse,
+        promise: &<D::Promise as PromiseHelpers<D>>::StackRoot,
+    ) {
+        match response {
+            Ok(pipeline) => {
+                let gpu_pipeline = GPURenderPipeline::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    WebGPURenderPipeline(pipeline.id),
+                    pipeline.label.into(),
+                    self,
+                );
+                promise.resolve_native(cx, &gpu_pipeline)
+            },
+            Err(webgpu_traits::Error::Validation(msg)) => {
+                let pipeline_error = GPUPipelineError::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    msg.into(),
+                    GPUPipelineErrorReason::Validation,
+                );
+
+                promise.reject_native(cx, &pipeline_error)
+            },
+            Err(webgpu_traits::Error::OutOfMemory(msg) | webgpu_traits::Error::Internal(msg)) => {
+                let pipeline_error = GPUPipelineError::<D>::new(
+                    cx,
+                    &self.global_from_reflector(),
+                    msg.into(),
+                    GPUPipelineErrorReason::Internal,
+                );
+                promise.reject_native(cx, &pipeline_error)
+            },
         }
     }
 }
