@@ -161,7 +161,8 @@ pub(crate) struct InlineFormattingContext {
     inline_boxes: InlineBoxes,
 
     /// The text content of this inline formatting context.
-    text_content: String,
+    #[conditional_malloc_size_of]
+    text_content: Arc<OnceLock<String>>,
 
     /// The [`SharedInlineStyles`] for the root of this [`InlineFormattingContext`] that are used to
     /// share styles with all [`TextRun`] children.
@@ -1659,7 +1660,7 @@ impl InlineFormattingContextLayout<'_> {
         // If the metrics of this font don't match the default font, we are likely using another
         // font from the font list or a fallback and should incorporate its block size into the block
         // size of the container.
-        let font_metrics = &info.font_info.font.metrics;
+        let font_metrics = info.font_info.font.metrics();
         if current_inline_container_state
             .font_metrics
             .block_metrics_meaningfully_differ(font_metrics)
@@ -2017,8 +2018,13 @@ impl InlineFormattingContext {
         );
 
         let has_right_to_left_content = bidi_levels.info.as_ref().is_some_and(BidiInfo::has_rtl);
+        builder
+            .text_content_slot
+            .set(text_content)
+            .expect("Text content should not yet be set.");
+
         InlineFormattingContext {
-            text_content,
+            text_content: builder.text_content_slot,
             inline_items: builder.inline_items,
             inline_boxes: builder.inline_boxes,
             shared_inline_styles,
@@ -2029,6 +2035,10 @@ impl InlineFormattingContext {
             has_right_to_left_content,
             tab_size_multiplier: Default::default(),
         }
+    }
+
+    pub(crate) fn text_content(&self) -> &str {
+        self.text_content.get().map_or("", String::as_str)
     }
 
     pub(crate) fn repair_style(
@@ -2189,14 +2199,18 @@ impl InlineFormattingContext {
     }
 
     fn next_character_prevents_soft_wrap_opportunity(&self, index: Utf8CodeUnits) -> bool {
-        let Some(second_character) = self.text_content[usize::from(index)..].chars().nth(1) else {
+        let Some(second_character) = self.text_content()[usize::from(index)..].chars().nth(1)
+        else {
             return false;
         };
         char_prevents_soft_wrap_opportunity_when_before_or_after_atomic(second_character)
     }
 
     fn previous_character_prevents_soft_wrap_opportunity(&self, index: Utf8CodeUnits) -> bool {
-        let Some(character) = self.text_content[..usize::from(index)].chars().next_back() else {
+        let Some(character) = self.text_content()[..usize::from(index)]
+            .chars()
+            .next_back()
+        else {
             return false;
         };
         char_prevents_soft_wrap_opportunity_when_before_or_after_atomic(character)
@@ -2316,7 +2330,7 @@ impl InlineFormattingContext {
 
             // Each "space" character in the tab is considered both a letter and a word separator for
             // the purposes of applying word spacing and letter spacing.
-            font.metrics.space_advance + word_spacing + letter_spacing
+            font.metrics().space_advance + word_spacing + letter_spacing
         });
 
         let tab_stop_advance = match style.get_inherited_text().tab_size {
@@ -2337,9 +2351,9 @@ impl InlineFormattingContext {
         // > In the cases where it is impossible or impractical to determine the measure of the “0”
         // > glyph, it must be assumed to be 0.5em wide by 1em tall.
         let half_ch_advance = font
-            .metrics
+            .metrics()
             .zero_horizontal_advance
-            .unwrap_or(font.metrics.em_size.scale_by(0.5))
+            .unwrap_or(font.metrics().em_size.scale_by(0.5))
             .scale_by(0.5);
         let number_of_tab_stops =
             (current_inline_advance + half_ch_advance).to_f32_px() / tab_stop_advance.to_f32_px();
@@ -2357,7 +2371,7 @@ impl InlineContainerState {
     ) -> Self {
         let font_metrics = default_font
             .as_ref()
-            .map(|font| font.metrics.clone())
+            .map(|font| font.metrics().clone())
             .unwrap_or_else(FontMetrics::empty);
         let mut baseline_offset = Au::zero();
         let mut strut_block_sizes = {

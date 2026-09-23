@@ -18,18 +18,28 @@ on:
         type: boolean
         default: false
       release_tag:
-        required: true
+        required: false
         type: string
-        description: 'The tag to create for the release'
+        description: 'The tag to create for the release. Leave empty for a date-stamped nightly.'
+
+# contents: create releases and upload assets for regular releases on this repo.
+# actions: upload/download build artifacts. id-token/attestations: provenance.
+permissions:
+  contents: write
+  actions: write
+  id-token: write
+  attestations: write
+
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
-  RELEASE_REPO: ${{ github.repository_owner }}/${{ inputs.regular_release && 'servo' || 'servo-nightly-builds' }}
+  RELEASE_ASSET_PREFIX: aether
+  RELEASE_REPO: ${{ github.repository_owner }}/${{ inputs.regular_release && 'aether' || 'aether-nightly-builds' }}
 
 jobs:
   create-draft-release:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Create Draft GH Release
     runs-on: ubuntu-latest
     environment: &publish-environment
@@ -50,13 +60,13 @@ jobs:
           if [[ "${{ inputs.release_tag }}" != "" ]]; then
             RELEASE_TAG="${{ inputs.release_tag }}"
             if [[ "${{ inputs.regular_release }}" == "true" ]]; then
-              RELEASE_NOTES="Servo release ${{ inputs.release_tag }}"
+              RELEASE_NOTES="Aether release ${{ inputs.release_tag }}"
             else
-              RELEASE_NOTES="Servo release ${{ inputs.release_tag }} based on ${{ github.repository }}@${{ github.sha }}"          
+              RELEASE_NOTES="Aether release ${{ inputs.release_tag }} based on ${{ github.repository }}@${{ github.sha }}"
             fi
           else
             RELEASE_TAG=$(date "+%F")
-            RELEASE_NOTES="Nightly build based on servo/servo@${{ github.sha }}"
+            RELEASE_NOTES="Nightly build based on ${{ github.repository }}@${{ github.sha }}"
           fi
           RELEASE_URL=$(gh release create "${RELEASE_TAG}" \
             --draft \
@@ -81,8 +91,8 @@ jobs:
   publish-nightly-release:
     # We only auto-publish nightly releases, so we do not use this job for regular releases.
     if: |
-      always() 
-        && (github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch')
+      always()
+        && (github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch')
         && (inputs.regular_release || false) == false
     name: Publish GH Release
     runs-on: ubuntu-latest
@@ -124,9 +134,9 @@ jobs:
       # - build-android
       - build-linux
       - build-linux-arm64
-      # - build-mac
-      # - build-mac-arm64
-      # - build-ohos
+      - build-mac
+      - build-mac-arm64
+      - build-ohos
       - build-win
 
   publish-crates-io:
@@ -169,8 +179,8 @@ jobs:
           python3 etc/ci/publish_crates_io.py --no-verify --fail-on-timeout
 
   build-win:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Windows)
     uses: ./.github/workflows/windows.yml
     with:
@@ -179,8 +189,8 @@ jobs:
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
   upload-vendored-source:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Upload vendored source archive
     runs-on: ubuntu-latest
     environment: *publish-environment
@@ -189,8 +199,8 @@ jobs:
       id-token: write
       attestations: write
     env:
-      ARTIFACT_BASENAME: "servo-${{ needs.create-draft-release.outputs.release-tag }}-src-vendored"
-      ARTIFACT_FILENAME: "servo-${{ needs.create-draft-release.outputs.release-tag }}-src-vendored.tar.gz"
+      ARTIFACT_BASENAME: "aether-${{ needs.create-draft-release.outputs.release-tag }}-src-vendored"
+      ARTIFACT_FILENAME: "aether-${{ needs.create-draft-release.outputs.release-tag }}-src-vendored.tar.gz"
     needs:
       - create-draft-release
     steps:
@@ -213,51 +223,52 @@ jobs:
           GITHUB_TOKEN: ${{ inputs.regular_release && github.token || secrets.NIGHTLY_REPO_TOKEN }}
 
   upload-artifacts-nightly:
-    # Only run scheduled nightly builds on upstream servo.
     # Partial failures of the build jobs are accepted for nightly.
     if: |
-      !cancelled() 
+      !cancelled()
         && needs.create-draft-release.result == 'success'
-        && (github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch')
+        && (github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch')
         && (inputs.regular_release || false) == false
     runs-on: ubuntu-latest
     permissions:
+      contents: write
       id-token: write
       attestations: write
     environment: *publish-environment
     needs: &upload-artifacts-needs
       - create-draft-release
       - build-win
-      # - build-mac
-      # - build-mac-arm64
+      - build-mac
+      - build-mac-arm64
       - build-linux
       - build-linux-arm64
       # - build-android
-      # - build-ohos
+      - build-ohos
     strategy: &upload-artifacts-strategy
       fail-fast: false
       matrix:
         include:
           - artifact_ids: ${{ needs.build-win.outputs.artifact_ids }}
             artifact_platform: windows-msvc
-          # - artifact_ids: ${{ needs.build-mac.outputs.artifact_ids }}
-          #   artifact_platform: mac
-          # - artifact_ids: ${{ needs.build-mac-arm64.outputs.artifact_ids }}
-          #   artifact_platform: mac-arm64
+          - artifact_ids: ${{ needs.build-mac.outputs.artifact_ids }}
+            artifact_platform: mac
+          - artifact_ids: ${{ needs.build-mac-arm64.outputs.artifact_ids }}
+            artifact_platform: mac-arm64
           - artifact_ids: ${{ needs.build-linux.outputs.artifact_ids }}
             artifact_platform: linux
           - artifact_ids: ${{ needs.build-linux-arm64.outputs.artifact_ids }}
             artifact_platform: linux-arm64
           # - artifact_ids: ${{ needs.build-android.outputs.artifact_ids }}
           #   artifact_platform: android
-          # - artifact_ids: ${{ needs.build-ohos.outputs.artifact_ids }}
-          #   artifact_platform: ohos
+          - artifact_ids: ${{ needs.build-ohos.outputs.artifact_ids }}
+            artifact_platform: ohos
     env:
       ARTIFACT_IDS: ${{ matrix.artifact_ids }}
       ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
       GITHUB_RELEASE_ID: ${{ needs.create-draft-release.outputs.release-id }}
-      RELEASE_REPO: ${{ github.repository_owner }}/servo-nightly-builds
+      RELEASE_REPO: ${{ github.repository_owner }}/aether-nightly-builds
       RELEASE_REPO_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
+      RELEASE_ASSET_PREFIX: aether
       S3_UPLOAD_CREDENTIALS: ${{ secrets.S3_UPLOAD_CREDENTIALS }}
     steps: &upload-artifacts-steps
       - uses: actions/checkout@v6
@@ -308,33 +319,34 @@ jobs:
       ARTIFACT_IDS: ${{ matrix.artifact_ids }}
       ARTIFACT_PLATFORM: ${{ matrix.artifact_platform }}
       GITHUB_RELEASE_ID: ${{ needs.create-draft-release.outputs.release-id }}
-      RELEASE_REPO: ${{ github.repository_owner }}/servo
+      RELEASE_REPO: ${{ github.repository_owner }}/aether
       RELEASE_REPO_TOKEN: ${{ github.token }}
+      RELEASE_ASSET_PREFIX: aether
       S3_UPLOAD_CREDENTIALS: ${{ secrets.S3_UPLOAD_CREDENTIALS }}
     steps: *upload-artifacts-steps
 
 
-  # build-mac:
-  #   # This job is only useful when run on upstream servo.
-  #   if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (macOS)
-  #   uses: ./.github/workflows/mac.yml
-  #   with:
-  #     profile: "production"
-  #     force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+  build-mac:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (macOS)
+    uses: ./.github/workflows/mac.yml
+    with:
+      profile: "production"
+      force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
-  # build-mac-arm64:
-  #   # This job is only useful when run on upstream servo.
-  #   if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (macOS Arm64)
-  #   uses: ./.github/workflows/mac-arm64.yml
-  #   with:
-  #     profile: "production"
-  #     force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+  build-mac-arm64:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (macOS Arm64)
+    uses: ./.github/workflows/mac-arm64.yml
+    with:
+      profile: "production"
+      force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
   build-linux:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Linux)
     uses: ./.github/workflows/linux.yml
     with:
@@ -342,8 +354,8 @@ jobs:
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
   build-linux-arm64:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Linux Arm64)
     uses: ./.github/workflows/linux-arm64.yml
     with:
@@ -351,20 +363,20 @@ jobs:
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
 
   # build-android:
-  #   # This job is only useful when run on upstream servo.
-  #   if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+  #   # This job is only useful when run on upstream aether.
+  #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
   #   name: Build release (Android)
   #   uses: ./.github/workflows/android.yml
   #   with:
   #     profile: "production"
   #   secrets: inherit
 
-  # build-ohos:
-  #   # This job is only useful when run on upstream servo.
-  #   if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
-  #   name: Build production release (OpenHarmony)
-  #   uses: ./.github/workflows/ohos.yml
-  #   with:
-  #     profile: "production"
-  #     upload_library: true
-  #   secrets: inherit
+  build-ohos:
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build production release (OpenHarmony)
+    uses: ./.github/workflows/ohos.yml
+    with:
+      profile: "production"
+      upload_library: true
+    secrets: inherit

@@ -19,7 +19,7 @@ ls -l
 
 # Load a page that closes immediately after loading.
 c='data:text/html,<script>onload=()=>{console.log("success");close()}</script>'
-./servoshell --headless ${c} | tee /tmp/out
+./aether --headless ${c} | tee /tmp/out
 grep 'success' /tmp/out
 
 # Clean up.

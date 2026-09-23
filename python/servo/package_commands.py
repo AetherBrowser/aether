@@ -285,7 +285,7 @@ class PackageCommands(CommandBase):
             print("Copying files")
             copy_packaged_resources(dir_to_root, dir_to_resources)
             shutil.copy2(
-                path.join(dir_to_root, "ports/servoshell/platform/macos/Info.plist"),
+                path.join(dir_to_root, "ports", self.port.value, "platform", "macos", "Info.plist"),
                 path.join(dir_to_app, "Contents", "Info.plist"),
             )
 
@@ -295,7 +295,7 @@ class PackageCommands(CommandBase):
             shutil.copy2(binary_path, content_dir)
 
             print("Packaging GStreamer...")
-            dmg_binary = path.join(content_dir, "servoshell")
+            dmg_binary = path.join(content_dir, path.basename(binary_path))
             servo.gstreamer.package_gstreamer_dylibs(dmg_binary, lib_dir, self.target)
 
             print("Adding version to Credits.rtf")
@@ -363,14 +363,21 @@ class PackageCommands(CommandBase):
             shutil.copy(binary_path, dir_to_temp)
             copy_windows_dependencies(target_dir, dir_to_temp)
 
-            # generate ServoShell.wxs
+            binary_name = path.basename(binary_path)
+
+            # generate Aether.wxs
             import mako.template
 
-            template_path = path.join(dir_to_root, "support", "windows", "ServoShell.wxs.mako")
+            template_path = path.join(dir_to_root, "support", "windows", "aether.wxs.mako")
             template = mako.template.Template(open(template_path).read())
             wxs_path = path.join(dir_to_msi, "Installer.wxs")
             open(wxs_path, "w").write(
-                template.render(exe_path=target_dir, dir_to_temp=dir_to_temp, resources_path=dir_to_resources)
+                template.render(
+                    exe_path=target_dir,
+                    dir_to_temp=dir_to_temp,
+                    resources_path=dir_to_resources,
+                    binary_name=binary_name,
+                )
             )
 
             # NOTE: `-acceptEula` below is accepting the conditions of WiX's
@@ -389,7 +396,7 @@ class PackageCommands(CommandBase):
                 print("WiX build exited with return value %d" % e.returncode)
                 return e.returncode
             dir_to_installer = path.join(dir_to_msi, "Installer.msi")
-            print("Packaged Servo into " + dir_to_installer)
+            print("Packaged Aether into " + dir_to_installer)
 
             # Register the WiX extension used by the bundle below. The extension is fetched
             # from NuGet and cached under %USERPROFILE%\.wix\extensions. Pin the version to
@@ -414,10 +421,10 @@ class PackageCommands(CommandBase):
                 )
                 return result.returncode
 
-            # Generate bundle with Servo installer.
+            # Generate bundle with Aether installer.
             print("Creating bundle")
-            shutil.copy(path.join(dir_to_root, "support", "windows", "ServoShell.wxs"), dir_to_msi)
-            bundle_wxs_path = path.join(dir_to_msi, "ServoShell.wxs")
+            bundle_wxs_path = path.join(dir_to_msi, "Aether.wxs")
+            shutil.copy(path.join(dir_to_root, "support", "windows", "aether.wxs"), bundle_wxs_path)
             try:
                 with cd(dir_to_msi):
                     subprocess.check_call(
@@ -434,12 +441,12 @@ class PackageCommands(CommandBase):
             except subprocess.CalledProcessError as e:
                 print("WiX build exited with return value %d" % e.returncode)
                 return e.returncode
-            print("Packaged Servo into " + path.join(dir_to_msi, "ServoShell.exe"))
+            print("Packaged Aether into " + path.join(dir_to_msi, "Aether.exe"))
 
             print("Creating ZIP")
-            zip_path = path.join(dir_to_msi, "ServoShell.zip")
-            archive_deterministically(dir_to_temp, zip_path, prepend_path="servo/")
-            print("Packaged Servo into " + zip_path)
+            zip_path = path.join(dir_to_msi, "Aether.zip")
+            archive_deterministically(dir_to_temp, zip_path, prepend_path="aether/")
+            print("Packaged Aether into " + zip_path)
 
             print("Cleaning up")
             delete(dir_to_temp)
@@ -511,8 +518,8 @@ class PackageCommands(CommandBase):
             hdc_path = path.join(env["OHOS_SDK_NATIVE"], "../", "toolchains", "hdc")
             exec_command = [hdc_path, "install", "-r", pkg_path]
         elif is_windows():
-            pkg_path = path.join(path.dirname(binary_path), "msi", "Servo.msi")
-            exec_command = ["msiexec", "/i", pkg_path]
+            pkg_path = path.join(path.dirname(binary_path), "msi", "Aether.exe")
+            exec_command = [pkg_path]
         else:
             print("install command not supported for the current target")
             return 1
@@ -576,8 +583,10 @@ class PackageCommands(CommandBase):
         print("Updated occurrences in workspace Cargo.toml.")
 
         replacements = {
+            "ports/aether/platform/windows/servoshell.exe.manifest": r'assemblyIdentity[^\/>]+version="(?P<version>.*?).0\"[^\/>]*\/>',
             "ports/servoshell/platform/windows/servoshell.exe.manifest": r'assemblyIdentity[^\/>]+version="(?P<version>.*?).0\"[^\/>]*\/>',
-            "support/windows/servoshell.wxs.mako": r'<Package(?:.|\n)*?\sVersion="(?P<version>[^"]*)"',
+            "support/windows/aether.wxs.mako": r'<Package(?:.|\n)*?\sVersion="(?P<version>[^"]*)"',
+            "ports/aether/platform/macos/Info.plist": r"<key>CFBundleShortVersionString</key>\n\s*<string>(?P<version>.*?)</string>",
             "ports/servoshell/platform/macos/Info.plist": r"<key>CFBundleShortVersionString</key>\n\s*<string>(?P<version>.*?)</string>",
             "support/android/apk/servoapp/build.gradle.kts": r'versionName\s*=\s*"(?P<version>.*?)"',
             "support/openharmony/oh-package.json5": r'"version"\s*:\s*"(?P<version>.*?)"',

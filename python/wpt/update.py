@@ -27,8 +27,8 @@ def do_sync(**kwargs: str) -> int:
     last_commit = subprocess.check_output(["git", "log", "-1"])
 
     # Commits should always be authored by the GitHub Actions bot.
-    os.environ["GIT_AUTHOR_NAME"] = "Servo WPT Sync"
-    os.environ["GIT_AUTHOR_EMAIL"] = "ghbot+wpt-sync@servo.org"
+    os.environ["GIT_AUTHOR_NAME"] = "Aether WPT Sync"
+    os.environ["GIT_AUTHOR_EMAIL"] = "41898282+github-actions[bot]@users.noreply.github.com"
     os.environ["GIT_COMMITTER_NAME"] = os.environ["GIT_AUTHOR_NAME"]
     os.environ["GIT_COMMITTER_EMAIL"] = os.environ["GIT_AUTHOR_EMAIL"]
 

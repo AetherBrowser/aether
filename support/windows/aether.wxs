@@ -1,0 +1,27 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Aether"
+          Version="1.0"
+          UpgradeCode="3e9f1c7a-2d46-4b8e-a015-7c4d8e2f6a91">
+
+    <Variable Name="InstallFolder"
+          Type="formatted"
+          Value="[ProgramFiles64Folder]Aether\Aether"
+          bal:Overridable="yes" />
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+        LicenseUrl="https://www.mozilla.org/en-US/MPL/2.0/"
+        Theme="hyperlinkLicense"
+        />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage
+          SourceFile="Installer.msi"
+          Compressed="yes"
+          DisplayName="Aether"
+          ForcePerMachine="yes">
+        <MsiProperty Name="INSTALLDIR" Value="[InstallFolder]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

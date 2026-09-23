@@ -23,6 +23,10 @@ from github import Github, Auth  # pyrefly: ignore
 import boto3  # pyrefly: ignore
 
 
+def asset_prefix() -> str:
+    return os.environ.get("RELEASE_ASSET_PREFIX", "servo")
+
+
 def get_s3_secret(secret_from_environment: bool) -> tuple:
     aws_access_key = None
     aws_secret_access_key = None
@@ -31,6 +35,12 @@ def get_s3_secret(secret_from_environment: bool) -> tuple:
         aws_access_key = secret["aws_access_key_id"]
         aws_secret_access_key = secret["aws_secret_access_key"]
     return (aws_access_key, aws_secret_access_key)
+
+
+def should_upload_s3(secret_from_environment: bool) -> bool:
+    if not secret_from_environment:
+        return False
+    return bool(os.environ.get("S3_UPLOAD_CREDENTIALS"))
 
 
 def nightly_filename(package: str, timestamp: datetime) -> str:
@@ -70,7 +80,7 @@ def upload_to_github_release(platform: str, package: str, package_hash: str, git
     release = nightly_repo.get_release(github_release_id)
 
     asset_platform = map_platform(platform)
-    asset_name = f"servo-{asset_platform}.{extension}"
+    asset_name = f"{asset_prefix()}-{asset_platform}.{extension}"
     package_hash_fileobj = io.BytesIO(f"{package_hash}  {asset_name}".encode("utf-8"))
     release.upload_asset(package, name=asset_name)
     # pyrefly: ignore[missing-attribute]
@@ -146,7 +156,10 @@ def upload_nightly(
                 sha256_digest.update(data)
         package_hash = sha256_digest.hexdigest()
 
-        upload_to_s3(platform, package, package_hash, timestamp, secret_from_environment)
+        if should_upload_s3(secret_from_environment):
+            upload_to_s3(platform, package, package_hash, timestamp, secret_from_environment)
+        elif secret_from_environment:
+            print("Skipping S3 upload (S3_UPLOAD_CREDENTIALS is not set).", file=sys.stderr)
         upload_to_github_release(platform, package, package_hash, github_release_id)
 
     return 0

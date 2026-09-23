@@ -103,6 +103,16 @@ jobs:
   build:
     needs: ["decision"]
     name: ${{ matrix.name }}
+    # ohos.yml jobs request attestations: read. A called workflow cannot
+    # exceed the permissions of this job, and that scope defaults to none.
+    permissions:
+      contents: read
+      attestations: read
+      # Used by runner selection to delete temporary artifacts, and by WPT
+      # result comments and check runs.
+      actions: write
+      checks: write
+      pull-requests: write
     strategy:
       fail-fast: ${{ fromJson(needs.decision.outputs.configuration).fail_fast }}
       matrix:

@@ -358,12 +358,38 @@ class CommandBase(object):
         if sanitizer.is_some() or self.target.is_cross_build() or self.enable_code_coverage:
             base_path = path.join(base_path, self.target.triple())
         binary_name = self.target.binary_name(self.port)
-        binary_path = path.join(base_path, build_type.directory_name(), binary_name)
+        output_dir = path.join(base_path, build_type.directory_name())
+        binary_path = path.join(output_dir, binary_name)
+
+        # Android and OpenHarmony package a cdylib. Cargo names that library after the
+        # port crate (`libaether.so`), while the platform apps and CI artifacts still
+        # load `libservoshell.so`.
+        if self.target.needs_packaging():
+            self._alias_packaged_cdylib(output_dir, binary_name)
 
         if not path.exists(binary_path):
-            raise BuildNotFound("No Servo binary found. Perhaps you forgot to run `./mach build`?")
+            raise BuildNotFound(f"No Servo binary found at `{binary_path}`. Perhaps you forgot to run `./mach build`?")
 
         return binary_path
+
+    def _alias_packaged_cdylib(self, output_dir: str, expected_name: str) -> None:
+        built_name = f"lib{self.port.value}.so"
+        if built_name == expected_name:
+            return
+
+        built_path = path.join(output_dir, built_name)
+        expected_path = path.join(output_dir, expected_name)
+        if not path.exists(built_path):
+            return
+
+        if path.lexists(expected_path):
+            os.remove(expected_path)
+
+        try:
+            os.link(built_path, expected_path)
+        except OSError:
+            shutil.copy2(built_path, expected_path)
+        print(f"Linking {built_name} as {expected_name} for packaging")
 
     def msvc_package_dir(self, package: str) -> str:
         return servo.platform.windows.get_dependency_dir(package)

@@ -8,20 +8,28 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+# contents/pull-requests: open the sync PR.
+# actions: upload/download WPT logs from the Linux jobs.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
 jobs:
   linux:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Linux
     uses: ./.github/workflows/linux.yml
+    secrets: inherit
     with:
       wpt-sync-from-upstream: true
       wpt: true
       unit-tests: false
 
   sync:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Synchronize WPT Nightly
     runs-on: ubuntu-22.04
     needs:
@@ -40,12 +48,11 @@ jobs:
         run: |
           sudo apt update
           ./mach bootstrap --yes --skip-lints --skip-nextest
-      - name: Add upstream remote
+      - name: Configure git and unshallow
         run: |
-          git config --local user.email "ghbot+wpt-sync@servo.org"
-          git config --local user.name "WPT Sync Bot"
-          git remote add upstream https://github.com/servo/servo.git
-          git fetch --unshallow upstream
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "Aether WPT Sync"
+          git fetch --unshallow origin
       - name: Fetch upstream changes before syncing
         run: |
           ./mach update-wpt --sync --patch
@@ -61,10 +68,11 @@ jobs:
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
+          github_token: ${{ secrets.WPT_SYNC_TOKEN || github.token }}
           branch: wpt_update_${{ env.CURRENT_DATE }}
       - name: Open PR
         env:
-          GH_TOKEN: ${{ secrets.WPT_SYNC_TOKEN }}
+          GH_TOKEN: ${{ secrets.WPT_SYNC_TOKEN || github.token }}
           UPDATE_BRANCH: wpt_update_${{ env.CURRENT_DATE }}
         run: |
           BODY=$(cat <<EOF
