@@ -32,6 +32,7 @@ const APP_MENU_ID: &str = "app_menu";
 pub(crate) enum AppMenuAction {
     NewTab,
     NewWindow,
+    History,
 }
 
 /// Application menu opened from the toolbar hamburger button.
@@ -105,6 +106,9 @@ impl AppMenu {
             return Some(action);
         }
         if let Some(action) = Self::action_item(ui, "New Window", AppMenuAction::NewWindow) {
+            return Some(action);
+        }
+        if let Some(action) = Self::action_item(ui, "History", AppMenuAction::History) {
             return Some(action);
         }
 

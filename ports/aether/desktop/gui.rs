@@ -669,6 +669,11 @@ impl Gui {
                         Some(AppMenuAction::NewWindow) => {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWindow);
                         },
+                        Some(AppMenuAction::History) => {
+                            window.queue_user_interface_command(UserInterfaceCommand::Go(
+                                "servo:history".into(),
+                            ));
+                        },
                         None => {},
                     }
                 }
