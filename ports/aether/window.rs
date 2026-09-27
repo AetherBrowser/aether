@@ -41,6 +41,28 @@ pub(crate) fn processes_url() -> Url {
     Url::parse(PROCESSES_URL).expect("Should always be able to parse 'servo:processes' as URL")
 }
 
+/// The scheme of the page source view opened from More Tools.
+pub(crate) const VIEW_SOURCE_SCHEME: &str = "view-source";
+
+/// Schemes whose source may be viewed. Everything else, a second `view-source:`
+/// included, is refused rather than fetched.
+pub(crate) const VIEWABLE_SOURCE_SCHEMES: &[&str] = &["http", "https", "file", "data"];
+
+/// Whether [`view_source_url`] can wrap `url`.
+pub(crate) fn can_view_source(url: &Url) -> bool {
+    VIEWABLE_SOURCE_SCHEMES.contains(&url.scheme())
+}
+
+/// The source view of `url`, or `None` when the source cannot be viewed (already a
+/// source view, or a scheme the handler refuses), so that the prefix cannot stack
+/// up as `view-source:view-source:…`.
+pub(crate) fn view_source_url(url: &Url) -> Option<Url> {
+    if !can_view_source(url) {
+        return None;
+    }
+    Url::parse(&format!("{VIEW_SOURCE_SCHEME}:{url}")).ok()
+}
+
 // This should vary by zoom level and maybe actual text size (focused or under cursor)
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) const LINE_HEIGHT: f32 = 76.0;

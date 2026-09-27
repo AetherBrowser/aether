@@ -1,0 +1,109 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* Styling for `view-source:` listings. It is inlined into the generated document,
+   which therefore loads no subresources of its own. */
+
+:root {
+  color-scheme: light dark;
+  --source-background: #ffffff;
+  --source-text: #000000;
+  --source-line-number: #a0a0a0;
+  --source-tag: #800080;
+  --source-attribute-name: #1a1a1a;
+  --source-attribute-value: #0000cc;
+  --source-comment: #008000;
+  --source-declaration: #4682b4;
+  --source-cdata: #cc0066;
+  --source-entity: #ff4500;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --source-background: #1c1b22;
+    --source-text: #f9f9fa;
+    --source-line-number: #5c5f6b;
+    --source-tag: #d7a8ff;
+    --source-attribute-name: #f9f9fa;
+    --source-attribute-value: #75bfff;
+    --source-comment: #86de74;
+    --source-declaration: #9fb8c9;
+    --source-cdata: #ff7de9;
+    --source-entity: #ffb86c;
+  }
+}
+
+html {
+  background: var(--source-background);
+  color: var(--source-text);
+}
+
+body {
+  margin: 0;
+}
+
+#source {
+  margin: 0;
+  padding: 8px 8px 8px 0;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 4;
+  --line-number-width: 2ch;
+  --line-gutter: calc(var(--line-number-width) + 1ch);
+}
+
+/* Each line is a block with a hanging indent, so that the number sits in a gutter
+   and wrapped text lines up with the start of the source instead of the number. */
+.line {
+  display: block;
+  padding-inline-start: var(--line-gutter);
+  text-indent: calc(-1 * var(--line-gutter));
+}
+
+.line-number {
+  display: inline-block;
+  min-width: var(--line-number-width);
+  margin-inline-end: 1ch;
+  text-align: right;
+  color: var(--source-line-number);
+  user-select: none;
+}
+
+.tag {
+  color: var(--source-tag);
+  font-weight: bold;
+}
+
+.attribute-name {
+  color: var(--source-attribute-name);
+  font-weight: bold;
+}
+
+.attribute-value {
+  color: var(--source-attribute-value);
+}
+
+.comment {
+  color: var(--source-comment);
+  font-style: italic;
+}
+
+.doctype,
+.markup-declaration,
+.processing-instruction {
+  color: var(--source-declaration);
+  font-style: italic;
+}
+
+.cdata {
+  color: var(--source-cdata);
+}
+
+.entity {
+  color: var(--source-entity);
+  font-weight: bold;
+}

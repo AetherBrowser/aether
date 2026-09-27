@@ -6,3 +6,4 @@ pub(crate) mod processes;
 pub(crate) mod resource;
 pub(crate) mod servo;
 pub(crate) mod urlinfo;
+pub(crate) mod view_source;
