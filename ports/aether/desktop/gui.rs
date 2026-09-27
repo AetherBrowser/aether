@@ -61,7 +61,8 @@ use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
-    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url, processes_url,
+    ServoShellWindow, TopLevelWebViewCreationRequest, can_view_source, history_url, new_tab_url,
+    processes_url, view_source_url,
 };
 
 /// The user interface of a headed servoshell. Currently this is implemented via
@@ -668,7 +669,12 @@ impl Gui {
                 *toolbar_height = Length::new(outer.response.rect.max.y);
 
                 if let Some(button) = &menu_button {
-                    match app_menu.update(button, toolbar_icons) {
+                    let can_view_source = window
+                        .active_webview()
+                        .and_then(|webview| webview.url())
+                        .as_ref()
+                        .is_some_and(can_view_source);
+                    match app_menu.update(button, toolbar_icons, can_view_source) {
                         Some(AppMenuAction::NewTab) => {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
                                 TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
@@ -688,6 +694,20 @@ impl Gui {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
                                 TopLevelWebViewCreationRequest::WithUrl(processes_url()),
                             ));
+                        },
+                        Some(AppMenuAction::ViewSource) => {
+                            if let Some(url) = window
+                                .active_webview()
+                                .and_then(|webview| webview.url())
+                                .as_ref()
+                                .and_then(view_source_url)
+                            {
+                                window.queue_user_interface_command(
+                                    UserInterfaceCommand::NewWebView(
+                                        TopLevelWebViewCreationRequest::WithUrl(url),
+                                    ),
+                                );
+                            }
                         },
                         None => {},
                     }
