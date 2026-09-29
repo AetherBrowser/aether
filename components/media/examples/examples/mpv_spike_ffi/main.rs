@@ -7,12 +7,14 @@ mod ffi;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
+use std::ptr;
 
 fn main() {
     println!("=== MPV spike (manual FFI) ===\n");
 
     test_lifecycle();
     test_properties();
+    test_commands_and_events();
 
     println!("\n=== All tests passed ===");
 }
@@ -26,8 +28,11 @@ unsafe fn create_mpv() -> *mut ffi::MpvHandle {
         let ao_key = CString::new("ao").unwrap();
         let null_driver = CString::new("null").unwrap();
 
-        ffi::mpv_set_option_string(mpv, vo_key.as_ptr(), null_driver.as_ptr());
-        ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), null_driver.as_ptr());
+        let rc = ffi::mpv_set_option_string(mpv, vo_key.as_ptr(), null_driver.as_ptr());
+        assert_eq!(rc, 0, "Failed to set vo=null");
+
+        let rc = ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), null_driver.as_ptr());
+        assert_eq!(rc, 0, "Failed to set ao=null");
 
         let rc = ffi::mpv_initialize(mpv);
         assert_eq!(rc, 0, "mpv_initialize() failed");
@@ -143,5 +148,117 @@ fn test_properties() {
 
         ffi::mpv_terminate_destroy(mpv);
         println!("[OK] properties cleanup");
+    }
+}
+
+unsafe fn wait_for_event(mpv: *mut ffi::MpvHandle, target: i32, timeout: f64) -> bool {
+    unsafe {
+        let iterations = (timeout / 0.1) as i32;
+        for _ in 0..iterations {
+            let event = ffi::mpv_wait_event(mpv, 0.1);
+            if (*event).event_id == ffi::MPV_EVENT_NONE {
+                continue;
+            }
+            let name = CStr::from_ptr(ffi::mpv_event_name((*event).event_id));
+            println!("  event: {}", name.to_str().unwrap());
+
+            if (*event).event_id == target {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+unsafe fn drain_events(mpv: *mut ffi::MpvHandle, timeout: f64) {
+    unsafe {
+        let iterations = (timeout / 0.1) as i32;
+        for _ in 0..iterations {
+            let event = ffi::mpv_wait_event(mpv, 0.1);
+            if (*event).event_id == ffi::MPV_EVENT_NONE {
+                continue;
+            }
+            let name = CStr::from_ptr(ffi::mpv_event_name((*event).event_id));
+            println!("  event: {}", name.to_str().unwrap());
+        }
+    }
+}
+
+fn test_commands_and_events() {
+    println!("\n--- Commands & Events ---");
+
+    unsafe {
+        let mpv = create_mpv();
+
+        let pause_key = CString::new("pause").unwrap();
+        let rc = ffi::mpv_observe_property(mpv, 1, pause_key.as_ptr(), ffi::MPV_FORMAT_FLAG);
+        assert_eq!(rc, 0, "Failed to observe pause");
+        println!("[OK] mpv_observe_property(\"pause\")");
+
+        // Load test.mp3
+        let test_dir = env!("CARGO_MANIFEST_DIR");
+        let test_path = format!("{}/examples/mpv_spike_ffi/test.mp3", test_dir);
+        let loadfile = CString::new("loadfile").unwrap();
+        let path_c = CString::new(test_path.as_str()).unwrap();
+        let args: [*const i8; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
+        let rc = ffi::mpv_command(mpv, args.as_ptr());
+        assert_eq!(rc, 0, "mpv_command(loadfile) failed");
+        println!("[OK] mpv_command([\"loadfile\", \"{}\"])", test_path);
+
+        assert!(
+            wait_for_event(mpv, ffi::MPV_EVENT_FILE_LOADED, 5.0),
+            "Never received FILE_LOADED"
+        );
+        println!("[OK] received FILE_LOADED");
+
+        // Pause
+        let mut paused: i32 = 1;
+        let rc = ffi::mpv_set_property(
+            mpv,
+            pause_key.as_ptr(),
+            ffi::MPV_FORMAT_FLAG,
+            &paused as *const i32 as *const c_void,
+        );
+        assert_eq!(rc, 0, "Failed to pause");
+        println!("[OK] pause");
+
+        drain_events(mpv, 2.0);
+
+        // Resume
+        paused = 0;
+        let rc = ffi::mpv_set_property(
+            mpv,
+            pause_key.as_ptr(),
+            ffi::MPV_FORMAT_FLAG,
+            &paused as *const i32 as *const c_void,
+        );
+        assert_eq!(rc, 0, "Failed to resume");
+        println!("[OK] resume");
+
+        // Seek
+        let seek_cmd = CString::new("seek").unwrap();
+        let seek_pos = CString::new("0").unwrap();
+        let seek_mode = CString::new("absolute").unwrap();
+        let seek_args: [*const i8; 4] = [
+            seek_cmd.as_ptr(),
+            seek_pos.as_ptr(),
+            seek_mode.as_ptr(),
+            ptr::null(),
+        ];
+        let rc = ffi::mpv_command(mpv, seek_args.as_ptr());
+        assert_eq!(rc, 0, "mpv_command(seek) failed");
+        println!("[OK] seek to 0");
+
+        drain_events(mpv, 2.0);
+
+        // Stop
+        let stop_cmd = CString::new("stop").unwrap();
+        let stop_args: [*const i8; 2] = [stop_cmd.as_ptr(), ptr::null()];
+        let rc = ffi::mpv_command(mpv, stop_args.as_ptr());
+        assert_eq!(rc, 0, "mpv_command(stop) failed");
+        println!("[OK] stop");
+
+        ffi::mpv_terminate_destroy(mpv);
+        println!("[OK] commands & events cleanup");
     }
 }
