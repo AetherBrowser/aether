@@ -8,6 +8,7 @@ mod ffi;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() {
     println!("=== MPV spike (manual FFI) ===\n");
@@ -17,6 +18,7 @@ fn main() {
     test_commands_and_events();
     test_stream_cb_callbacks();
     test_stream_cb();
+    test_sw_render();
 
     println!("\n=== All tests passed ===");
 }
@@ -498,5 +500,233 @@ fn test_stream_cb() {
 
         ffi::mpv_terminate_destroy(mpv);
         println!("[OK] stream_cb cleanup");
+    }
+}
+
+static FRAME_READY: AtomicBool = AtomicBool::new(false);
+
+unsafe fn wait_for_frame(
+    mpv: *mut ffi::MpvHandle,
+    render_ctx: *mut ffi::MpvRenderContext,
+    timeout: f64,
+) -> bool {
+    unsafe {
+        let iterations = (timeout / 0.1) as i32;
+        for _ in 0..iterations {
+            if FRAME_READY.load(Ordering::SeqCst) {
+                let flags = ffi::mpv_render_context_update(render_ctx);
+                if flags & ffi::MPV_RENDER_UPDATE_FRAME != 0 {
+                    FRAME_READY.store(false, Ordering::SeqCst);
+                    return true;
+                }
+            }
+            drain_events(mpv, 0.1);
+        }
+        false
+    }
+}
+
+unsafe extern "C" fn render_update(_ctx: *mut c_void) {
+    FRAME_READY.store(true, Ordering::SeqCst);
+}
+
+fn test_sw_render() {
+    println!("\n--- SW render (frame extraction) ---");
+
+    unsafe {
+        let mpv = ffi::mpv_create();
+        assert!(!mpv.is_null(), "mpv_create() returned NULL");
+
+        let vo_key = CString::new("vo").unwrap();
+        let ao_key = CString::new("ao").unwrap();
+        let libmpv_driver = CString::new("libmpv").unwrap();
+        let pulse_driver = CString::new("pulse").unwrap();
+
+        ffi::mpv_set_option_string(mpv, vo_key.as_ptr(), libmpv_driver.as_ptr());
+        ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), pulse_driver.as_ptr());
+
+        let rc = ffi::mpv_initialize(mpv);
+        assert_eq!(rc, 0, "mpv_initialize() failed");
+
+        // Create SW render context
+        let api_type = CString::new("sw").unwrap();
+        let mut params = [
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_API_TYPE,
+                data: api_type.as_ptr() as *mut c_void,
+            },
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+
+        let mut render_ctx: *mut ffi::MpvRenderContext = ptr::null_mut();
+        let rc = ffi::mpv_render_context_create(
+            &mut render_ctx,
+            mpv,
+            params.as_mut_ptr(),
+        );
+        assert_eq!(rc, 0, "mpv_render_context_create failed");
+        assert!(!render_ctx.is_null());
+        println!("[OK] mpv_render_context_create(\"sw\")");
+
+        // Set update callback
+        ffi::mpv_render_context_set_update_callback(
+            render_ctx,
+            render_update,
+            ptr::null_mut(),
+        );
+        println!("[OK] set_update_callback");
+
+        // Load the video
+        let test_dir = env!("CARGO_MANIFEST_DIR");
+        let video_path = format!("{}/examples/resources/mov_bbb.mp4", test_dir);
+        let loadfile = CString::new("loadfile").unwrap();
+        let path_c = CString::new(video_path.as_str()).unwrap();
+        let args: [*const i8; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
+        let rc = ffi::mpv_command(mpv, args.as_ptr());
+        assert_eq!(rc, 0, "loadfile failed");
+
+        assert!(
+            wait_for_event(mpv, ffi::MPV_EVENT_FILE_LOADED, 5.0),
+            "Never received FILE_LOADED"
+        );
+        println!("[OK] FILE_LOADED");
+
+        assert!(
+            wait_for_event(mpv, ffi::MPV_EVENT_PLAYBACK_RESTART, 5.0),
+            "Never received PLAYBACK_RESTART"
+        );
+        println!("[OK] PLAYBACK_RESTART");
+
+        // Pause so the frame stays stable during render
+        let pause_key = CString::new("pause").unwrap();
+        let mut paused: i32 = 1;
+        ffi::mpv_set_property(
+            mpv,
+            pause_key.as_ptr(),
+            ffi::MPV_FORMAT_FLAG,
+            &paused as *const i32 as *const c_void,
+        );
+
+        // Wait for a frame to be ready
+        let got_frame = wait_for_frame(mpv, render_ctx, 5.0);
+        assert!(got_frame, "No frame became ready");
+        println!("[OK] frame ready");
+
+        // Render into a pixel buffer (640x368, bgr0 = 4 bytes/pixel)
+        let width: i32 = 640;
+        let height: i32 = 368;
+        let stride = width as usize * 4;
+        let mut pixel_buf: Vec<u8> = vec![0; stride * height as usize];
+        let mut size = [width, height];
+        let format = CString::new("bgr0").unwrap();
+        let mut stride_val = stride;
+
+        let mut render_params = [
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_SW_SIZE,
+                data: size.as_mut_ptr() as *mut c_void,
+            },
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_SW_FORMAT,
+                data: format.as_ptr() as *mut c_void,
+            },
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_SW_STRIDE,
+                data: &mut stride_val as *mut usize as *mut c_void,
+            },
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_SW_POINTER,
+                data: pixel_buf.as_mut_ptr() as *mut c_void,
+            },
+            ffi::MpvRenderParam {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+
+        let rc = ffi::mpv_render_context_render(render_ctx, render_params.as_mut_ptr());
+        assert_eq!(rc, 0, "mpv_render_context_render failed");
+
+        let non_zero = pixel_buf.iter().any(|&b| b != 0);
+        assert!(non_zero, "Pixel buffer is all zeros — no frame rendered");
+        println!("[OK] first frame validated (non-zero pixels)");
+
+        // Open a window to display the video
+        let w = width as usize;
+        let h = height as usize;
+        let mut window = minifb::Window::new(
+            "MPV Spike — SW Render",
+            w,
+            h,
+            minifb::WindowOptions::default(),
+        )
+        .expect("Failed to create window");
+        window.set_target_fps(60);
+
+        let mut rgb_buf: Vec<u32> = vec![0; w * h];
+
+        // Convert the first frame (bgr0 → 0RGB)
+        for (i, pixel) in pixel_buf.chunks(4).enumerate() {
+            rgb_buf[i] = (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32;
+        }
+        window
+            .update_with_buffer(&rgb_buf, w, h)
+            .expect("Failed to update window");
+
+        // Unpause — let the video play
+        paused = 0;
+        ffi::mpv_set_property(
+            mpv,
+            pause_key.as_ptr(),
+            ffi::MPV_FORMAT_FLAG,
+            &paused as *const i32 as *const c_void,
+        );
+        println!("[OK] playing video in window (close window or press Escape to stop)");
+
+        while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
+            // Drain mpv events
+            loop {
+                let event = ffi::mpv_wait_event(mpv, 0.0);
+                if (*event).event_id == ffi::MPV_EVENT_NONE {
+                    break;
+                }
+                if (*event).event_id == ffi::MPV_EVENT_END_FILE {
+                    // Video finished — close window
+                    println!("[OK] video ended");
+                    ffi::mpv_render_context_free(render_ctx);
+                    ffi::mpv_terminate_destroy(mpv);
+                    println!("[OK] SW render cleanup");
+                    return;
+                }
+            }
+
+            // Render new frame if available
+            if FRAME_READY.load(Ordering::SeqCst) {
+                let flags = ffi::mpv_render_context_update(render_ctx);
+                if flags & ffi::MPV_RENDER_UPDATE_FRAME != 0 {
+                    FRAME_READY.store(false, Ordering::SeqCst);
+                    ffi::mpv_render_context_render(render_ctx, render_params.as_mut_ptr());
+
+                    for (i, pixel) in pixel_buf.chunks(4).enumerate() {
+                        rgb_buf[i] = (pixel[2] as u32) << 16
+                            | (pixel[1] as u32) << 8
+                            | pixel[0] as u32;
+                    }
+                }
+            }
+
+            window
+                .update_with_buffer(&rgb_buf, w, h)
+                .expect("Failed to update window");
+        }
+
+        println!("[OK] window closed");
+
+        ffi::mpv_render_context_free(render_ctx);
+        ffi::mpv_terminate_destroy(mpv);
+        println!("[OK] SW render cleanup");
     }
 }
