@@ -260,11 +260,7 @@ struct StreamState {
     position: usize,
 }
 
-unsafe extern "C" fn stream_read(
-    cookie: *mut c_void,
-    buf: *mut c_char,
-    nbytes: u64,
-) -> i64 {
+unsafe extern "C" fn stream_read(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64 {
     unsafe {
         let state = &mut *(cookie as *mut StreamState);
         let remaining = state.data.len() - state.position;
@@ -410,12 +406,7 @@ fn test_stream_cb() {
 
         // Must be registered before mpv_initialize
         let protocol = CString::new("spike").unwrap();
-        let rc = ffi::mpv_stream_cb_add_ro(
-            mpv,
-            protocol.as_ptr(),
-            ptr::null_mut(),
-            stream_open,
-        );
+        let rc = ffi::mpv_stream_cb_add_ro(mpv, protocol.as_ptr(), ptr::null_mut(), stream_open);
         assert_eq!(rc, 0, "mpv_stream_cb_add_ro failed");
         println!("[OK] mpv_stream_cb_add_ro(\"spike\")");
 
@@ -542,20 +533,12 @@ fn test_sw_render() {
         ];
 
         let mut render_ctx: *mut ffi::MpvRenderContext = ptr::null_mut();
-        let rc = ffi::mpv_render_context_create(
-            &mut render_ctx,
-            mpv,
-            params.as_mut_ptr(),
-        );
+        let rc = ffi::mpv_render_context_create(&mut render_ctx, mpv, params.as_mut_ptr());
         assert_eq!(rc, 0, "mpv_render_context_create failed");
         assert!(!render_ctx.is_null());
         println!("[OK] mpv_render_context_create(\"sw\")");
 
-        ffi::mpv_render_context_set_update_callback(
-            render_ctx,
-            render_update,
-            ptr::null_mut(),
-        );
+        ffi::mpv_render_context_set_update_callback(render_ctx, render_update, ptr::null_mut());
         println!("[OK] set_update_callback");
 
         let test_dir = env!("CARGO_MANIFEST_DIR");
@@ -680,9 +663,8 @@ fn test_sw_render() {
                     ffi::mpv_render_context_render(render_ctx, render_params.as_mut_ptr());
 
                     for (i, pixel) in pixel_buf.chunks(4).enumerate() {
-                        rgb_buf[i] = (pixel[2] as u32) << 16
-                            | (pixel[1] as u32) << 8
-                            | pixel[0] as u32;
+                        rgb_buf[i] =
+                            (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32;
                     }
                 }
             }

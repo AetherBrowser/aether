@@ -82,17 +82,13 @@ pub struct MpvEventLogMessage {
 pub type MpvStreamCbReadFn =
     unsafe extern "C" fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64;
 
-pub type MpvStreamCbSeekFn =
-    unsafe extern "C" fn(cookie: *mut c_void, offset: i64) -> i64;
+pub type MpvStreamCbSeekFn = unsafe extern "C" fn(cookie: *mut c_void, offset: i64) -> i64;
 
-pub type MpvStreamCbSizeFn =
-    unsafe extern "C" fn(cookie: *mut c_void) -> i64;
+pub type MpvStreamCbSizeFn = unsafe extern "C" fn(cookie: *mut c_void) -> i64;
 
-pub type MpvStreamCbCloseFn =
-    unsafe extern "C" fn(cookie: *mut c_void);
+pub type MpvStreamCbCloseFn = unsafe extern "C" fn(cookie: *mut c_void);
 
-pub type MpvStreamCbCancelFn =
-    unsafe extern "C" fn(cookie: *mut c_void) -> i64;
+pub type MpvStreamCbCancelFn = unsafe extern "C" fn(cookie: *mut c_void) -> i64;
 
 pub type MpvStreamCbOpenFn = unsafe extern "C" fn(
     user_data: *mut c_void,
@@ -169,10 +165,7 @@ unsafe extern "C" {
         data: *const c_char,
     ) -> c_int;
 
-    pub fn mpv_get_property_string(
-        ctx: *mut MpvHandle,
-        name: *const c_char,
-    ) -> *mut c_char;
+    pub fn mpv_get_property_string(ctx: *mut MpvHandle, name: *const c_char) -> *mut c_char;
 
     pub fn mpv_free(data: *mut c_void);
 
@@ -191,10 +184,7 @@ unsafe extern "C" {
 
     pub fn mpv_error_string(error: c_int) -> *const c_char;
     pub fn mpv_event_name(event: c_int) -> *const c_char;
-    pub fn mpv_request_log_messages(
-        ctx: *mut MpvHandle,
-        min_level: *const c_char,
-    ) -> c_int;
+    pub fn mpv_request_log_messages(ctx: *mut MpvHandle, min_level: *const c_char) -> c_int;
 
     // stream_cb.h
     // Must be called before mpv_initialize().
