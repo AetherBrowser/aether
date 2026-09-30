@@ -63,25 +63,27 @@ pub const MPV_EVENT_NONE: c_int = 0;
 /// mpv is shutting down. Stop the event loop.
 pub const MPV_EVENT_SHUTDOWN: c_int = 1;
 /// A log message (if log level was requested).
-pub const MPV_EVENT_LOG_MESSAGE: c_int = 6;
+pub const MPV_EVENT_LOG_MESSAGE: c_int = 2;
 /// A file has started loading.
-pub const MPV_EVENT_START_FILE: c_int = 16;
+pub const MPV_EVENT_START_FILE: c_int = 6;
 /// Playback ended. data points to MpvEventEndFile (reason + error).
-pub const MPV_EVENT_END_FILE: c_int = 17;
+pub const MPV_EVENT_END_FILE: c_int = 7;
 /// File was loaded and headers/metadata are available. Playback begins.
-pub const MPV_EVENT_FILE_LOADED: c_int = 18;
+pub const MPV_EVENT_FILE_LOADED: c_int = 8;
 /// The player entered idle mode (nothing to play).
-pub const MPV_EVENT_IDLE: c_int = 21;
+pub const MPV_EVENT_IDLE: c_int = 11;
+/// Video output was reconfigured (resolution or format changed).
+pub const MPV_EVENT_VIDEO_RECONFIG: c_int = 17;
+/// Audio output was reconfigured.
+pub const MPV_EVENT_AUDIO_RECONFIG: c_int = 18;
+/// Seek started.
+pub const MPV_EVENT_SEEK: c_int = 20;
+/// Playback restarted after a seek or format change.
+pub const MPV_EVENT_PLAYBACK_RESTART: c_int = 21;
 /// An observed property changed. data points to MpvEventProperty.
 pub const MPV_EVENT_PROPERTY_CHANGE: c_int = 22;
-/// Video output was reconfigured (resolution or format changed).
-pub const MPV_EVENT_VIDEO_RECONFIG: c_int = 26;
-/// Audio output was reconfigured.
-pub const MPV_EVENT_AUDIO_RECONFIG: c_int = 27;
-/// Playback restarted after a seek or format change.
-pub const MPV_EVENT_PLAYBACK_RESTART: c_int = 30;
 /// The event queue overflowed. Events were lost.
-pub const MPV_EVENT_QUEUE_OVERFLOW: c_int = 31;
+pub const MPV_EVENT_QUEUE_OVERFLOW: c_int = 24;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // client.h — end-file reasons (payload of MPV_EVENT_END_FILE)
@@ -235,13 +237,13 @@ pub const MPV_RENDER_PARAM_INVALID: c_int = 0;
 /// API type string. "sw" for software rendering.
 pub const MPV_RENDER_PARAM_API_TYPE: c_int = 1;
 /// Output size as [width, height] (c_int array). SW render only.
-pub const MPV_RENDER_PARAM_SW_SIZE: c_int = 13;
+pub const MPV_RENDER_PARAM_SW_SIZE: c_int = 17;
 /// Pixel format string (e.g. "bgr0"). SW render only.
-pub const MPV_RENDER_PARAM_SW_FORMAT: c_int = 14;
-/// Row stride in bytes (usize pointer). SW render only.
-pub const MPV_RENDER_PARAM_SW_STRIDE: c_int = 15;
+pub const MPV_RENDER_PARAM_SW_FORMAT: c_int = 18;
+/// Row stride in bytes (size_t pointer). SW render only.
+pub const MPV_RENDER_PARAM_SW_STRIDE: c_int = 19;
 /// Pointer to the pixel buffer. SW render only.
-pub const MPV_RENDER_PARAM_SW_POINTER: c_int = 16;
+pub const MPV_RENDER_PARAM_SW_POINTER: c_int = 20;
 
 /// Flag returned by mpv_render_context_update(): a new frame is ready.
 pub const MPV_RENDER_UPDATE_FRAME: u64 = 1;
