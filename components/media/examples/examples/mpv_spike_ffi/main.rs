@@ -1,7 +1,4 @@
 //! MPV backend spike — manual FFI approach.
-//!
-//! Validates that libmpv works for Aether's needs by exercising the raw C API
-//! through our hand-written bindings in `ffi.rs`.
 
 mod ffi;
 
@@ -72,7 +69,6 @@ fn test_properties() {
     unsafe {
         let mpv = create_mpv();
 
-        // set_volume / volume (Player trait: set_volume, volume)
         let volume_key = CString::new("volume").unwrap();
         let mut volume: f64 = 75.0;
         let rc = ffi::mpv_set_property(
@@ -94,7 +90,6 @@ fn test_properties() {
         assert!((volume - 75.0).abs() < 0.01, "Volume mismatch: {}", volume);
         println!("[OK] volume: set 75.0, got {}", volume);
 
-        // set_mute / muted (Player trait: set_mute, muted)
         let mute_key = CString::new("mute").unwrap();
         let mut muted: i32 = 1;
         let rc = ffi::mpv_set_property(
@@ -116,7 +111,6 @@ fn test_properties() {
         assert_eq!(muted, 1, "Mute should be true");
         println!("[OK] mute: set true, got {}", muted == 1);
 
-        // set_playback_rate / playback_rate (Player trait: set_playback_rate, playback_rate)
         let speed_key = CString::new("speed").unwrap();
         let mut speed: f64 = 2.0;
         let rc = ffi::mpv_set_property(
@@ -138,7 +132,6 @@ fn test_properties() {
         assert!((speed - 2.0).abs() < 0.01, "Speed mismatch: {}", speed);
         println!("[OK] speed: set 2.0, got {}", speed);
 
-        // mpv_set_property_string / mpv_get_property_string
         let idle_key = CString::new("idle").unwrap();
         let idle_val = CString::new("yes").unwrap();
         let rc = ffi::mpv_set_property_string(mpv, idle_key.as_ptr(), idle_val.as_ptr());
@@ -199,7 +192,6 @@ fn test_commands_and_events() {
         assert_eq!(rc, 0, "Failed to observe pause");
         println!("[OK] mpv_observe_property(\"pause\")");
 
-        // Load test.mp3
         let test_dir = env!("CARGO_MANIFEST_DIR");
         let test_path = format!("{}/examples/mpv_spike_ffi/test.mp3", test_dir);
         let loadfile = CString::new("loadfile").unwrap();
@@ -215,7 +207,6 @@ fn test_commands_and_events() {
         );
         println!("[OK] received FILE_LOADED");
 
-        // Pause
         let mut paused: i32 = 1;
         let rc = ffi::mpv_set_property(
             mpv,
@@ -228,7 +219,6 @@ fn test_commands_and_events() {
 
         drain_events(mpv, 2.0);
 
-        // Resume
         paused = 0;
         let rc = ffi::mpv_set_property(
             mpv,
@@ -239,7 +229,6 @@ fn test_commands_and_events() {
         assert_eq!(rc, 0, "Failed to resume");
         println!("[OK] resume");
 
-        // Seek
         let seek_cmd = CString::new("seek").unwrap();
         let seek_pos = CString::new("0").unwrap();
         let seek_mode = CString::new("absolute").unwrap();
@@ -255,7 +244,6 @@ fn test_commands_and_events() {
 
         drain_events(mpv, 2.0);
 
-        // Stop
         let stop_cmd = CString::new("stop").unwrap();
         let stop_args: [*const i8; 2] = [stop_cmd.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, stop_args.as_ptr());
@@ -266,8 +254,6 @@ fn test_commands_and_events() {
         println!("[OK] commands & events cleanup");
     }
 }
-
-// ── stream_cb: the data we pass to mpv through our custom protocol ──
 
 struct StreamState {
     data: Vec<u8>,
@@ -422,7 +408,7 @@ fn test_stream_cb() {
         let rc = ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), null_driver.as_ptr());
         assert_eq!(rc, 0, "Failed to set ao=null");
 
-        // Register custom protocol BEFORE mpv_initialize
+        // Must be registered before mpv_initialize
         let protocol = CString::new("spike").unwrap();
         let rc = ffi::mpv_stream_cb_add_ro(
             mpv,
@@ -436,7 +422,6 @@ fn test_stream_cb() {
         let rc = ffi::mpv_initialize(mpv);
         assert_eq!(rc, 0, "mpv_initialize() failed");
 
-        // Load via our custom protocol
         let loadfile = CString::new("loadfile").unwrap();
         let url = CString::new("spike://test").unwrap();
         let args: [*const i8; 3] = [loadfile.as_ptr(), url.as_ptr(), ptr::null()];
@@ -450,7 +435,6 @@ fn test_stream_cb() {
         );
         println!("[OK] FILE_LOADED via custom protocol");
 
-        // Pause
         let pause_key = CString::new("pause").unwrap();
         let mut paused: i32 = 1;
         let rc = ffi::mpv_set_property(
@@ -462,7 +446,6 @@ fn test_stream_cb() {
         assert_eq!(rc, 0, "Failed to pause");
         println!("[OK] pause via custom protocol");
 
-        // Seek to 0 — mpv calls our stream_seek + stream_read
         let seek_cmd = CString::new("seek").unwrap();
         let seek_pos = CString::new("0").unwrap();
         let seek_mode = CString::new("absolute").unwrap();
@@ -478,7 +461,6 @@ fn test_stream_cb() {
 
         drain_events(mpv, 2.0);
 
-        // Resume
         paused = 0;
         let rc = ffi::mpv_set_property(
             mpv,
@@ -489,7 +471,6 @@ fn test_stream_cb() {
         assert_eq!(rc, 0, "Failed to resume");
         println!("[OK] resume via custom protocol");
 
-        // Let it play briefly then stop
         drain_events(mpv, 1.0);
 
         let stop_cmd = CString::new("stop").unwrap();
@@ -548,7 +529,6 @@ fn test_sw_render() {
         let rc = ffi::mpv_initialize(mpv);
         assert_eq!(rc, 0, "mpv_initialize() failed");
 
-        // Create SW render context
         let api_type = CString::new("sw").unwrap();
         let mut params = [
             ffi::MpvRenderParam {
@@ -571,7 +551,6 @@ fn test_sw_render() {
         assert!(!render_ctx.is_null());
         println!("[OK] mpv_render_context_create(\"sw\")");
 
-        // Set update callback
         ffi::mpv_render_context_set_update_callback(
             render_ctx,
             render_update,
@@ -579,7 +558,6 @@ fn test_sw_render() {
         );
         println!("[OK] set_update_callback");
 
-        // Load the video
         let test_dir = env!("CARGO_MANIFEST_DIR");
         let video_path = format!("{}/examples/resources/mov_bbb.mp4", test_dir);
         let loadfile = CString::new("loadfile").unwrap();
@@ -600,7 +578,6 @@ fn test_sw_render() {
         );
         println!("[OK] PLAYBACK_RESTART");
 
-        // Pause so the frame stays stable during render
         let pause_key = CString::new("pause").unwrap();
         let mut paused: i32 = 1;
         ffi::mpv_set_property(
@@ -610,12 +587,10 @@ fn test_sw_render() {
             &paused as *const i32 as *const c_void,
         );
 
-        // Wait for a frame to be ready
         let got_frame = wait_for_frame(mpv, render_ctx, 5.0);
         assert!(got_frame, "No frame became ready");
         println!("[OK] frame ready");
 
-        // Render into a pixel buffer (640x368, bgr0 = 4 bytes/pixel)
         let width: i32 = 640;
         let height: i32 = 368;
         let stride = width as usize * 4;
@@ -654,7 +629,6 @@ fn test_sw_render() {
         assert!(non_zero, "Pixel buffer is all zeros — no frame rendered");
         println!("[OK] first frame validated (non-zero pixels)");
 
-        // Open a window to display the video
         let w = width as usize;
         let h = height as usize;
         let mut window = minifb::Window::new(
@@ -668,7 +642,6 @@ fn test_sw_render() {
 
         let mut rgb_buf: Vec<u32> = vec![0; w * h];
 
-        // Convert the first frame (bgr0 → 0RGB)
         for (i, pixel) in pixel_buf.chunks(4).enumerate() {
             rgb_buf[i] = (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32;
         }
@@ -676,7 +649,6 @@ fn test_sw_render() {
             .update_with_buffer(&rgb_buf, w, h)
             .expect("Failed to update window");
 
-        // Unpause — let the video play
         paused = 0;
         ffi::mpv_set_property(
             mpv,
@@ -687,14 +659,12 @@ fn test_sw_render() {
         println!("[OK] playing video in window (close window or press Escape to stop)");
 
         while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
-            // Drain mpv events
             loop {
                 let event = ffi::mpv_wait_event(mpv, 0.0);
                 if (*event).event_id == ffi::MPV_EVENT_NONE {
                     break;
                 }
                 if (*event).event_id == ffi::MPV_EVENT_END_FILE {
-                    // Video finished — close window
                     println!("[OK] video ended");
                     ffi::mpv_render_context_free(render_ctx);
                     ffi::mpv_terminate_destroy(mpv);
@@ -703,7 +673,6 @@ fn test_sw_render() {
                 }
             }
 
-            // Render new frame if available
             if FRAME_READY.load(Ordering::SeqCst) {
                 let flags = ffi::mpv_render_context_update(render_ctx);
                 if flags & ffi::MPV_RENDER_UPDATE_FRAME != 0 {
