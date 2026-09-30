@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 //! MPV backend spike — manual FFI approach.
 
 mod ffi;
@@ -512,10 +516,10 @@ fn test_sw_render() {
         let vo_key = CString::new("vo").unwrap();
         let ao_key = CString::new("ao").unwrap();
         let libmpv_driver = CString::new("libmpv").unwrap();
-        let pulse_driver = CString::new("pulse").unwrap();
+        let null_driver = CString::new("null").unwrap();
 
         ffi::mpv_set_option_string(mpv, vo_key.as_ptr(), libmpv_driver.as_ptr());
-        ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), pulse_driver.as_ptr());
+        ffi::mpv_set_option_string(mpv, ao_key.as_ptr(), null_driver.as_ptr());
 
         let rc = ffi::mpv_initialize(mpv);
         assert_eq!(rc, 0, "mpv_initialize() failed");
@@ -562,7 +566,7 @@ fn test_sw_render() {
         println!("[OK] PLAYBACK_RESTART");
 
         let pause_key = CString::new("pause").unwrap();
-        let mut paused: i32 = 1;
+        let paused: i32 = 1;
         ffi::mpv_set_property(
             mpv,
             pause_key.as_ptr(),
@@ -610,71 +614,23 @@ fn test_sw_render() {
 
         let non_zero = pixel_buf.iter().any(|&b| b != 0);
         assert!(non_zero, "Pixel buffer is all zeros — no frame rendered");
-        println!("[OK] first frame validated (non-zero pixels)");
-
-        let w = width as usize;
-        let h = height as usize;
-        let mut window = minifb::Window::new(
-            "MPV Spike — SW Render",
-            w,
-            h,
-            minifb::WindowOptions::default(),
-        )
-        .expect("Failed to create window");
-        window.set_target_fps(60);
-
-        let mut rgb_buf: Vec<u32> = vec![0; w * h];
-
-        for (i, pixel) in pixel_buf.chunks(4).enumerate() {
-            rgb_buf[i] = (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32;
-        }
-        window
-            .update_with_buffer(&rgb_buf, w, h)
-            .expect("Failed to update window");
-
-        paused = 0;
-        ffi::mpv_set_property(
-            mpv,
-            pause_key.as_ptr(),
-            ffi::MPV_FORMAT_FLAG,
-            &paused as *const i32 as *const c_void,
+        println!(
+            "[OK] rendered frame: {}x{}, {} bytes",
+            width,
+            height,
+            pixel_buf.len()
         );
-        println!("[OK] playing video in window (close window or press Escape to stop)");
 
-        while window.is_open() && !window.is_key_down(minifb::Key::Escape) {
-            loop {
-                let event = ffi::mpv_wait_event(mpv, 0.0);
-                if (*event).event_id == ffi::MPV_EVENT_NONE {
-                    break;
-                }
-                if (*event).event_id == ffi::MPV_EVENT_END_FILE {
-                    println!("[OK] video ended");
-                    ffi::mpv_render_context_free(render_ctx);
-                    ffi::mpv_terminate_destroy(mpv);
-                    println!("[OK] SW render cleanup");
-                    return;
-                }
-            }
-
-            if FRAME_READY.load(Ordering::SeqCst) {
-                let flags = ffi::mpv_render_context_update(render_ctx);
-                if flags & ffi::MPV_RENDER_UPDATE_FRAME != 0 {
-                    FRAME_READY.store(false, Ordering::SeqCst);
-                    ffi::mpv_render_context_render(render_ctx, render_params.as_mut_ptr());
-
-                    for (i, pixel) in pixel_buf.chunks(4).enumerate() {
-                        rgb_buf[i] =
-                            (pixel[2] as u32) << 16 | (pixel[1] as u32) << 8 | pixel[0] as u32;
-                    }
-                }
-            }
-
-            window
-                .update_with_buffer(&rgb_buf, w, h)
-                .expect("Failed to update window");
+        let ppm_path = format!("{}/examples/mpv_spike_ffi/frame.ppm", test_dir);
+        let mut ppm = Vec::new();
+        ppm.extend_from_slice(format!("P6\n{} {}\n255\n", width, height).as_bytes());
+        for pixel in pixel_buf.chunks(4) {
+            ppm.push(pixel[2]);
+            ppm.push(pixel[1]);
+            ppm.push(pixel[0]);
         }
-
-        println!("[OK] window closed");
+        std::fs::write(&ppm_path, &ppm).expect("Failed to write frame.ppm");
+        println!("[OK] saved frame to {}", ppm_path);
 
         ffi::mpv_render_context_free(render_ctx);
         ffi::mpv_terminate_destroy(mpv);

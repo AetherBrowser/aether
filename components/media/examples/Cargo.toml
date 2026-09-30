@@ -19,11 +19,7 @@ servo-media-auto = { workspace = true }
 servo-media-dummy = { workspace = true }
 
 [features]
-mpv = ["dep:minifb"]
-
-[dependencies.minifb]
-version = "0.28"
-optional = true
+mpv = []
 
 [[example]]
 name = "mpv_spike_ffi"

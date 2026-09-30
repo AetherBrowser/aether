@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 //! Raw FFI bindings to libmpv (client.h, stream_cb.h, render.h).
 //! Hand-written subset for the spike — replaces what bindgen would generate.
 
