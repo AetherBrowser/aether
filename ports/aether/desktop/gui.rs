@@ -100,6 +100,15 @@ pub struct Gui {
     /// Hamburger menu opened from the toolbar.
     app_menu: AppMenu,
 
+    /// Whether the docked developer tools panel is open beside the page.
+    devtools_open: bool,
+
+    /// Screen rect of the docked developer tools panel, in device-independent pixels.
+    ///
+    /// Empty when the panel is closed. Pointer events inside this rect stay in egui
+    /// so the close button works and the page does not receive them.
+    devtools_rect: egui::Rect,
+
     /// AccessKit tree updates pending the next egui tick.
     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
@@ -216,6 +225,27 @@ fn configure_fonts() -> FontDefinitions {
     ])
 }
 
+/// Right-hand developer tools dock produced by [`Gui::show_devtools_dock`].
+struct DevtoolsDock {
+    close_clicked: bool,
+    panel_rect: egui::Rect,
+    /// Close button bounds. Read by tests that click it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    close_button_rect: egui::Rect,
+}
+
+/// Toolbar, open application menu, or the docked developer tools panel.
+fn pointer_hits_browser_chrome(
+    toolbar_height: f32,
+    menu_contains_pointer: bool,
+    devtools_rect: egui::Rect,
+    position: Point2D<f32, DeviceIndependentPixel>,
+) -> bool {
+    position.y < toolbar_height ||
+        menu_contains_pointer ||
+        devtools_rect.contains(egui::pos2(position.x, position.y))
+}
+
 impl Drop for Gui {
     fn drop(&mut self) {
         self.rendering_context
@@ -275,6 +305,8 @@ impl Gui {
             favicon_textures: Default::default(),
             toolbar_icons: Default::default(),
             app_menu: Default::default(),
+            devtools_open: false,
+            devtools_rect: egui::Rect::NOTHING,
             pending_accesskit_updates: vec![],
         }
     }
@@ -307,12 +339,18 @@ impl Gui {
         self.toolbar_height
     }
 
-    /// Return true iff the given position is over the egui toolbar or the open app menu.
+    /// Return true iff the given position is over the egui toolbar, the open app menu,
+    /// or the docked developer tools panel.
     pub(crate) fn is_in_egui_toolbar_rect(
         &self,
         position: Point2D<f32, DeviceIndependentPixel>,
     ) -> bool {
-        position.y < self.toolbar_height.get() || self.app_menu.contains_pointer(position)
+        pointer_hits_browser_chrome(
+            self.toolbar_height.get(),
+            self.app_menu.contains_pointer(position),
+            self.devtools_rect,
+            position,
+        )
     }
 
     pub(crate) fn is_app_menu_open(&self) -> bool {
@@ -414,6 +452,55 @@ impl Gui {
         };
         tab_frame.frame.fill = fill_color;
         tab_frame.end(ui);
+    }
+
+    /// Header of the docked developer tools panel.
+    ///
+    /// The boolean is true when the close button is clicked. The rect is that button.
+    fn devtools_header(
+        ui: &mut egui::Ui,
+        toolbar_icons: &mut ToolbarIconCache,
+    ) -> (bool, egui::Rect) {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let close_button = toolbar_icons
+                    .button(ui, ToolbarIcon::Close)
+                    .on_hover_text("Close developer tools");
+                close_button.widget_info(|| {
+                    let mut info = WidgetInfo::new(WidgetType::Button);
+                    info.label = Some("Close developer tools".into());
+                    info
+                });
+                (close_button.clicked(), close_button.rect)
+            })
+            .inner
+        })
+        .inner
+    }
+
+    /// Dock developer tools on the right half of `ui`. The page keeps the left half.
+    fn show_devtools_dock(ui: &mut egui::Ui, toolbar_icons: &mut ToolbarIconCache) -> DevtoolsDock {
+        let split_width = (ui.available_rect_before_wrap().width() / 2.0).max(1.0);
+        let frame = egui::Frame::default()
+            .fill(ui.style().visuals.panel_fill)
+            .inner_margin(4.0);
+        let mut close_clicked = false;
+        let mut close_button_rect = egui::Rect::NOTHING;
+        let panel = Panel::right("devtools")
+            .frame(frame)
+            .exact_size(split_width)
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                (close_clicked, close_button_rect) = Self::devtools_header(ui, toolbar_icons);
+                // Fill the dock so the reserved rect is the full right half,
+                // not just the header row.
+                ui.allocate_space(ui.available_size());
+            });
+        DevtoolsDock {
+            close_clicked,
+            panel_rect: panel.response.rect,
+            close_button_rect,
+        }
     }
 
     /// Update the user interface, but do not paint the updated state.
@@ -695,6 +782,9 @@ impl Gui {
                                 TopLevelWebViewCreationRequest::WithUrl(processes_url()),
                             ));
                         },
+                        Some(AppMenuAction::DeveloperTools) => {
+                            self.devtools_open = true;
+                        },
                         Some(AppMenuAction::Exit) => {
                             state.schedule_exit();
                         },
@@ -704,6 +794,20 @@ impl Gui {
             } else {
                 app_menu.close_ui(ctx);
                 *toolbar_height = Length::default();
+            }
+
+            // Split the page area in half: the WebView keeps the left, developer tools the right.
+            // Shown after the menu action so the panel appears on the same frame it is opened.
+            if self.devtools_open {
+                let dock = Self::show_devtools_dock(ctx, toolbar_icons);
+                if dock.close_clicked {
+                    self.devtools_open = false;
+                    self.devtools_rect = egui::Rect::NOTHING;
+                } else {
+                    self.devtools_rect = dock.panel_rect;
+                }
+            } else {
+                self.devtools_rect = egui::Rect::NOTHING;
             }
 
             let scale =
@@ -958,5 +1062,126 @@ fn load_pending_favicons(
         // We don't need the handle anymore but we can't drop it either since that would cause
         // the texture to be freed.
         texture_cache.insert(id, (handle, texture));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use euclid::Point2D;
+
+    use super::*;
+
+    fn screen_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn click(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]
+    }
+
+    #[test]
+    fn devtools_dock_splits_the_page_vertically() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut page = egui::Rect::NOTHING;
+        let mut dock = DevtoolsDock {
+            close_clicked: false,
+            panel_rect: egui::Rect::NOTHING,
+            close_button_rect: egui::Rect::NOTHING,
+        };
+
+        ctx.run_ui(screen_input(vec![]), |ui| {
+            let content = ui.available_rect_before_wrap();
+            dock = Gui::show_devtools_dock(ui, &mut icons);
+            page = ui.available_rect_before_wrap();
+
+            assert!(
+                (content.width() - 800.0).abs() < 1.0,
+                "test surface should be the screen width"
+            );
+            // Left half stays with the page, right half is the dock, both full height.
+            assert!(page.max.x <= dock.panel_rect.min.x + 1.0);
+            assert!((page.width() - content.width() / 2.0).abs() < 8.0);
+            assert!((dock.panel_rect.width() - content.width() / 2.0).abs() < 8.0);
+            assert!((page.height() - content.height()).abs() < 1.0);
+            assert!(dock.panel_rect.height() > content.height() * 0.9);
+            assert!(dock.close_button_rect.center().x > content.center().x);
+            assert!(!dock.close_clicked);
+        });
+    }
+
+    #[test]
+    fn devtools_close_button_reports_a_click() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut close_button_rect = egui::Rect::NOTHING;
+
+        ctx.run_ui(screen_input(vec![]), |ui| {
+            close_button_rect = Gui::show_devtools_dock(ui, &mut icons).close_button_rect;
+        });
+        assert!(close_button_rect.is_positive());
+
+        let mut close_clicked = false;
+        ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
+            close_clicked = Gui::show_devtools_dock(ui, &mut icons).close_clicked;
+        });
+        assert!(close_clicked);
+    }
+
+    #[test]
+    fn pointer_over_the_devtools_dock_hits_chrome() {
+        let dock = egui::Rect::from_min_max(egui::pos2(400.0, 40.0), egui::pos2(800.0, 600.0));
+
+        assert!(!pointer_hits_browser_chrome(
+            40.0,
+            false,
+            dock,
+            Point2D::new(100.0, 200.0),
+        ));
+        assert!(pointer_hits_browser_chrome(
+            40.0,
+            false,
+            dock,
+            Point2D::new(600.0, 200.0),
+        ));
+        assert!(pointer_hits_browser_chrome(
+            40.0,
+            false,
+            dock,
+            Point2D::new(100.0, 10.0),
+        ));
+        assert!(pointer_hits_browser_chrome(
+            40.0,
+            true,
+            egui::Rect::NOTHING,
+            Point2D::new(100.0, 200.0),
+        ));
+        assert!(!pointer_hits_browser_chrome(
+            40.0,
+            false,
+            egui::Rect::NOTHING,
+            Point2D::new(600.0, 200.0),
+        ));
     }
 }
