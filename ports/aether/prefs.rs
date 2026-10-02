@@ -24,6 +24,7 @@ use servo::{
 };
 use url::Url;
 
+use crate::search::{SearchEngines, load_search_engines};
 use crate::version;
 
 /// Preferences enabled when servoshell is launched with the `--enable-experimental-web-platform-features` flag.
@@ -65,9 +66,12 @@ pub(crate) struct ServoShellPreferences {
     pub no_native_titlebar: bool,
     /// URL string of the homepage.
     pub homepage: String,
-    /// URL string of the search engine page with '%s' standing in for the search term.
-    /// For example <https://duckduckgo.com/html/?q=%s>.
-    pub searchpage: String,
+    /// Configured search engines: the default, the others, and any the user added.
+    ///
+    /// Loaded from `search.json` in the config directory. Without that file, this is
+    /// the built-in list and DuckDuckGo stays the default. The location bar uses
+    /// [`SearchEngines::default_engine`]'s URL template (`%s` stands in for the query).
+    pub search_engines: SearchEngines,
     /// Whether or not to run servoshell in headless mode. While running in headless
     /// mode, image output is supported.
     pub headless: bool,
@@ -118,7 +122,7 @@ impl Default for ServoShellPreferences {
             no_native_titlebar: true,
             screen_size_override: None,
             simulate_touch_events: false,
-            searchpage: "https://duckduckgo.com/html/?q=%s".into(),
+            search_engines: SearchEngines::builtin(),
             tracing_filter: None,
             url: None,
             output_image_path: None,
@@ -704,12 +708,20 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
             default_window_size.min(screen_size_override)
         });
 
+    // Argument-parsing tests must not depend on a search.json on this machine.
+    let search_engines = if cfg!(test) {
+        SearchEngines::builtin()
+    } else {
+        load_search_engines(config_dir.as_deref())
+    };
+
     let servoshell_preferences = ServoShellPreferences {
         url: Some(cmd_args.url),
         no_native_titlebar: cmd_args.no_native_titlebar,
         device_pixel_ratio_override: cmd_args.device_pixel_ratio,
         clean_shutdown: cmd_args.clean_shutdown,
         headless: cmd_args.headless,
+        search_engines,
         tracing_filter: cmd_args.tracing_filter,
         initial_window_size: cmd_args.window_size.unwrap_or(default_window_size),
         screen_size_override: cmd_args.screen_size_override,

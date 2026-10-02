@@ -354,10 +354,16 @@ impl ServoShellWindow {
             match event {
                 UserInterfaceCommand::Go(location) => {
                     self.set_needs_update();
-                    let Some(url) = location_bar_input_to_url(
-                        &location.clone(),
-                        &state.servoshell_preferences.searchpage,
-                    ) else {
+                    let search_url = crate::search::default_search_url().unwrap_or_else(|| {
+                        state
+                            .servoshell_preferences
+                            .search_engines
+                            .default_engine()
+                            .url
+                            .clone()
+                    });
+                    let Some(url) = location_bar_input_to_url(&location.clone(), &search_url)
+                    else {
                         warn!("failed to parse location");
                         break;
                     };
