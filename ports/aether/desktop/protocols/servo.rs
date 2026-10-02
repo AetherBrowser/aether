@@ -13,6 +13,7 @@
 //! - servo:process-list
 //! - servo:history
 //! - servo:settings
+//! - servo:search-engines
 
 use std::future::Future;
 use std::pin::Pin;
@@ -106,6 +107,18 @@ impl ProtocolHandler for ServoProtocolHandler {
                 context,
                 "/settings.html",
             ),
+
+            "search-engines" => {
+                if request_is_from_web_content(request) {
+                    return Box::pin(std::future::ready(Response::network_error(
+                        NetworkError::ResourceLoadError("Forbidden".to_owned()),
+                    )));
+                }
+                json_response(
+                    request,
+                    crate::search::handle_search_engines_request(url.query()),
+                )
+            },
 
             "process-list" => {
                 if request_is_from_web_content(request) {
