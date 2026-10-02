@@ -385,9 +385,14 @@ fn test_location_bar_accepts_settings_url() {
 }
 
 #[test]
-fn settings_page_is_a_title_only() {
+fn settings_page_has_a_search_section() {
     let html = include_str!("../../resources/resource_protocol/settings.html");
     assert!(html.contains("<title>Settings</title>"));
+    assert!(html.contains("<section id=\"search\" hidden>"));
+    assert!(html.contains("location.hash === \"#search\""));
+    assert!(html.contains("servo:search-engines"));
+    assert!(html.contains("Default search engine"));
+    assert!(html.contains("Add a search engine"));
 }
 
 #[test]

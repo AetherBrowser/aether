@@ -80,6 +80,11 @@ impl App {
 
     /// Initialize Application once event loop start running.
     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
+        crate::search::install_search_engines(
+            self.opts.config_dir.clone(),
+            self.servoshell_preferences.search_engines.clone(),
+        );
+
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
             "urlinfo",
