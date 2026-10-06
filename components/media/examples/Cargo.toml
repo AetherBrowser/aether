@@ -17,6 +17,16 @@ freetype-sys = { workspace = true, features = ["bundled"] } # used only to force
 servo-media = { workspace = true }
 servo-media-auto = { workspace = true }
 servo-media-dummy = { workspace = true }
+libmpv2 = { workspace = true, optional = true }
+libmpv2-sys = { workspace = true, optional = true }
+
+[features]
+mpv = ["dep:libmpv2", "dep:libmpv2-sys"]
+
+[[example]]
+name = "mpv_spike"
+path = "examples/mpv_spike/main.rs"
+required-features = ["mpv"]
 
 [lints]
 workspace = true
