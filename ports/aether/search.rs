@@ -294,7 +294,7 @@ pub(crate) fn load_search_engines(config_dir: Option<&Path>) -> SearchEngines {
 ///     {
 ///       "id": "ecosia",
 ///       "name": "Ecosia",
-///       "url": "https://www.ecosia.org/search?q=%s"
+///       "url": "<https://www.ecosia.org/search?q=%s>"
 ///     }
 ///   ],
 ///   "defaultEngineId": "",
