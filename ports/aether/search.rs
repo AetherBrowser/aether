@@ -411,10 +411,10 @@ fn select_default(
     {
         return default_engine_id.to_owned();
     }
-    if let Some(app_default) = app_default_engine_id {
-        if engines.iter().any(|engine| engine.id == app_default) {
-            return app_default.to_owned();
-        }
+    if let Some(app_default) = app_default_engine_id &&
+        engines.iter().any(|engine| engine.id == app_default)
+    {
+        return app_default.to_owned();
     }
     if engines
         .iter()
@@ -641,9 +641,24 @@ mod tests {
     }
 
     #[test]
-    fn loads_ecosia_from_search_json() {
-        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/with_ecosia");
-        let engines = load_search_engines(Some(&dir));
+    fn user_engine_is_loaded_alongside_builtins() {
+        let engines = parse_search_settings(
+            r#"{
+                "engines": [
+                    { "id": "ddg" },
+                    { "id": "google" },
+                    { "id": "bing" },
+                    { "id": "startpage" },
+                    {
+                        "id": "ecosia",
+                        "name": "Ecosia",
+                        "url": "https://www.ecosia.org/search?method=index&q=%s"
+                    }
+                ],
+                "defaultEngineId": "ddg"
+            }"#,
+        )
+        .unwrap();
 
         assert_eq!(
             engines
@@ -657,7 +672,7 @@ mod tests {
             .engines()
             .iter()
             .find(|engine| engine.id == "ecosia")
-            .expect("Ecosia is configured in testdata/with_ecosia/search.json");
+            .expect("Ecosia is configured");
         assert!(!ecosia.builtin);
         assert_eq!(ecosia.name, "Ecosia");
         assert_eq!(ecosia.alias, None);
