@@ -4,6 +4,272 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
+    <style>
+      :root {
+        --bg: #f6f7f8;
+        --surface: #ffffff;
+        --text: #1b1b1b;
+        --muted: #5c5c5c;
+        --border: #d7d7d7;
+        --accent: #1191e8;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121619;
+          --surface: #1c2126;
+          --text: #f5f5f5;
+          --muted: #b0b8c0;
+          --border: #2f3942;
+          --accent: #5cb6f0;
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: sans-serif;
+      }
+
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 600;
+        margin: 0 0 24px;
+      }
+
+      h2 {
+        font-size: 1.2rem;
+        margin: 0 0 16px;
+      }
+
+      h3 {
+        font-size: 1rem;
+        margin: 24px 0 8px;
+      }
+
+      section {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      select,
+      input,
+      button {
+        font: inherit;
+        color: inherit;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      #default-engine,
+      #add-name,
+      #add-url,
+      #builtin-engine {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 8px;
+      }
+
+      #search-error {
+        color: #b42318;
+        min-height: 1.2em;
+      }
+
+      #engine-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      #engine-list li {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 12px;
+        padding: 10px 0;
+        border-top: 1px solid var(--border);
+      }
+
+      #engine-list .name {
+        font-weight: 600;
+      }
+
+      #engine-list code {
+        grid-column: 1;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      #engine-list button {
+        grid-row: 1 / span 2;
+        grid-column: 2;
+        align-self: center;
+      }
+
+      #add-engine button,
+      #add-builtin {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0 0 8px;
+      }
+    </style>
   </head>
-  <body></body>
+  <body>
+    <main>
+      <section id="search" hidden>
+        <h2>Search</h2>
+        <p id="search-error" role="alert"></p>
+        <label for="default-engine">Default search engine</label>
+        <select id="default-engine"></select>
+
+        <h3>Configured search engines</h3>
+        <ul id="engine-list"></ul>
+
+        <h3>Add a search engine</h3>
+        <p class="hint">Use <code>%s</code> where the search terms should go.</p>
+        <form id="add-engine">
+          <label for="add-name">Name</label>
+          <input id="add-name" name="name" required />
+          <label for="add-url">Search URL</label>
+          <input
+            id="add-url"
+            name="url"
+            required
+            placeholder="https://example.com/search?q=%s"
+          />
+          <button type="submit">Add</button>
+        </form>
+
+        <div id="available-builtins" hidden>
+          <h3>Built-in engines</h3>
+          <label for="builtin-engine">Add a built-in engine</label>
+          <select id="builtin-engine"></select>
+          <button type="button" id="add-builtin">Add</button>
+        </div>
+      </section>
+    </main>
+    <script>
+      const defaultEngine = document.getElementById("default-engine");
+      const engineList = document.getElementById("engine-list");
+      const addForm = document.getElementById("add-engine");
+      const availableBox = document.getElementById("available-builtins");
+      const builtinEngine = document.getElementById("builtin-engine");
+      const searchError = document.getElementById("search-error");
+
+      function render(data) {
+        defaultEngine.replaceChildren();
+        for (const engine of data.engines) {
+          const option = document.createElement("option");
+          option.value = engine.id;
+          option.textContent = engine.name;
+          defaultEngine.append(option);
+        }
+        defaultEngine.value = data.defaultId;
+
+        engineList.replaceChildren();
+        const onlyOne = data.engines.length < 2;
+        for (const engine of data.engines) {
+          const item = document.createElement("li");
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = engine.name;
+          const url = document.createElement("code");
+          url.textContent = engine.url;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Remove";
+          remove.disabled = onlyOne;
+          remove.addEventListener("click", () => {
+            apply("remove=" + encodeURIComponent(engine.id));
+          });
+          item.append(name, url, remove);
+          engineList.append(item);
+        }
+
+        builtinEngine.replaceChildren();
+        availableBox.hidden = data.available.length === 0;
+        for (const engine of data.available) {
+          const option = document.createElement("option");
+          option.value = engine.id;
+          option.textContent = engine.name;
+          builtinEngine.append(option);
+        }
+      }
+
+      async function apply(query) {
+        const url = query ? "servo:search-engines?" + query : "servo:search-engines";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          searchError.textContent = data.error || "";
+          if (Array.isArray(data.engines)) {
+            render(data);
+          }
+        } catch (error) {
+          searchError.textContent = "Could not update search engines.";
+        }
+      }
+
+      defaultEngine.addEventListener("change", () => {
+        apply("default=" + encodeURIComponent(defaultEngine.value));
+      });
+
+      addForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = document.getElementById("add-name").value;
+        const url = document.getElementById("add-url").value;
+        apply(
+          "name=" + encodeURIComponent(name) + "&url=" + encodeURIComponent(url)
+        ).then(() => {
+          if (!searchError.textContent) {
+            addForm.reset();
+          }
+        });
+      });
+
+      document.getElementById("add-builtin").addEventListener("click", () => {
+        apply("addBuiltin=" + encodeURIComponent(builtinEngine.value));
+      });
+
+      const searchPane = document.getElementById("search");
+
+      function showCurrentPane() {
+        const showSearch = location.hash === "#search";
+        searchPane.hidden = !showSearch;
+        if (showSearch && !searchPane.dataset.loaded) {
+          searchPane.dataset.loaded = "1";
+          apply();
+        }
+      }
+
+      window.addEventListener("hashchange", showCurrentPane);
+      showCurrentPane();
+    </script>
+  </body>
 </html>

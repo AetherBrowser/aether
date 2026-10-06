@@ -55,7 +55,10 @@ pub fn get_default_url(
     )]
     if new_url.is_none() {
         if let Some(url_opt) = url_opt {
-            new_url = location_bar_input_to_url(url_opt, &preferences.searchpage);
+            new_url = location_bar_input_to_url(
+                url_opt,
+                &preferences.search_engines.default_engine().url,
+            );
         }
     }
 
