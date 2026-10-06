@@ -560,7 +560,11 @@ fn normalize_search_url(url: &str) -> Option<String> {
         return None;
     }
     let normalized = url.replace("{searchTerms}", "%s");
-    normalized.contains("%s").then_some(normalized)
+    if !normalized.contains("%s") {
+        return None;
+    }
+    let parsed = url::Url::parse(&normalized.replace("%s", "test")).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then_some(normalized)
 }
 
 #[cfg(test)]

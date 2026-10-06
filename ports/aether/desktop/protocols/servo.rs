@@ -109,7 +109,7 @@ impl ProtocolHandler for ServoProtocolHandler {
             ),
 
             "search-engines" => {
-                if request_is_from_web_content(request) {
+                if request_is_from_settings_page(request) {
                     return Box::pin(std::future::ready(Response::network_error(
                         NetworkError::ResourceLoadError("Forbidden".to_owned()),
                     )));
@@ -152,6 +152,14 @@ impl ProtocolHandler for ServoProtocolHandler {
             ))),
         }
     }
+}
+
+fn request_is_from_settings_page(request: &Request) -> bool {
+    matches!(
+        &request.referrer,
+        Referrer::Client(url) | Referrer::ReferrerUrl(url)
+            if url.as_str() == "servo:settings"
+    )
 }
 
 fn request_is_from_web_content(request: &Request) -> bool {
