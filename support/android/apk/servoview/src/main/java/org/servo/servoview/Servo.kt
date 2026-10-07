@@ -14,8 +14,11 @@ import androidx.compose.foundation.interaction.Interaction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -44,6 +47,11 @@ fun Servo(
     LifecycleResumeEffect(servoView) {
         servoView.servo.suspend(false)
         onPauseOrDispose { servoView.servo.suspend(true) }
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            withFrameNanos { servoView.servo.onDoFrame() }
+        }
     }
     LaunchedEffect(servoView.servo, servoView.navigator) {
         servoView.navigator.consumeNavigationEvents(servoView.servo)
@@ -104,11 +112,15 @@ fun Servo(
 @Stable
 class ServoNavigator {
     private sealed interface NavigationEvent : Interaction {
+        data class Navigate(val uri: String) : NavigationEvent
+
         data object Back : NavigationEvent
 
         data object Forward : NavigationEvent
 
         data object Reload : NavigationEvent
+
+        data object Stop : NavigationEvent
     }
 
     private val coroutineScope = CoroutineScope(EmptyCoroutineContext)
@@ -117,18 +129,24 @@ class ServoNavigator {
     internal suspend fun consumeNavigationEvents(servo: Servo) {
         navigationEvents.collect { navigationEvent ->
             when (navigationEvent) {
+                is NavigationEvent.Navigate -> servo.loadUri(navigationEvent.uri)
                 NavigationEvent.Back -> servo.goBack()
                 NavigationEvent.Forward -> servo.goForward()
                 NavigationEvent.Reload -> servo.reload()
+                NavigationEvent.Stop -> servo.stop()
             }
         }
     }
 
-    var canGoBackState = mutableStateOf(false)
+    var canGoBack by mutableStateOf(false)
         internal set
 
-    var canGoForwardState = mutableStateOf(false)
+    var canGoForward by mutableStateOf(false)
         internal set
+
+    fun navigate(uri: String) {
+        coroutineScope.launch { navigationEvents.emit(NavigationEvent.Navigate(uri)) }
+    }
 
     fun back() {
         coroutineScope.launch { navigationEvents.emit(NavigationEvent.Back) }
@@ -140,6 +158,10 @@ class ServoNavigator {
 
     fun reload() {
         coroutineScope.launch { navigationEvents.emit(NavigationEvent.Reload) }
+    }
+
+    fun stop() {
+        coroutineScope.launch { navigationEvents.emit(NavigationEvent.Stop) }
     }
 }
 
@@ -184,14 +206,6 @@ class Servo(
         }
     }
 
-    fun version(): String {
-        return jni.version()
-    }
-
-    fun performUpdates() {
-        scope.launch(glDispatcher) { jni.performUpdates() }
-    }
-
     fun resize(size: Size) {
         scope.launch(glDispatcher) { jni.resize(size) }
     }
@@ -216,10 +230,6 @@ class Servo(
         scope.launch(glDispatcher) { jni.loadUri(uri) }
     }
 
-    fun scroll(dx: Int, dy: Int, x: Int, y: Int) {
-        scope.launch(glDispatcher) { jni.scroll(dx, dy, x, y) }
-    }
-
     fun onKeyDown(keyCode: Int, event: KeyEvent) {
         scope.launch(glDispatcher) { jni.keydown(keyCode, event.unicodeChar) }
     }
@@ -242,22 +252,6 @@ class Servo(
 
     fun touchCancel(x: Float, y: Float, pointerId: Int) {
         scope.launch(glDispatcher) { jni.touchCancel(x, y, pointerId) }
-    }
-
-    fun pinchZoomStart(factor: Float, x: Float, y: Float) {
-        scope.launch(glDispatcher) { jni.pinchZoomStart(factor, x, y) }
-    }
-
-    fun pinchZoom(factor: Float, x: Float, y: Float) {
-        scope.launch(glDispatcher) { jni.pinchZoom(factor, x, y) }
-    }
-
-    fun pinchZoomEnd(factor: Float, x: Float, y: Float) {
-        scope.launch(glDispatcher) { jni.pinchZoomEnd(factor, x, y) }
-    }
-
-    fun click(x: Float, y: Float) {
-        scope.launch(glDispatcher) { jni.click(x, y) }
     }
 
     fun pausePainting() {
@@ -350,8 +344,8 @@ class Servo(
         }
 
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
-            navigator.canGoBackState.value = canGoBack
-            navigator.canGoForwardState.value = canGoForward
+            navigator.canGoBack = canGoBack
+            navigator.canGoForward = canGoForward
         }
 
         override fun onMediaSessionMetadata(title: String, artist: String, album: String) {

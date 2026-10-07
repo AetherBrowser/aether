@@ -76,6 +76,7 @@ use xml5ever::serialize::TraversalScope::{
 use crate::conversions::Convert;
 use crate::css::stylesheet_loader::StylesheetOwner;
 use crate::dom::RootedPromise;
+use crate::dom::accessors::AttrStrRef;
 use crate::dom::activation::Activatable;
 use crate::dom::animation::Animation;
 use crate::dom::animations::keyframeeffect::KeyframeEffect;
@@ -145,6 +146,7 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmllabelelement::HTMLLabelElement;
 use crate::dom::html::htmllegendelement::HTMLLegendElement;
 use crate::dom::html::htmllinkelement::HTMLLinkElement;
+use crate::dom::html::htmlmarqueeelement::HTMLMarqueeElement;
 use crate::dom::html::htmlobjectelement::HTMLObjectElement;
 use crate::dom::html::htmloptgroupelement::HTMLOptGroupElement;
 use crate::dom::html::htmloutputelement::HTMLOutputElement;
@@ -175,7 +177,7 @@ use crate::dom::range::Range;
 use crate::dom::raredata::ElementRareData;
 use crate::dom::sanitizer::Sanitizer;
 use crate::dom::servoparser::ServoParser;
-use crate::dom::shadowroot::{IsUserAgentWidget, ShadowRoot};
+use crate::dom::shadowroot::shadowroot::{IsUserAgentWidget, ShadowRoot};
 use crate::dom::svg::svgelement::SVGElement;
 use crate::dom::text::Text;
 use crate::dom::trustedtypes::trustedhtml::TrustedHTML;
@@ -537,8 +539,7 @@ impl Element {
 
     // https://drafts.csswg.org/cssom-view/#css-layout-box
     pub(crate) fn has_css_layout_box(&self) -> bool {
-        self.style()
-            .is_some_and(|s| !s.get_box().clone_display().is_none())
+        self.style().is_some_and(|s| !s.get_display().is_none())
     }
 
     /// <https://drafts.csswg.org/cssom-view/#potentially-scrollable>
@@ -574,17 +575,17 @@ impl Element {
         if let Some(parent) = node.GetParentElement() &&
             let Some(style) = parent.style()
         {
-            let mut overflow_x = style.get_box().clone_overflow_x();
-            let mut overflow_y = style.get_box().clone_overflow_y();
+            let mut overflow_x = style.get_box().get_overflow_x();
+            let mut overflow_y = style.get_box().get_overflow_y();
 
             // This fulfills the 'treat parent element overflow:clip as overflow:hidden' stipulation
             // from the document.scrollingElement specification.
             if treat_overflow_clip_on_parent_as_hidden {
-                if overflow_x == Overflow::Clip {
-                    overflow_x = Overflow::Hidden;
+                if overflow_x == &Overflow::Clip {
+                    overflow_x = &Overflow::Hidden;
                 }
-                if overflow_y == Overflow::Clip {
-                    overflow_y = Overflow::Hidden;
+                if overflow_y == &Overflow::Clip {
+                    overflow_y = &Overflow::Hidden;
                 }
             }
 
@@ -596,8 +597,8 @@ impl Element {
         // " - body’s computed value of the overflow-x or overflow-y properties
         //     is neither visible nor clip."
         if let Some(style) = self.style() &&
-            !style.get_box().clone_overflow_x().is_scrollable() &&
-            !style.get_box().clone_overflow_y().is_scrollable()
+            !style.get_box().get_overflow_x().is_scrollable() &&
+            !style.get_box().get_overflow_y().is_scrollable()
         {
             return false;
         };
@@ -1077,6 +1078,12 @@ impl Element {
 
     pub(crate) fn style(&self) -> Option<ServoArc<ComputedValues>> {
         self.owner_window().layout_reflow(QueryMsg::StyleQuery);
+        self.style_without_reflow()
+    }
+
+    /// Do the same kind of query as [`Self::style`], but do not force a reflow. This is for
+    /// callers that have just run another query and know the style data is already current.
+    pub(crate) fn style_without_reflow(&self) -> Option<ServoArc<ComputedValues>> {
         self.style_data
             .borrow()
             .as_ref()
@@ -1243,6 +1250,13 @@ impl<'dom> LayoutDom<'dom, Element> {
         get_attr_for_layout(self, &ns!(), &local_name!("part")).map(|attr| attr.as_tokens())
     }
 
+    pub(crate) fn dimension_attr_value(self, name: LocalName) -> LengthOrPercentageOrAuto {
+        self.get_attr_for_layout(&ns!(), &name)
+            .map(AttrValue::as_dimension)
+            .cloned()
+            .unwrap_or(LengthOrPercentageOrAuto::Auto)
+    }
+
     #[inline]
     #[expect(unsafe_code)]
     pub(crate) fn style_data(self) -> Option<&'dom StyleData> {
@@ -1391,20 +1405,24 @@ impl<'dom> LayoutDom<'dom, Element> {
         }
 
         let width = if let Some(this) = self.downcast::<HTMLIFrameElement>() {
-            this.get_width()
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLImageElement>() {
-            this.get_width()
+            this.width()
+        } else if let Some(this) = self.downcast::<HTMLInputElement>() {
+            this.width()
+        } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLVideoElement>() {
-            this.get_width()
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLTableElement>() {
-            this.get_width()
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLTableCellElement>() {
-            this.get_width()
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLTableColElement>() {
-            this.get_width()
+            this.width()
         } else if let Some(this) = self.downcast::<HTMLHRElement>() {
             // https://html.spec.whatwg.org/multipage/#the-hr-element-2:attr-hr-width
-            this.get_width()
+            this.width()
         } else {
             LengthOrPercentageOrAuto::Auto
         };
@@ -1431,19 +1449,23 @@ impl<'dom> LayoutDom<'dom, Element> {
         }
 
         let height = if let Some(this) = self.downcast::<HTMLIFrameElement>() {
-            this.get_height()
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLImageElement>() {
-            this.get_height()
+            this.height()
+        } else if let Some(this) = self.downcast::<HTMLInputElement>() {
+            this.height()
+        } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLVideoElement>() {
-            this.get_height()
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLTableElement>() {
-            this.get_height()
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLTableCellElement>() {
-            this.get_height()
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLTableRowElement>() {
-            this.get_height()
+            this.height()
         } else if let Some(this) = self.downcast::<HTMLTableSectionElement>() {
-            this.get_height()
+            this.height()
         } else {
             LengthOrPercentageOrAuto::Auto
         };
@@ -1465,6 +1487,66 @@ impl<'dom> LayoutDom<'dom, Element> {
                     )),
                 ));
                 push(PropertyDeclaration::Height(height_value));
+            },
+        }
+
+        let margin_right_left = if let Some(this) = self.downcast::<HTMLImageElement>() {
+            this.margin_right_left()
+        } else {
+            LengthOrPercentageOrAuto::Auto
+        };
+
+        match margin_right_left {
+            LengthOrPercentageOrAuto::Auto => {},
+            LengthOrPercentageOrAuto::Percentage(percentage) => {
+                let margin_right_left_value =
+                    specified::Margin::LengthPercentage(specified::LengthPercentage::Percentage(
+                        specified::NoCalcPercentage::new(percentage),
+                    ));
+                push(PropertyDeclaration::MarginLeft(
+                    margin_right_left_value.clone(),
+                ));
+                push(PropertyDeclaration::MarginRight(margin_right_left_value));
+            },
+            LengthOrPercentageOrAuto::Length(length) => {
+                let margin_right_left_value =
+                    specified::Margin::LengthPercentage(specified::LengthPercentage::Length(
+                        specified::NoCalcLength::from_px(length.to_f32_px()),
+                    ));
+                push(PropertyDeclaration::MarginLeft(
+                    margin_right_left_value.clone(),
+                ));
+                push(PropertyDeclaration::MarginRight(margin_right_left_value));
+            },
+        }
+
+        let margin_top_bottom = if let Some(this) = self.downcast::<HTMLImageElement>() {
+            this.margin_top_bottom()
+        } else {
+            LengthOrPercentageOrAuto::Auto
+        };
+
+        match margin_top_bottom {
+            LengthOrPercentageOrAuto::Auto => {},
+            LengthOrPercentageOrAuto::Percentage(percentage) => {
+                let margin_top_bottom_value =
+                    specified::Margin::LengthPercentage(specified::LengthPercentage::Percentage(
+                        specified::NoCalcPercentage::new(percentage),
+                    ));
+                push(PropertyDeclaration::MarginTop(
+                    margin_top_bottom_value.clone(),
+                ));
+                push(PropertyDeclaration::MarginBottom(margin_top_bottom_value));
+            },
+            LengthOrPercentageOrAuto::Length(length) => {
+                let margin_top_bottom_value =
+                    specified::Margin::LengthPercentage(specified::LengthPercentage::Length(
+                        specified::NoCalcLength::from_px(length.to_f32_px()),
+                    ));
+                push(PropertyDeclaration::MarginTop(
+                    margin_top_bottom_value.clone(),
+                ));
+                push(PropertyDeclaration::MarginBottom(margin_top_bottom_value));
             },
         }
 
@@ -1847,7 +1929,7 @@ impl Element {
 
     /// Element branch of <https://dom.spec.whatwg.org/#locate-a-namespace>
     pub(crate) fn locate_namespace(&self, prefix: Option<DOMString>) -> Namespace {
-        let namespace_prefix = prefix.clone().map(|s| Prefix::from(&*s.str()));
+        let namespace_prefix = prefix.as_ref().map(|s| Prefix::from(&*s.str()));
 
         // Step 1. If prefix is "xml", then return the XML namespace.
         if namespace_prefix == Some(namespace_prefix!("xml")) {
@@ -2177,6 +2259,14 @@ impl Element {
                 attribute.local_name() == local_name && attribute.namespace() == namespace
             })
             .map(map_func)
+    }
+
+    pub(crate) fn attribute_str_ref<'a>(
+        &'a self,
+        namespace: &Namespace,
+        local_name: &LocalName,
+    ) -> Option<AttrStrRef<'a>> {
+        AttrStrRef::maybe_new(self.attrs.borrow(), namespace, local_name)
     }
 
     /// This is the inner logic for:

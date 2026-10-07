@@ -16,7 +16,7 @@ use js::rust::{CustomAutoRooterGuard, HandleObject, MutableHandleObject, Mutable
 use js::typedarray::{ArrayBufferView, Float32, Int32, Uint32};
 use pixels::{Alpha, Snapshot};
 use script_bindings::interfaces::WebGL2RenderingContextHelpers;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel::{self, GenericSharedMemory};
 use servo_canvas_traits::webgl::WebGLError::*;
 use servo_canvas_traits::webgl::{
@@ -57,9 +57,12 @@ use crate::dom::webgl::validations::tex_image_2d::{
 use crate::dom::webgl::validations::tex_image_3d::{
     TexImage3DValidator, TexImage3DValidatorResult,
 };
+use crate::dom::webgl::vertexarrayobject::VertexAttribPointerKind;
 use crate::dom::webgl::webglactiveinfo::WebGLActiveInfo;
 use crate::dom::webgl::webglbuffer::WebGLBuffer;
-use crate::dom::webgl::webglframebuffer::{WebGLFramebuffer, WebGLFramebufferAttachmentRoot};
+use crate::dom::webgl::webglframebuffer::{
+    CompleteForRendering, WebGLFramebuffer, WebGLFramebufferAttachmentRoot,
+};
 use crate::dom::webgl::webglprogram::WebGLProgram;
 use crate::dom::webgl::webglquery::WebGLQuery;
 use crate::dom::webgl::webglrenderbuffer::{WebGLRenderbuffer, renderbuffer_format};
@@ -131,16 +134,7 @@ struct ReadPixelsSizes {
 }
 
 impl WebGL2RenderingContext {
-    fn new_inherited(
-        cx: &mut JSContext,
-        window: &Window,
-        canvas: &RootedHTMLCanvasElementOrOffscreenCanvas,
-        size: Size2D<u32>,
-        attrs: GLContextAttributes,
-    ) -> Option<WebGL2RenderingContext> {
-        let base =
-            WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?;
-
+    fn new_inherited(base: &WebGLRenderingContext) -> WebGL2RenderingContext {
         let samplers = (0..base.limits().max_combined_texture_image_units)
             .map(|_| Default::default())
             .collect::<Vec<_>>()
@@ -155,9 +149,9 @@ impl WebGL2RenderingContext {
                 .collect::<Vec<_>>()
                 .into();
 
-        Some(WebGL2RenderingContext {
+        WebGL2RenderingContext {
             reflector_: Reflector::new(),
-            base: Dom::from_ref(&*base),
+            base: Dom::from_ref(base),
             occlusion_query: MutNullableDom::new(None),
             primitives_query: MutNullableDom::new(None),
             samplers,
@@ -176,7 +170,7 @@ impl WebGL2RenderingContext {
             enable_rasterizer_discard: Cell::new(false),
             default_fb_readbuffer: Cell::new(constants::BACK),
             default_fb_drawbuffer: Cell::new(constants::BACK),
-        })
+        }
     }
 
     pub(crate) fn new(
@@ -186,8 +180,13 @@ impl WebGL2RenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGL2RenderingContext>> {
-        WebGL2RenderingContext::new_inherited(cx, window, canvas, size, attrs)
-            .map(|ctx| reflect_dom_object_with_cx(Box::new(ctx), window, cx))
+        let base =
+            WebGLRenderingContext::new(cx, window, canvas, WebGLVersion::WebGL2, size, attrs)?;
+        Some(reflect_dom_object(
+            cx,
+            Box::new(WebGL2RenderingContext::new_inherited(&base)),
+            window,
+        ))
     }
 
     pub(crate) fn set_image_key(&self, image_key: ImageKey) {
@@ -303,14 +302,22 @@ impl WebGL2RenderingContext {
                 .location
                 .map(|l| l as usize)
                 .unwrap_or(usize::MAX)];
+            // The base type comes from the call that set the attribute:
+            //
+            // https://registry.khronos.org/webgl/specs/latest/2.0/#ATTRIBUTE_TYPE_MATCH
             let attrib_data_base_type = if !attrib.enabled_as_array {
                 match current_vertex_attrib {
                     VertexAttrib::Int(_, _, _, _) => constants::INT,
                     VertexAttrib::Uint(_, _, _, _) => constants::UNSIGNED_INT,
                     VertexAttrib::Float(_, _, _, _) => constants::FLOAT,
                 }
+            } else if attrib.kind.is_integer() {
+                match attrib.type_ {
+                    constants::BYTE | constants::SHORT | constants::INT => constants::INT,
+                    _ => constants::UNSIGNED_INT,
+                }
             } else {
-                attrib.type_
+                constants::FLOAT
             };
 
             let contains = groups
@@ -3119,8 +3126,15 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             constants::UNSIGNED_INT => {},
             _ => return self.base.webgl_error(InvalidEnum),
         };
-        self.base
-            .VertexAttribPointer(cx, index, size, type_, false, stride, offset)
+        let res = self.current_vao(cx).vertex_attrib_pointer(
+            index,
+            size,
+            type_,
+            stride,
+            offset,
+            VertexAttribPointerKind::Integer,
+        );
+        handle_potential_webgl_error!(self.base, res);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>
@@ -3681,6 +3695,22 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
 
         let src_fb = self.base.get_read_framebuffer_slot().get();
         let dst_fb = self.base.get_draw_framebuffer_slot().get();
+
+        if src_fb
+            .as_ref()
+            .is_some_and(|fb| fb.check_status() != constants::FRAMEBUFFER_COMPLETE)
+        {
+            return self.base.webgl_error(InvalidFramebufferOperation);
+        }
+        // Both framebuffers' uninitialized attachments must be cleared before the blit.
+        if let Some(fb) = &dst_fb &&
+            let CompleteForRendering::Incomplete = fb.check_status_for_rendering()
+        {
+            return self.base.webgl_error(InvalidFramebufferOperation);
+        }
+        if let Some(fb) = &src_fb {
+            fb.initialize_for_reading(dst_fb.as_deref());
+        }
 
         let get_default_formats = || -> WebGLResult<(Option<u32>, Option<u32>, Option<u32>)> {
             // All attempts to blit to an antialiased back buffer should fail.

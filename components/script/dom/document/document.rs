@@ -205,7 +205,7 @@ use crate::dom::resizeobserver::{ResizeObservationDepth, ResizeObserver};
 use crate::dom::sanitizer::Sanitizer;
 use crate::dom::selection::Selection;
 use crate::dom::servoparser::ServoParser;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::storageevent::StorageEvent;
 use crate::dom::text::Text;
 use crate::dom::textevent::TextEvent;
@@ -3401,7 +3401,6 @@ impl Document {
     }
 
     /// <https://drafts.csswg.org/resize-observer/#broadcast-active-resize-observations>
-    #[expect(clippy::redundant_iter_cloned)]
     pub(crate) fn broadcast_active_resize_observations(
         &self,
         cx: &mut JSContext,
@@ -3414,8 +3413,7 @@ impl Document {
             .resize_observers
             .borrow()
             .iter()
-            .cloned()
-            .map(|obs| DomRoot::from_ref(&*obs))
+            .map(|obs| obs.as_rooted())
             .collect();
         for observer in iterator {
             observer.broadcast_active_resize_observations(cx, &mut shallowest);

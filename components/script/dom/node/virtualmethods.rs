@@ -37,6 +37,7 @@ use crate::dom::html::htmlimageelement::HTMLImageElement;
 use crate::dom::html::htmllabelelement::HTMLLabelElement;
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::html::htmllinkelement::HTMLLinkElement;
+use crate::dom::html::htmlmarqueeelement::HTMLMarqueeElement;
 use crate::dom::html::htmlmediaelement::HTMLMediaElement;
 use crate::dom::html::htmlmetaelement::HTMLMetaElement;
 use crate::dom::html::htmlmeterelement::HTMLMeterElement;
@@ -66,7 +67,7 @@ use crate::dom::htmldialogelement::HTMLDialogElement;
 use crate::dom::node::{
     BindContext, ChildrenMutation, CloneChildrenFlag, MoveContext, Node, UnbindContext,
 };
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::svg::svgaelement::SVGAElement;
 use crate::dom::svg::svgcircleelement::SVGCircleElement;
 use crate::dom::svg::svgdefselement::SVGDefsElement;
@@ -282,6 +283,9 @@ pub(crate) fn vtable_for(node: &Node) -> &dyn VirtualMethods {
         },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLLinkElement)) => {
             node.downcast::<HTMLLinkElement>().unwrap() as &dyn VirtualMethods
+        },
+        NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMarqueeElement)) => {
+            node.downcast::<HTMLMarqueeElement>().unwrap() as &dyn VirtualMethods
         },
         NodeTypeId::Element(ElementTypeId::HTMLElement(HTMLElementTypeId::HTMLMediaElement(
             media_el,
