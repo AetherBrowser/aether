@@ -8,7 +8,9 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
+use std::time::SystemTime;
 
+use aether_history::HistoryService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
 #[cfg(all(
@@ -44,6 +46,7 @@ use url::Url;
     not(any(target_os = "android", target_env = "ohos"))
 ))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
+use crate::history::should_record;
 use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
 use crate::webdriver::WebDriverEmbedderControls;
 use crate::window::{
@@ -224,6 +227,9 @@ pub(crate) struct RunningAppState {
     /// The [`UserContentManager`] for all `WebView`s created.
     pub(crate) user_content_manager: Rc<UserContentManager>,
 
+    /// The browsing history of the profile.
+    history: HistoryService,
+
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
     exit_scheduled: Cell<bool>,
@@ -257,6 +263,7 @@ impl RunningAppState {
         event_loop_waker: Box<dyn EventLoopWaker>,
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
+        history: HistoryService,
         #[cfg(all(
             feature = "gamepad",
             not(any(target_os = "android", target_env = "ohos"))
@@ -296,6 +303,7 @@ impl RunningAppState {
             achieved_stable_image: Default::default(),
             exit_scheduled: Default::default(),
             user_content_manager,
+            history,
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -766,6 +774,16 @@ impl WebViewDelegate for RunningAppState {
 
     fn notify_status_text_changed(&self, webview: WebView, _status: Option<String>) {
         self.window_for_webview(&webview).set_needs_update();
+    }
+
+    fn notify_url_changed(&self, webview: WebView, url: Url) {
+        if self
+            .window_for_webview(&webview)
+            .update_last_url(webview.id(), url.clone()) &&
+            should_record(&url)
+        {
+            self.history.record_visit(url, SystemTime::now());
+        }
     }
 
     fn notify_history_changed(&self, webview: WebView, _entries: Vec<Url>, _current: usize) {

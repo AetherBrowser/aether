@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 
@@ -94,6 +95,8 @@ pub(crate) struct ServoShellWindow {
     pending_favicon_loads: RefCell<Vec<WebViewId>>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
+    /// The last URL notified for each [`WebView`], to record a history visit only when it changes.
+    last_urls: RefCell<HashMap<WebViewId, Url>>,
 }
 
 pub(crate) enum TopLevelWebViewCreationRequest {
@@ -111,6 +114,7 @@ impl ServoShellWindow {
             needs_repaint: Default::default(),
             pending_favicon_loads: Default::default(),
             pending_commands: Default::default(),
+            last_urls: Default::default(),
         }
     }
 
@@ -275,11 +279,19 @@ impl ServoShellWindow {
         if webview_collection.remove(webview_id).is_none() {
             return;
         }
+        self.last_urls.borrow_mut().remove(&webview_id);
         self.platform_window
             .dismiss_embedder_controls_for_webview(webview_id);
 
         self.set_needs_update();
         self.set_needs_repaint();
+    }
+
+    /// Remembers that `webview_id` now shows `url`. Returns `false` if it already showed it, for
+    /// instance after a reload or a navigation inside an `<iframe>`.
+    pub(crate) fn update_last_url(&self, webview_id: WebViewId, url: Url) -> bool {
+        let previous_url = self.last_urls.borrow_mut().insert(webview_id, url.clone());
+        previous_url != Some(url)
     }
 
     pub(crate) fn notify_favicon_changed(&self, webview: WebView) {

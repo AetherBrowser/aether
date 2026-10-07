@@ -21,6 +21,7 @@ use servo::{
 use url::Url;
 
 use crate::egl::host_trait::HostTrait;
+use crate::history::open_history;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
@@ -308,6 +309,7 @@ pub struct App {
 impl App {
     #[servo::servo_tracing::instrument(skip_all, name = "App::new", level = "info")]
     pub(super) fn new(init: AppInitOptions) -> Rc<Self> {
+        let history = open_history(&init.opts);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)
             .preferences(init.preferences.clone())
@@ -329,6 +331,7 @@ impl App {
             init.event_loop_waker,
             user_content_manager,
             init.preferences,
+            history,
         ));
 
         Rc::new(Self {

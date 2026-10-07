@@ -25,6 +25,7 @@ use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
 use crate::desktop::tracing::trace_winit_event;
+use crate::history::open_history;
 use crate::parser::get_default_url;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
@@ -134,6 +135,7 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
+            open_history(&self.opts),
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()
