@@ -25,6 +25,8 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX visits_place_id_index ON visits(place_id);
     CREATE INDEX visits_date_index ON visits(visit_date);",
+    // Version 2: the last title of each page, as shown in its tab.
+    "ALTER TABLE places ADD COLUMN title TEXT;",
 ];
 
 pub struct HistoryStore {
@@ -64,6 +66,18 @@ impl HistoryStore {
             params![url.as_str(), microseconds_since_epoch(visit_date)],
         )?;
         transaction.commit()
+    }
+
+    /// Stores `title` as the last title of `url`, or `NULL` when it is missing or empty. The
+    /// title can arrive before the first visit of `url`, which then reuses the same place.
+    pub fn set_title(&mut self, url: &Url, title: Option<&str>) -> rusqlite::Result<()> {
+        let title = title.filter(|title| !title.is_empty());
+        self.connection.execute(
+            "INSERT INTO places (url, guid, title) VALUES (?1, lower(hex(randomblob(16))), ?2)
+             ON CONFLICT (url) DO UPDATE SET title = excluded.title",
+            params![url.as_str(), title],
+        )?;
+        Ok(())
     }
 }
 
@@ -185,5 +199,88 @@ mod tests {
             .unwrap();
 
         assert!(HistoryStore::new(connection).is_err());
+    }
+
+    fn titles(connection: &Connection) -> Vec<(String, Option<String>)> {
+        connection
+            .prepare("SELECT url, title FROM places ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn titles_are_kept_whether_they_arrive_before_or_after_the_visit() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let servo = Url::parse("https://servo.org/").unwrap();
+        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+
+        store.set_title(&servo, Some("Servo")).unwrap();
+        store.record_visit(&servo, UNIX_EPOCH).unwrap();
+        store.record_visit(&rust, UNIX_EPOCH).unwrap();
+        store.set_title(&rust, Some("Rust")).unwrap();
+
+        assert_eq!(
+            titles(&store.connection),
+            [
+                ("https://servo.org/".to_owned(), Some("Servo".to_owned())),
+                (
+                    "https://www.rust-lang.org/".to_owned(),
+                    Some("Rust".to_owned())
+                ),
+            ]
+        );
+        assert_eq!(visits(&store.connection).len(), 2);
+    }
+
+    #[test]
+    fn the_last_title_replaces_the_previous_one() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let url = Url::parse("https://servo.org/").unwrap();
+
+        store.set_title(&url, Some("Servo")).unwrap();
+        store.set_title(&url, Some("Servo blog")).unwrap();
+        assert_eq!(
+            titles(&store.connection),
+            [(
+                "https://servo.org/".to_owned(),
+                Some("Servo blog".to_owned())
+            )]
+        );
+
+        store.set_title(&url, Some("")).unwrap();
+        assert_eq!(
+            titles(&store.connection),
+            [("https://servo.org/".to_owned(), None)]
+        );
+    }
+
+    #[test]
+    fn a_version_1_database_is_migrated_without_losing_visits() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version = 1;
+                 INSERT INTO places (id, url, guid) VALUES (1, 'https://servo.org/', 'guid');
+                 INSERT INTO visits (place_id, visit_date) VALUES (1, 42);",
+            )
+            .unwrap();
+
+        let mut store = HistoryStore::new(connection).unwrap();
+        store
+            .set_title(&Url::parse("https://servo.org/").unwrap(), Some("Servo"))
+            .unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://servo.org/".to_owned(), 42)]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+        );
     }
 }

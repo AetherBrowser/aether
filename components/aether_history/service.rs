@@ -14,6 +14,7 @@ use crate::HistoryStore;
 
 enum HistoryCommand {
     RecordVisit { url: Url, visit_date: SystemTime },
+    SetTitle { url: Url, title: Option<String> },
 }
 
 /// Writes the history from a dedicated thread, so that SQLite never blocks the caller.
@@ -59,6 +60,13 @@ impl HistoryService {
             let _ = sender.send(HistoryCommand::RecordVisit { url, visit_date });
         }
     }
+
+    /// Stores `title` as the last title of `url`.
+    pub fn set_title(&self, url: Url, title: Option<String>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(HistoryCommand::SetTitle { url, title });
+        }
+    }
 }
 
 impl Drop for HistoryService {
@@ -79,6 +87,11 @@ fn run(mut store: HistoryStore, receiver: Receiver<HistoryCommand>) {
             HistoryCommand::RecordVisit { url, visit_date } => {
                 if let Err(error) = store.record_visit(&url, visit_date) {
                     warn!("Could not record a visit in the history: {error}");
+                }
+            },
+            HistoryCommand::SetTitle { url, title } => {
+                if let Err(error) = store.set_title(&url, title.as_deref()) {
+                    warn!("Could not store a page title in the history: {error}");
                 }
             },
         }
@@ -111,6 +124,24 @@ mod tests {
             .query_row("SELECT count(*) FROM visits", [], |row| row.get(0))
             .unwrap();
         assert_eq!(visits, 100);
+    }
+
+    #[test]
+    fn titles_are_written_by_the_service() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let service = HistoryService::open(path.clone());
+        let url = Url::parse("https://servo.org/").unwrap();
+
+        service.record_visit(url.clone(), UNIX_EPOCH);
+        service.set_title(url, Some("Servo".to_owned()));
+        drop(service);
+
+        let title: String = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT title FROM places", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(title, "Servo");
     }
 
     #[test]

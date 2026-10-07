@@ -790,8 +790,13 @@ impl WebViewDelegate for RunningAppState {
         self.window_for_webview(&webview).set_needs_update();
     }
 
-    fn notify_page_title_changed(&self, webview: WebView, _: Option<String>) {
+    fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
         self.window_for_webview(&webview).set_needs_update();
+        if let Some(url) = webview.page_title_url() &&
+            should_record(&url)
+        {
+            self.history.set_title(url, title);
+        }
     }
 
     fn notify_traversal_complete(&self, _webview: WebView, traversal_id: TraversalId) {
