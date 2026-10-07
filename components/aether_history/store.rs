@@ -166,11 +166,11 @@ mod tests {
         // The second opening must not apply the migrations again.
         let store = HistoryStore::open(&path).unwrap();
 
-        let version: usize = store
+        let version: u32 = store
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, MIGRATIONS.len());
+        assert_eq!(version as usize, MIGRATIONS.len());
         assert_eq!(
             visits(&store.connection),
             [("https://servo.org/".to_owned(), 0)]
