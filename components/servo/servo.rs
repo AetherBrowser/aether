@@ -493,9 +493,9 @@ impl ServoInner {
                     webview.set_status_text(status_text);
                 }
             },
-            EmbedderMsg::ChangePageTitle(webview_id, title) => {
+            EmbedderMsg::ChangePageTitle(webview_id, title, url) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_page_title(title);
+                    webview.set_page_title(title, url.into_url());
                 }
             },
             EmbedderMsg::MoveTo(webview_id, position) => {

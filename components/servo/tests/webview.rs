@@ -1093,6 +1093,7 @@ fn test_webview_title_updates_when_document_title_is_updated() {
     servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
 
     assert_eq!(webview.page_title().as_deref(), Some("Success"));
+    assert_eq!(webview.page_title_url(), Some(test_page));
 }
 
 #[test]
@@ -1159,6 +1160,7 @@ fn test_webview_clear_history() {
         let webview = webview.clone();
         servo_test.spin(move || webview.page_title() != Some("Success2".into()));
     }
+    assert_eq!(webview.page_title_url(), Some(second_url.clone()));
 
     webview.load(Url::parse("data:text/html,<script>document.title='Success3';</script>").unwrap());
     {

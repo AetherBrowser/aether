@@ -129,6 +129,7 @@ pub(crate) struct WebViewInner {
     load_status: LoadStatus,
     status_text: Option<String>,
     page_title: Option<String>,
+    page_title_url: Option<Url>,
     favicon: Option<Image>,
     focused: bool,
     animating: bool,
@@ -178,6 +179,7 @@ impl WebView {
             load_status: LoadStatus::Started,
             status_text: None,
             page_title: None,
+            page_title_url: None,
             favicon: None,
             focused: true,
             animating: false,
@@ -365,11 +367,23 @@ impl WebView {
         self.inner().page_title.clone()
     }
 
-    pub(crate) fn set_page_title(self, new_value: Option<String>) {
-        if self.inner().page_title == new_value {
+    /// Get the URL of the document whose title is [`WebView::page_title`]. While a navigation
+    /// is being committed, it can differ from [`WebView::url`] for a moment.
+    pub fn page_title_url(&self) -> Option<Url> {
+        self.inner().page_title_url.clone()
+    }
+
+    pub(crate) fn set_page_title(self, new_value: Option<String>, url: Url) {
+        if self.inner().page_title == new_value &&
+            self.inner().page_title_url.as_ref() == Some(&url)
+        {
             return;
         }
-        self.inner_mut().page_title = new_value.clone();
+        {
+            let mut inner = self.inner_mut();
+            inner.page_title = new_value.clone();
+            inner.page_title_url = Some(url);
+        }
         self.delegate().notify_page_title_changed(self, new_value);
     }
 

@@ -1193,6 +1193,7 @@ impl Document {
 
     pub(crate) fn set_url(&self, url: ServoUrl) {
         *self.url.borrow_mut() = url;
+        self.send_title_to_embedder();
     }
 
     pub(crate) fn about_base_url(&self) -> Option<ServoUrl> {
@@ -1662,7 +1663,11 @@ impl Document {
         let window = self.window();
         if window.is_top_level() {
             let title = self.title().map(String::from);
-            self.send_to_embedder(EmbedderMsg::ChangePageTitle(self.webview_id(), title));
+            self.send_to_embedder(EmbedderMsg::ChangePageTitle(
+                self.webview_id(),
+                title,
+                self.url(),
+            ));
         }
     }
 
