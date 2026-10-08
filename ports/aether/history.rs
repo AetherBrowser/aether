@@ -66,7 +66,7 @@ pub(crate) fn history_update(
                 visit_date: recorded.then_some(visit_date),
             },
         ),
-        _ if recorded => (
+        (NavigationType::Push | NavigationType::Replace, _) if recorded => (
             Some(HistoryUpdate::RecordVisit {
                 url: url.clone(),
                 visit_date: now,
@@ -128,23 +128,36 @@ mod tests {
     }
 
     #[test]
-    fn new_and_traversed_entries_are_new_visits() {
-        for navigation_type in [NavigationType::Push, NavigationType::Traverse] {
-            let (update, active_entry) = history_update(
-                Some(&visited("https://servo.org/", 1)),
-                &url("https://servo.org/blog"),
-                navigation_type,
-                date(2),
-            );
-            assert_eq!(
-                update,
-                Some(HistoryUpdate::RecordVisit {
-                    url: url("https://servo.org/blog"),
-                    visit_date: date(2),
-                })
-            );
-            assert_eq!(active_entry.visit_date, Some(date(2)));
-        }
+    fn new_entries_are_new_visits() {
+        let (update, active_entry) = history_update(
+            Some(&visited("https://servo.org/", 1)),
+            &url("https://servo.org/blog"),
+            NavigationType::Push,
+            date(2),
+        );
+
+        assert_eq!(
+            update,
+            Some(HistoryUpdate::RecordVisit {
+                url: url("https://servo.org/blog"),
+                visit_date: date(2),
+            })
+        );
+        assert_eq!(active_entry.visit_date, Some(date(2)));
+    }
+
+    #[test]
+    fn going_back_or_forward_is_not_a_new_visit() {
+        let (update, active_entry) = history_update(
+            Some(&visited("https://servo.org/blog", 2)),
+            &url("https://servo.org/"),
+            NavigationType::Traverse,
+            date(3),
+        );
+
+        assert_eq!(update, None);
+        assert_eq!(active_entry.url, url("https://servo.org/"));
+        assert_eq!(active_entry.visit_date, None);
     }
 
     #[test]
