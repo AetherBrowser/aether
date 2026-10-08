@@ -130,7 +130,6 @@ pub(crate) struct WebViewInner {
     load_status: LoadStatus,
     status_text: Option<String>,
     page_title: Option<String>,
-    page_title_url: Option<Url>,
     favicon: Option<Image>,
     focused: bool,
     animating: bool,
@@ -180,7 +179,6 @@ impl WebView {
             load_status: LoadStatus::Started,
             status_text: None,
             page_title: None,
-            page_title_url: None,
             favicon: None,
             focused: true,
             animating: false,
@@ -368,23 +366,11 @@ impl WebView {
         self.inner().page_title.clone()
     }
 
-    /// Get the URL of the document whose title is [`WebView::page_title`]. While a navigation
-    /// is being committed, it can differ from [`WebView::url`] for a moment.
-    pub fn page_title_url(&self) -> Option<Url> {
-        self.inner().page_title_url.clone()
-    }
-
-    pub(crate) fn set_page_title(self, new_value: Option<String>, url: Url) {
-        if self.inner().page_title == new_value &&
-            self.inner().page_title_url.as_ref() == Some(&url)
-        {
+    pub(crate) fn set_page_title(self, new_value: Option<String>) {
+        if self.inner().page_title == new_value {
             return;
         }
-        {
-            let mut inner = self.inner_mut();
-            inner.page_title = new_value.clone();
-            inner.page_title_url = Some(url);
-        }
+        self.inner_mut().page_title = new_value.clone();
         self.delegate().notify_page_title_changed(self, new_value);
     }
 
@@ -787,15 +773,19 @@ impl WebView {
         new_back_forward_list: Vec<ServoUrl>,
         new_index: usize,
         navigation_type: Option<NavigationType>,
+        page_title: Option<String>,
     ) {
-        {
+        let page_title_changed = {
             let mut inner_mut = self.inner_mut();
             inner_mut.back_forward_list_index = new_index;
             inner_mut.back_forward_list = new_back_forward_list
                 .into_iter()
                 .map(ServoUrl::into_url)
                 .collect();
-        }
+            let page_title_changed = inner_mut.page_title != page_title;
+            inner_mut.page_title = page_title.clone();
+            page_title_changed
+        };
 
         let back_forward_list = self.inner().back_forward_list.clone();
         let back_forward_list_index = self.inner().back_forward_list_index;
@@ -809,7 +799,10 @@ impl WebView {
         );
         if let Some(navigation_type) = navigation_type {
             self.delegate()
-                .notify_navigation_committed(self, url, navigation_type);
+                .notify_navigation_committed(self.clone(), url, navigation_type);
+        }
+        if page_title_changed {
+            self.delegate().notify_page_title_changed(self, page_title);
         }
     }
 

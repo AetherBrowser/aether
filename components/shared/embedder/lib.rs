@@ -469,9 +469,6 @@ pub struct BluetoothDeviceDescription {
 pub enum EmbedderMsg {
     /// A status message to be displayed by the browser chrome.
     Status(WebViewId, Option<String>),
-    /// Alerts the embedder that the current page has changed its title, with the URL of the
-    /// document that has this title.
-    ChangePageTitle(WebViewId, Option<String>, ServoUrl),
     /// Move the window to a point
     MoveTo(WebViewId, DeviceIntPoint),
     /// Resize the window to size

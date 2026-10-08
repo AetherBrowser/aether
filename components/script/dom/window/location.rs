@@ -120,9 +120,9 @@ impl Location {
         load_data.about_base_url = navigable_document.about_base_url();
         // Step 3. If location's relevant Document is not yet completely loaded,
         // and the incumbent global object does not have transient activation, then set historyHandling to "replace".
-        //
-        // TODO: check for transient activation
-        let history_handling = if !navigable_document.completely_loaded() {
+        let history_handling = if !navigable_document.completely_loaded() &&
+            !incumbent_global.as_window().has_transient_activation()
+        {
             NavigationHistoryBehavior::Replace
         } else {
             history_handling

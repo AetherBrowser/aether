@@ -3265,7 +3265,7 @@ impl ScriptThread {
         let Some(document) = self.documents.borrow().find_document(pipeline_id) else {
             return warn!("Message sent to closed pipeline {pipeline_id}.");
         };
-        document.send_title_to_embedder();
+        document.title_changed();
     }
 
     /// Handles a request to exit a pipeline and shut down layout.

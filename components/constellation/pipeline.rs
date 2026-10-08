@@ -88,6 +88,10 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    pub(crate) fn page_title(&self) -> Option<String> {
+        (!self.title.is_empty()).then(|| self.title.clone())
+    }
+
     /// Possibly starts a script thread, in a new process if requested.
     pub(crate) fn spawn<STF: ScriptThreadFactory, SWF: ServiceWorkerManagerFactory>(
         new_pipeline_info: NewPipelineInfo,

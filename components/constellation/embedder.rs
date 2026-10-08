@@ -39,5 +39,13 @@ pub enum ConstellationToEmbedderMsg {
     /// Whether or not to allow a pipeline to load a url.
     AllowNavigationRequest(WebViewId, PipelineId, ServoUrl),
     /// The history state has changed.
-    HistoryChanged(WebViewId, Vec<ServoUrl>, usize, Option<NavigationType>),
+    HistoryChanged(
+        WebViewId,
+        Vec<ServoUrl>,
+        usize,
+        Option<NavigationType>,
+        Option<String>,
+    ),
+    /// The title of the active top-level document of a `WebView` has changed.
+    PageTitleChanged(WebViewId, Option<String>),
 }

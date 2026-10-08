@@ -493,11 +493,6 @@ impl ServoInner {
                     webview.set_status_text(status_text);
                 }
             },
-            EmbedderMsg::ChangePageTitle(webview_id, title, url) => {
-                if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_page_title(title, url.into_url());
-                }
-            },
             EmbedderMsg::MoveTo(webview_id, position) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.delegate().request_move_to(webview, position);
@@ -854,9 +849,20 @@ impl ServoInner {
                 new_back_forward_list,
                 current_list_index,
                 navigation_type,
+                page_title,
             ) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_history(new_back_forward_list, current_list_index, navigation_type);
+                    webview.set_history(
+                        new_back_forward_list,
+                        current_list_index,
+                        navigation_type,
+                        page_title,
+                    );
+                }
+            },
+            ConstellationToEmbedderMsg::PageTitleChanged(webview_id, title) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.set_page_title(title);
                 }
             },
             ConstellationToEmbedderMsg::Panic(webview_id, reason, backtrace) => {

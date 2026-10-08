@@ -1193,7 +1193,6 @@ impl Document {
 
     pub(crate) fn set_url(&self, url: ServoUrl) {
         *self.url.borrow_mut() = url;
-        self.send_title_to_embedder();
     }
 
     pub(crate) fn about_base_url(&self) -> Option<ServoUrl> {
@@ -1614,7 +1613,6 @@ impl Document {
     /// Handles any updates when the document's title has changed.
     pub(crate) fn title_changed(&self) {
         if self.browsing_context().is_some() {
-            self.send_title_to_embedder();
             let title = String::from(self.Title());
             self.window
                 .send_to_constellation(ScriptToConstellationMessage::TitleChanged(
@@ -1656,19 +1654,6 @@ impl Document {
             let value = title.child_text_content();
             DOMString::from(str_join(value.str().split_html_space_characters(), " "))
         })
-    }
-
-    /// Sends this document's title to the constellation.
-    pub(crate) fn send_title_to_embedder(&self) {
-        let window = self.window();
-        if window.is_top_level() {
-            let title = self.title().map(String::from);
-            self.send_to_embedder(EmbedderMsg::ChangePageTitle(
-                self.webview_id(),
-                title,
-                self.url(),
-            ));
-        }
     }
 
     pub(crate) fn send_to_embedder(&self, msg: EmbedderMsg) {

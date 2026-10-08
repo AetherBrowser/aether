@@ -1940,10 +1940,8 @@ where
                     source_pipeline_id,
                     ScriptToConstellationMessage::GetWebGPUChan(response_sender),
                 ),
-            ScriptToConstellationMessage::TitleChanged(pipeline, title) => {
-                if let Some(pipeline) = self.pipelines.get_mut(&pipeline) {
-                    pipeline.title = title;
-                }
+            ScriptToConstellationMessage::TitleChanged(pipeline_id, title) => {
+                self.handle_title_changed_msg(pipeline_id, title)
             },
             ScriptToConstellationMessage::IFrameSizes(iframe_sizes) => {
                 self.handle_iframe_size_msg(webview_id, iframe_sizes)
@@ -4851,6 +4849,25 @@ where
         self.notify_history_changed(webview_id, is_top_level.then_some(NavigationType::Push));
     }
 
+    /// Only the title of the active top-level document is the title of its `WebView`.
+    fn handle_title_changed_msg(&mut self, pipeline_id: PipelineId, title: String) {
+        let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) else {
+            return;
+        };
+        pipeline.title = title;
+        let webview_id = pipeline.webview_id;
+        let page_title = pipeline.page_title();
+        if self
+            .browsing_contexts
+            .get(&BrowsingContextId::from(webview_id))
+            .is_some_and(|browsing_context| browsing_context.pipeline_id == pipeline_id)
+        {
+            self.constellation_to_embedder_proxy.send(
+                ConstellationToEmbedderMsg::PageTitleChanged(webview_id, page_title),
+            );
+        }
+    }
+
     #[servo_tracing::instrument(skip_all)]
     fn handle_replace_history_state_msg(
         &mut self,
@@ -5321,8 +5338,8 @@ where
             return warn!("notify_history_changed error after top-level browsing context closed.");
         };
 
-        let current_url = match self.pipelines.get(&browsing_context.pipeline_id) {
-            Some(pipeline) => pipeline.url.clone(),
+        let (current_url, page_title) = match self.pipelines.get(&browsing_context.pipeline_id) {
+            Some(pipeline) => (pipeline.url.clone(), pipeline.page_title()),
             None => {
                 return warn!("{}: Refresh after closure", browsing_context.pipeline_id);
             },
@@ -5414,6 +5431,7 @@ where
                 entries,
                 current_index,
                 navigation_type,
+                page_title,
             ));
     }
 
