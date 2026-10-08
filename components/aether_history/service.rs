@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::iter;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 use std::time::SystemTime;
@@ -11,24 +12,7 @@ use log::{error, warn};
 use url::Url;
 
 use crate::HistoryStore;
-
-enum HistoryCommand {
-    RecordVisit {
-        url: Url,
-        visit_date: SystemTime,
-        title: Option<String>,
-    },
-    SetTitle {
-        url: Url,
-        title: String,
-    },
-    ReplaceVisit {
-        old_url: Url,
-        visit_date: SystemTime,
-        new_url: Option<Url>,
-        title: Option<String>,
-    },
-}
+use crate::store::HistoryCommand;
 
 /// Writes the history from a dedicated thread, so that SQLite never blocks the caller.
 ///
@@ -118,34 +102,13 @@ impl Drop for HistoryService {
 }
 
 fn run(mut store: HistoryStore, receiver: Receiver<HistoryCommand>) {
-    for command in receiver {
-        match command {
-            HistoryCommand::RecordVisit {
-                url,
-                visit_date,
-                title,
-            } => {
-                if let Err(error) = store.record_visit(&url, visit_date, title.as_deref()) {
-                    warn!("Could not record a visit in the history: {error}");
-                }
-            },
-            HistoryCommand::SetTitle { url, title } => {
-                if let Err(error) = store.set_title(&url, &title) {
-                    warn!("Could not store a page title in the history: {error}");
-                }
-            },
-            HistoryCommand::ReplaceVisit {
-                old_url,
-                visit_date,
-                new_url,
-                title,
-            } => {
-                if let Err(error) =
-                    store.replace_visit(&old_url, visit_date, new_url.as_ref(), title.as_deref())
-                {
-                    warn!("Could not replace a visit in the history: {error}");
-                }
-            },
+    while let Ok(command) = receiver.recv() {
+        let commands: Vec<_> = iter::once(command).chain(receiver.try_iter()).collect();
+        if let Err(error) = store.apply(&commands) {
+            warn!(
+                "Could not write {} changes to the history: {error}",
+                commands.len()
+            );
         }
     }
 }
@@ -194,6 +157,26 @@ mod tests {
             .query_row("SELECT title FROM places", [], |row| row.get(0))
             .unwrap();
         assert_eq!(title, "Servo");
+    }
+
+    #[test]
+    fn the_last_of_many_titles_is_written() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let service = HistoryService::open(path.clone());
+        let url = Url::parse("https://servo.org/").unwrap();
+
+        service.record_visit(url.clone(), UNIX_EPOCH, None);
+        for index in 0..10_000 {
+            service.set_title(url.clone(), format!("Title {index}"));
+        }
+        drop(service);
+
+        let title: String = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT title FROM places", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(title, "Title 9999");
     }
 
     #[test]

@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,6 +30,25 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE places ADD COLUMN title TEXT;",
 ];
 
+pub(crate) enum HistoryCommand {
+    /// Records a visit of `url` at `visit_date`.
+    RecordVisit {
+        url: Url,
+        visit_date: SystemTime,
+        title: Option<String>,
+    },
+    /// Stores `title` as the last title of `url`, if `url` was visited.
+    SetTitle { url: Url, title: String },
+    /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
+    /// is `None`.
+    ReplaceVisit {
+        old_url: Url,
+        visit_date: SystemTime,
+        new_url: Option<Url>,
+        title: Option<String>,
+    },
+}
+
 pub struct HistoryStore {
     connection: Connection,
 }
@@ -53,78 +73,111 @@ impl HistoryStore {
         Ok(Self { connection })
     }
 
-    /// Records a visit of `url` at `visit_date`.
-    pub fn record_visit(
-        &mut self,
-        url: &Url,
-        visit_date: SystemTime,
-        title: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        let url = stored_url(url);
-        let transaction = self.connection.transaction()?;
-        insert_place(&transaction, &url, title)?;
-        transaction.execute(
-            "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
-            params![url, microseconds_since_epoch(visit_date)],
-        )?;
-        transaction.commit()
-    }
-
-    /// Stores `title` as the last title of `url`, if `url` was visited.
-    pub fn set_title(&mut self, url: &Url, title: &str) -> rusqlite::Result<()> {
-        self.connection.execute(
-            "UPDATE places SET title = ?2 WHERE url = ?1",
-            params![stored_url(url), title],
-        )?;
-        Ok(())
-    }
-
-    /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
-    /// is `None`.
-    pub fn replace_visit(
-        &mut self,
-        old_url: &Url,
-        visit_date: SystemTime,
-        new_url: Option<&Url>,
-        title: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        let old_url = stored_url(old_url);
-        let new_url = new_url.map(stored_url);
-        let visit_date = microseconds_since_epoch(visit_date);
-        let transaction = self.connection.transaction()?;
-        if let Some(new_url) = &new_url {
-            insert_place(&transaction, new_url, title)?;
+    /// Writes `commands` in order, in one transaction. A title that a later command replaces
+    /// is not written.
+    pub(crate) fn apply(&mut self, commands: &[HistoryCommand]) -> rusqlite::Result<()> {
+        let mut last_titles = HashMap::new();
+        for (index, command) in commands.iter().enumerate() {
+            if let HistoryCommand::SetTitle { url, .. } = command {
+                last_titles.insert(url, index);
+            }
         }
-        let visit_id: Option<i64> = transaction
-            .query_row(
-                "SELECT visits.id FROM visits JOIN places ON places.id = visits.place_id
-                 WHERE places.url = ?1 AND visits.visit_date = ?2
-                 ORDER BY visits.id DESC LIMIT 1",
-                params![old_url, visit_date],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match (visit_id, &new_url) {
-            (Some(visit_id), Some(new_url)) => transaction.execute(
-                "UPDATE visits SET place_id = (SELECT id FROM places WHERE url = ?1) WHERE id = ?2",
-                params![new_url, visit_id],
-            )?,
-            (Some(visit_id), None) => {
-                transaction.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?
-            },
-            (None, Some(new_url)) => transaction.execute(
-                "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
-                params![new_url, visit_date],
-            )?,
-            (None, None) => 0,
-        };
-        transaction.execute(
-            "DELETE FROM places WHERE url = ?1
-             AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
-            [&old_url],
-        )?;
+        let transaction = self.connection.transaction()?;
+        for (index, command) in commands.iter().enumerate() {
+            match command {
+                HistoryCommand::RecordVisit {
+                    url,
+                    visit_date,
+                    title,
+                } => record_visit(&transaction, url, *visit_date, title.as_deref())?,
+                HistoryCommand::SetTitle { url, title } => {
+                    if last_titles[url] == index {
+                        set_title(&transaction, url, title)?
+                    }
+                },
+                HistoryCommand::ReplaceVisit {
+                    old_url,
+                    visit_date,
+                    new_url,
+                    title,
+                } => replace_visit(
+                    &transaction,
+                    old_url,
+                    *visit_date,
+                    new_url.as_ref(),
+                    title.as_deref(),
+                )?,
+            }
+        }
         transaction.commit()
     }
+}
+
+fn record_visit(
+    connection: &Connection,
+    url: &Url,
+    visit_date: SystemTime,
+    title: Option<&str>,
+) -> rusqlite::Result<()> {
+    let url = stored_url(url);
+    insert_place(connection, &url, title)?;
+    connection.execute(
+        "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
+        params![url, microseconds_since_epoch(visit_date)],
+    )?;
+    Ok(())
+}
+
+fn set_title(connection: &Connection, url: &Url, title: &str) -> rusqlite::Result<()> {
+    connection.execute(
+        "UPDATE places SET title = ?2 WHERE url = ?1",
+        params![stored_url(url), title],
+    )?;
+    Ok(())
+}
+
+fn replace_visit(
+    connection: &Connection,
+    old_url: &Url,
+    visit_date: SystemTime,
+    new_url: Option<&Url>,
+    title: Option<&str>,
+) -> rusqlite::Result<()> {
+    let old_url = stored_url(old_url);
+    let new_url = new_url.map(stored_url);
+    let visit_date = microseconds_since_epoch(visit_date);
+    if let Some(new_url) = &new_url {
+        insert_place(connection, new_url, title)?;
+    }
+    let visit_id: Option<i64> = connection
+        .query_row(
+            "SELECT visits.id FROM visits JOIN places ON places.id = visits.place_id
+             WHERE places.url = ?1 AND visits.visit_date = ?2
+             ORDER BY visits.id DESC LIMIT 1",
+            params![old_url, visit_date],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match (visit_id, &new_url) {
+        (Some(visit_id), Some(new_url)) => connection.execute(
+            "UPDATE visits SET place_id = (SELECT id FROM places WHERE url = ?1) WHERE id = ?2",
+            params![new_url, visit_id],
+        )?,
+        (Some(visit_id), None) => {
+            connection.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?
+        },
+        (None, Some(new_url)) => connection.execute(
+            "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
+            params![new_url, visit_date],
+        )?,
+        (None, None) => 0,
+    };
+    connection.execute(
+        "DELETE FROM places WHERE url = ?1
+         AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
+        [&old_url],
+    )?;
+    Ok(())
 }
 
 /// Adds `url` to the places if needed, and updates its title when `title` is known.
@@ -171,12 +224,49 @@ fn microseconds_since_epoch(time: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use rusqlite::Connection;
     use url::Url;
 
-    use super::{HistoryStore, MIGRATIONS};
+    use super::{HistoryCommand, HistoryStore, MIGRATIONS};
+
+    impl HistoryStore {
+        fn record_visit(
+            &mut self,
+            url: &Url,
+            visit_date: SystemTime,
+            title: Option<&str>,
+        ) -> rusqlite::Result<()> {
+            self.apply(&[HistoryCommand::RecordVisit {
+                url: url.clone(),
+                visit_date,
+                title: title.map(str::to_owned),
+            }])
+        }
+
+        fn set_title(&mut self, url: &Url, title: &str) -> rusqlite::Result<()> {
+            self.apply(&[HistoryCommand::SetTitle {
+                url: url.clone(),
+                title: title.to_owned(),
+            }])
+        }
+
+        fn replace_visit(
+            &mut self,
+            old_url: &Url,
+            visit_date: SystemTime,
+            new_url: Option<&Url>,
+            title: Option<&str>,
+        ) -> rusqlite::Result<()> {
+            self.apply(&[HistoryCommand::ReplaceVisit {
+                old_url: old_url.clone(),
+                visit_date,
+                new_url: new_url.cloned(),
+                title: title.map(str::to_owned),
+            }])
+        }
+    }
 
     fn visits(connection: &Connection) -> Vec<(String, i64)> {
         connection
@@ -313,6 +403,84 @@ mod tests {
             [(
                 "https://servo.org/".to_owned(),
                 Some("Servo blog".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn titles_replaced_in_the_same_batch_are_not_written() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let url = Url::parse("https://servo.org/").unwrap();
+        let set_title = |title: &str| HistoryCommand::SetTitle {
+            url: url.clone(),
+            title: title.to_owned(),
+        };
+        let changes_before = store.connection.total_changes();
+
+        store
+            .apply(&[
+                HistoryCommand::RecordVisit {
+                    url: url.clone(),
+                    visit_date: UNIX_EPOCH,
+                    title: None,
+                },
+                set_title("Servo"),
+                set_title("Servo blog"),
+                set_title("Servo blog post"),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            titles(&store.connection),
+            [(
+                "https://servo.org/".to_owned(),
+                Some("Servo blog post".to_owned())
+            )]
+        );
+        // The place, the visit and one title.
+        assert_eq!(store.connection.total_changes() - changes_before, 3);
+    }
+
+    #[test]
+    fn a_batch_is_written_in_order() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let redirect = Url::parse("https://duckduckgo.com/l/?uddg=wikipedia").unwrap();
+        let target = Url::parse("https://www.wikipedia.org/").unwrap();
+        let visit_date = UNIX_EPOCH + Duration::from_micros(42);
+
+        store
+            .apply(&[
+                HistoryCommand::RecordVisit {
+                    url: redirect.clone(),
+                    visit_date,
+                    title: None,
+                },
+                HistoryCommand::SetTitle {
+                    url: redirect.clone(),
+                    title: "DuckDuckGo".to_owned(),
+                },
+                HistoryCommand::ReplaceVisit {
+                    old_url: redirect,
+                    visit_date,
+                    new_url: Some(target.clone()),
+                    title: None,
+                },
+                HistoryCommand::SetTitle {
+                    url: target,
+                    title: "Wikipedia".to_owned(),
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://www.wikipedia.org/".to_owned(), 42)]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [(
+                "https://www.wikipedia.org/".to_owned(),
+                Some("Wikipedia".to_owned())
             )]
         );
     }
