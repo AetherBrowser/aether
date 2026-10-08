@@ -814,6 +814,21 @@ pub enum LoadStatus {
     Complete,
 }
 
+/// How the active entry of the session history of a `WebView` changed when one of its
+/// navigations was committed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum NavigationType {
+    /// A new entry was added, for instance by following a link or by `history.pushState()`.
+    Push,
+    /// The active entry was replaced. This is what client-side redirects do: a meta refresh,
+    /// `location.replace()`, a script navigation before the page has finished loading, or
+    /// `history.replaceState()`. A reload replaces the active entry with one that has the same
+    /// URL.
+    Replace,
+    /// Another existing entry became active, for instance when going back or forward.
+    Traverse,
+}
+
 /// Data that could be used to display a desktop notification to the end user
 /// when the [Notification API](<https://notifications.spec.whatwg.org/#notifications>) is called.
 #[derive(Clone, Debug, Deserialize, Serialize)]

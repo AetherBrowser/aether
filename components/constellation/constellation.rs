@@ -112,8 +112,9 @@ use embedder_traits::{
     GenericEmbedderProxy, InputEvent, InputEventAndId, InputEventOutcome, JSValue,
     JavaScriptEvaluationError, JavaScriptEvaluationId, KeyboardEvent, MediaSessionActionType,
     MediaSessionEvent, MediaSessionPlaybackState, MouseButtonAction, MouseButtonEvent,
-    NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails, WakeLockDelegate, WakeLockType,
-    WebDriverCommandMsg, WebDriverLoadStatus, WebDriverScriptCommand,
+    NavigationType, NewWebViewDetails, PaintHitTestResult, Theme, ViewportDetails,
+    WakeLockDelegate, WakeLockType, WebDriverCommandMsg, WebDriverLoadStatus,
+    WebDriverScriptCommand,
 };
 use euclid::default::Size2D as UntypedSize2D;
 use fonts::SystemFontServiceProxy;
@@ -3053,6 +3054,7 @@ where
             // Pipeline already closed by close_browsing_context_children, so we can pass Yes here
             // to avoid closing again in handle_activate_document_msg (though it would be harmless)
             replace: Some(NeedsToReload::Yes(old_pipeline_id, old_load_data)),
+            navigation_type: NavigationType::Replace,
             new_browsing_context_info: None,
             viewport_details,
         });
@@ -3204,7 +3206,7 @@ where
         };
         webview.session_history.future.clear();
         webview.session_history.past.clear();
-        self.notify_history_changed(webview_id);
+        self.notify_history_changed(webview_id, None);
     }
 
     fn forward_input_event(
@@ -3290,6 +3292,7 @@ where
             browsing_context_id,
             new_pipeline_id: pipeline_id,
             replace: None,
+            navigation_type: NavigationType::Push,
             new_browsing_context_info: Some(NewBrowsingContextInfo {
                 parent_pipeline_id: None,
                 is_private,
@@ -3517,6 +3520,11 @@ where
                 webview_id,
                 browsing_context_id,
                 new_pipeline_id,
+                navigation_type: if replace.is_some() {
+                    NavigationType::Replace
+                } else {
+                    NavigationType::Push
+                },
                 replace,
                 // Browsing context for iframe already exists.
                 new_browsing_context_info: None,
@@ -3584,6 +3592,7 @@ where
                 browsing_context_id,
                 new_pipeline_id,
                 replace: None,
+                navigation_type: NavigationType::Push,
                 // Browsing context for iframe doesn't exist yet.
                 new_browsing_context_info: Some(NewBrowsingContextInfo {
                     parent_pipeline_id: Some(parent_pipeline_id),
@@ -3700,6 +3709,7 @@ where
             browsing_context_id: new_browsing_context_id,
             new_pipeline_id,
             replace: None,
+            navigation_type: NavigationType::Push,
             new_browsing_context_info: Some(NewBrowsingContextInfo {
                 // Auxiliary browsing contexts are always top-level.
                 parent_pipeline_id: None,
@@ -4238,6 +4248,11 @@ where
                         webview_id,
                         browsing_context_id,
                         new_pipeline_id,
+                        navigation_type: if replace.is_some() {
+                            NavigationType::Replace
+                        } else {
+                            NavigationType::Push
+                        },
                         replace,
                         // `load_url` is always invoked on an existing browsing context.
                         new_browsing_context_info: None,
@@ -4304,10 +4319,14 @@ where
         new_url: ServoUrl,
         history_handling: NavigationHistoryBehavior,
     ) {
-        let (webview_id, old_url) = match self.pipelines.get_mut(&pipeline_id) {
+        let (webview_id, old_url, is_top_level) = match self.pipelines.get_mut(&pipeline_id) {
             Some(pipeline) => {
                 let old_url = replace(&mut pipeline.url, new_url.clone());
-                (pipeline.webview_id, old_url)
+                (
+                    pipeline.webview_id,
+                    old_url,
+                    pipeline.browsing_context_id == pipeline.webview_id,
+                )
             },
             None => {
                 return warn!("{}: Navigated to fragment after closure", pipeline_id);
@@ -4319,7 +4338,11 @@ where
         };
 
         match history_handling {
-            NavigationHistoryBehavior::Replace => {},
+            NavigationHistoryBehavior::Replace => {
+                if is_top_level {
+                    self.notify_history_changed(webview_id, Some(NavigationType::Replace));
+                }
+            },
             _ => {
                 let diff = SessionHistoryDiff::Hash {
                     pipeline_reloader: NeedsToReload::No(pipeline_id),
@@ -4328,7 +4351,10 @@ where
                 };
 
                 webview.session_history.push_diff(diff);
-                self.notify_history_changed(webview_id);
+                self.notify_history_changed(
+                    webview_id,
+                    is_top_level.then_some(NavigationType::Push),
+                );
             },
         }
     }
@@ -4493,6 +4519,18 @@ where
             }
         }
 
+        let top_level_browsing_context_id = BrowsingContextId::from(webview_id);
+        let top_level_traversed_now =
+            match browsing_context_changes.get(&top_level_browsing_context_id) {
+                Some(NeedsToReload::No(_)) => true,
+                Some(NeedsToReload::Yes(..)) => false,
+                None => pipeline_changes.keys().any(|pipeline_id| {
+                    self.pipelines.get(pipeline_id).is_some_and(|pipeline| {
+                        pipeline.browsing_context_id == top_level_browsing_context_id
+                    })
+                }),
+            };
+
         let pipelines_awaiting_activation: FxHashSet<_> = browsing_context_changes
             .drain()
             .filter_map(|(browsing_context_id, mut pipeline_reloader)| {
@@ -4512,7 +4550,10 @@ where
             self.update_pipeline_history_state(pipeline_id, history_state_id, url);
         }
 
-        self.notify_history_changed(webview_id);
+        self.notify_history_changed(
+            webview_id,
+            top_level_traversed_now.then_some(NavigationType::Traverse),
+        );
         self.trim_history(webview_id);
         self.set_frame_tree_for_webview(webview_id);
 
@@ -4661,6 +4702,7 @@ where
                     browsing_context_id,
                     new_pipeline_id,
                     replace: Some(NeedsToReload::Yes(pipeline_id, load_data)),
+                    navigation_type: NavigationType::Traverse,
                     // Browsing context must exist at this point.
                     new_browsing_context_info: None,
                     viewport_details,
@@ -4772,21 +4814,27 @@ where
         history_state_id: HistoryStateId,
         url: ServoUrl,
     ) {
-        let (webview_id, old_state_id, old_url) = match self.pipelines.get_mut(&pipeline_id) {
-            Some(pipeline) => {
-                let old_history_state_id = pipeline.history_state_id;
-                let old_url = replace(&mut pipeline.url, url.clone());
-                pipeline.history_state_id = Some(history_state_id);
-                pipeline.history_states.insert(history_state_id);
-                (pipeline.webview_id, old_history_state_id, old_url)
-            },
-            None => {
-                return warn!(
-                    "{}: Push history state {} for closed pipeline",
-                    pipeline_id, history_state_id,
-                );
-            },
-        };
+        let (webview_id, old_state_id, old_url, is_top_level) =
+            match self.pipelines.get_mut(&pipeline_id) {
+                Some(pipeline) => {
+                    let old_history_state_id = pipeline.history_state_id;
+                    let old_url = replace(&mut pipeline.url, url.clone());
+                    pipeline.history_state_id = Some(history_state_id);
+                    pipeline.history_states.insert(history_state_id);
+                    (
+                        pipeline.webview_id,
+                        old_history_state_id,
+                        old_url,
+                        pipeline.browsing_context_id == pipeline.webview_id,
+                    )
+                },
+                None => {
+                    return warn!(
+                        "{}: Push history state {} for closed pipeline",
+                        pipeline_id, history_state_id,
+                    );
+                },
+            };
 
         let Some(webview) = self.webviews.get_mut(&webview_id) else {
             return warn!("Ignoring history change in non-existent WebView ({webview_id:?}).");
@@ -4800,7 +4848,7 @@ where
             old_url,
         };
         webview.session_history.push_diff(diff);
-        self.notify_history_changed(webview_id);
+        self.notify_history_changed(webview_id, is_top_level.then_some(NavigationType::Push));
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -4810,11 +4858,14 @@ where
         history_state_id: HistoryStateId,
         url: ServoUrl,
     ) {
-        let webview_id = match self.pipelines.get_mut(&pipeline_id) {
+        let (webview_id, is_top_level) = match self.pipelines.get_mut(&pipeline_id) {
             Some(pipeline) => {
                 pipeline.history_state_id = Some(history_state_id);
                 pipeline.url = url.clone();
-                pipeline.webview_id
+                (
+                    pipeline.webview_id,
+                    pipeline.browsing_context_id == pipeline.webview_id,
+                )
             },
             None => {
                 return warn!(
@@ -4831,7 +4882,7 @@ where
         webview
             .session_history
             .replace_history_state(pipeline_id, history_state_id, url);
-        self.notify_history_changed(webview_id);
+        self.notify_history_changed(webview_id, is_top_level.then_some(NavigationType::Replace));
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -5242,7 +5293,13 @@ where
     }
 
     #[servo_tracing::instrument(skip_all)]
-    fn notify_history_changed(&self, webview_id: WebViewId) {
+    /// `navigation_type` is set when the change commits a navigation of the top-level document,
+    /// and `None` when it only concerns `<iframe>`s or does not navigate.
+    fn notify_history_changed(
+        &self,
+        webview_id: WebViewId,
+        navigation_type: Option<NavigationType>,
+    ) {
         // Send a flat projection of the history to embedder.
         // The final vector is a concatenation of the URLs of the past
         // entries, the current entry and the future entries.
@@ -5356,6 +5413,7 @@ where
                 webview_id,
                 entries,
                 current_index,
+                navigation_type,
             ));
     }
 
@@ -5501,7 +5559,9 @@ where
 
         self.notify_focus_state(change.new_pipeline_id);
 
-        self.notify_history_changed(change.webview_id);
+        let navigation_type =
+            (change.browsing_context_id == change.webview_id).then_some(change.navigation_type);
+        self.notify_history_changed(change.webview_id, navigation_type);
         self.set_frame_tree_for_webview(change.webview_id);
     }
 

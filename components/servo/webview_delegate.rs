@@ -10,9 +10,9 @@ use embedder_traits::{
     ConfirmResponse, ConsoleLogLevel, ContextMenuAction, ContextMenuElementInformation,
     ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlResponse, FilePickerRequest,
     FilterPattern, InputEventId, InputEventResult, InputMethodType, LoadStatus, MediaSessionEvent,
-    NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor, ScreenGeometry,
-    SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest, TraversalId,
-    WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
+    NavigationType, NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor,
+    ScreenGeometry, SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest,
+    TraversalId, WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
 };
 use paint_api::rendering_context::RenderingContext;
 use servo_base::generic_channel::{GenericCallback, GenericSender, SendError};
@@ -951,6 +951,17 @@ pub trait WebViewDelegate {
     /// as a `Vec<Url>` and `_current` denotes the current index in the history. New navigations,
     /// back navigation, and forward navigation modify this index.
     fn notify_history_changed(&self, _webview: WebView, _entries: Vec<Url>, _current: usize) {}
+    /// A navigation of the top-level document of this [`WebView`] was committed, and `url` is
+    /// now its active session history entry. The [`NavigationType`] tells whether this entry
+    /// was added, replaced the previous active entry, or was reached by traversing the session
+    /// history. Navigations inside `<iframe>`s are not reported.
+    fn notify_navigation_committed(
+        &self,
+        _webview: WebView,
+        _url: Url,
+        _navigation_type: NavigationType,
+    ) {
+    }
     /// A history traversal operation is complete.
     fn notify_traversal_complete(&self, _webview: WebView, _traversal_id: TraversalId) {}
     /// Page content has closed this [`WebView`] via `window.close()`. It's the embedder's

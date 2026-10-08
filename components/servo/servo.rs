@@ -853,9 +853,10 @@ impl ServoInner {
                 webview_id,
                 new_back_forward_list,
                 current_list_index,
+                navigation_type,
             ) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
-                    webview.set_history(new_back_forward_list, current_list_index);
+                    webview.set_history(new_back_forward_list, current_list_index, navigation_type);
                 }
             },
             ConstellationToEmbedderMsg::Panic(webview_id, reason, backtrace) => {

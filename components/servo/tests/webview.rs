@@ -25,9 +25,9 @@ use net::test_util::{make_body, make_server, replace_host_table};
 use servo::profile_traits::mem::MemoryReportResult;
 use servo::{
     CreateNewWebViewRequest, Cursor, EmbedderControl, InputEvent, InputMethodType, JSValue,
-    LoadStatus, MouseButton, MouseLeftViewportEvent, MouseMoveEvent, PrefValue, RenderingContext,
-    Scroll, SimpleDialog, Theme, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint,
-    WebViewVector,
+    LoadStatus, MouseButton, MouseLeftViewportEvent, MouseMoveEvent, NavigationType, PrefValue,
+    RenderingContext, Scroll, SimpleDialog, Theme, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewPoint, WebViewVector,
 };
 use servo_base::generic_channel::GenericCallback;
 use servo_config::prefs::Preferences;
@@ -1121,6 +1121,84 @@ fn test_webview_title_updates_when_title_element_is_created_from_javascript() {
     servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
 
     assert_eq!(webview.page_title().as_deref(), Some("Success"));
+}
+
+#[test]
+fn test_navigation_committed_reports_how_the_session_history_changed() {
+    #[derive(Default)]
+    struct NavigationRecorder {
+        navigations: RefCell<Vec<(Url, NavigationType)>>,
+    }
+    impl WebViewDelegate for NavigationRecorder {
+        fn notify_navigation_committed(
+            &self,
+            _webview: WebView,
+            url: Url,
+            navigation_type: NavigationType,
+        ) {
+            self.navigations.borrow_mut().push((url, navigation_type));
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(NavigationRecorder::default());
+    let wait_for_navigations = |count: usize| {
+        let delegate = delegate.clone();
+        servo_test.spin(move || delegate.navigations.borrow().len() < count);
+    };
+
+    // Navigations inside the <iframe> must not be reported.
+    let first_page =
+        Url::parse("data:text/html,<iframe src='data:text/html,inner'></iframe>").unwrap();
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(first_page.clone())
+        .build();
+    wait_for_navigations(1);
+
+    let second_page = Url::parse("data:text/html,second").unwrap();
+    webview.load(second_page.clone());
+    wait_for_navigations(2);
+
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "location.hash = 'one'");
+    wait_for_navigations(3);
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "location.replace('#two')");
+    wait_for_navigations(4);
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "history.replaceState(null, '', '#three')",
+    );
+    wait_for_navigations(5);
+
+    webview.go_back(1);
+    wait_for_navigations(6);
+
+    let third_page = Url::parse("data:text/html,third").unwrap();
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        format!("location.replace('{third_page}')"),
+    );
+    wait_for_navigations(7);
+
+    let with_fragment = |fragment| {
+        let mut url = second_page.clone();
+        url.set_fragment(Some(fragment));
+        url
+    };
+    assert_eq!(
+        *delegate.navigations.borrow(),
+        [
+            (first_page, NavigationType::Push),
+            (second_page.clone(), NavigationType::Push),
+            (with_fragment("one"), NavigationType::Push),
+            (with_fragment("two"), NavigationType::Replace),
+            (with_fragment("three"), NavigationType::Replace),
+            (second_page, NavigationType::Traverse),
+            (third_page, NavigationType::Replace),
+        ]
+    );
 }
 
 #[test]

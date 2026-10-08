@@ -14,8 +14,9 @@ use dpi::PhysicalSize;
 use embedder_traits::{
     ContextMenuAction, ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlRequest, Image,
     InputEvent, InputEventAndId, InputEventId, JSValue, JavaScriptEvaluationError, LoadStatus,
-    MediaSessionActionType, NewWebViewDetails, ScreenGeometry, ScreenshotCaptureError, Scroll,
-    Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint, WebViewRect,
+    MediaSessionActionType, NavigationType, NewWebViewDetails, ScreenGeometry,
+    ScreenshotCaptureError, Scroll, Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint,
+    WebViewRect,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
@@ -781,7 +782,12 @@ impl WebView {
             .request_screenshot(self.id(), rect, Box::new(callback));
     }
 
-    pub(crate) fn set_history(self, new_back_forward_list: Vec<ServoUrl>, new_index: usize) {
+    pub(crate) fn set_history(
+        self,
+        new_back_forward_list: Vec<ServoUrl>,
+        new_index: usize,
+        navigation_type: Option<NavigationType>,
+    ) {
         {
             let mut inner_mut = self.inner_mut();
             inner_mut.back_forward_list_index = new_index;
@@ -793,15 +799,18 @@ impl WebView {
 
         let back_forward_list = self.inner().back_forward_list.clone();
         let back_forward_list_index = self.inner().back_forward_list_index;
-        self.delegate().notify_url_changed(
-            self.clone(),
-            back_forward_list[back_forward_list_index].clone(),
-        );
+        let url = back_forward_list[back_forward_list_index].clone();
+        self.delegate()
+            .notify_url_changed(self.clone(), url.clone());
         self.delegate().notify_history_changed(
             self.clone(),
             back_forward_list,
             back_forward_list_index,
         );
+        if let Some(navigation_type) = navigation_type {
+            self.delegate()
+                .notify_navigation_committed(self, url, navigation_type);
+        }
     }
 
     pub(crate) fn show_embedder_control(
