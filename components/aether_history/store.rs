@@ -55,15 +55,16 @@ impl HistoryStore {
 
     /// Records a visit of `url` at `visit_date`.
     pub fn record_visit(&mut self, url: &Url, visit_date: SystemTime) -> rusqlite::Result<()> {
+        let url = stored_url(url);
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "INSERT INTO places (url, guid) VALUES (?1, lower(hex(randomblob(16))))
              ON CONFLICT (url) DO NOTHING",
-            [url.as_str()],
+            [&url],
         )?;
         transaction.execute(
             "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
-            params![url.as_str(), microseconds_since_epoch(visit_date)],
+            params![url, microseconds_since_epoch(visit_date)],
         )?;
         transaction.commit()
     }
@@ -75,10 +76,17 @@ impl HistoryStore {
         self.connection.execute(
             "INSERT INTO places (url, guid, title) VALUES (?1, lower(hex(randomblob(16))), ?2)
              ON CONFLICT (url) DO UPDATE SET title = excluded.title",
-            params![url.as_str(), title],
+            params![stored_url(url), title],
         )?;
         Ok(())
     }
+}
+
+fn stored_url(url: &Url) -> String {
+    let mut url = url.clone();
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.into()
 }
 
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
@@ -281,6 +289,50 @@ mod tests {
         assert_eq!(
             titles(&store.connection),
             [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn credentials_are_not_stored() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let with_password = Url::parse("https://user:secret@example.com/page").unwrap();
+        let username_only = Url::parse("https://other@example.com/other").unwrap();
+
+        store.record_visit(&with_password, UNIX_EPOCH).unwrap();
+        store.set_title(&with_password, Some("Example")).unwrap();
+        store.record_visit(&username_only, UNIX_EPOCH).unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [
+                ("https://example.com/page".to_owned(), 0),
+                ("https://example.com/other".to_owned(), 0),
+            ]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [
+                (
+                    "https://example.com/page".to_owned(),
+                    Some("Example".to_owned())
+                ),
+                ("https://example.com/other".to_owned(), None),
+            ]
+        );
+
+        let stored_urls: Vec<String> = store
+            .connection
+            .prepare("SELECT url FROM places")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            stored_urls
+                .iter()
+                .all(|url| !url.contains('@') && !url.contains("secret")),
+            "{stored_urls:?}"
         );
     }
 }
