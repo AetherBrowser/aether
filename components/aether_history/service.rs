@@ -13,8 +13,19 @@ use url::Url;
 use crate::HistoryStore;
 
 enum HistoryCommand {
-    RecordVisit { url: Url, visit_date: SystemTime },
-    SetTitle { url: Url, title: Option<String> },
+    RecordVisit {
+        url: Url,
+        visit_date: SystemTime,
+    },
+    SetTitle {
+        url: Url,
+        title: Option<String>,
+    },
+    ReplaceVisit {
+        old_url: Url,
+        visit_date: SystemTime,
+        new_url: Option<Url>,
+    },
 }
 
 /// Writes the history from a dedicated thread, so that SQLite never blocks the caller.
@@ -67,6 +78,18 @@ impl HistoryService {
             let _ = sender.send(HistoryCommand::SetTitle { url, title });
         }
     }
+
+    /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
+    /// is `None`. See [`HistoryStore::replace_visit`].
+    pub fn replace_visit(&self, old_url: Url, visit_date: SystemTime, new_url: Option<Url>) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(HistoryCommand::ReplaceVisit {
+                old_url,
+                visit_date,
+                new_url,
+            });
+        }
+    }
 }
 
 impl Drop for HistoryService {
@@ -92,6 +115,15 @@ fn run(mut store: HistoryStore, receiver: Receiver<HistoryCommand>) {
             HistoryCommand::SetTitle { url, title } => {
                 if let Err(error) = store.set_title(&url, title.as_deref()) {
                     warn!("Could not store a page title in the history: {error}");
+                }
+            },
+            HistoryCommand::ReplaceVisit {
+                old_url,
+                visit_date,
+                new_url,
+            } => {
+                if let Err(error) = store.replace_visit(&old_url, visit_date, new_url.as_ref()) {
+                    warn!("Could not replace a visit in the history: {error}");
                 }
             },
         }
@@ -142,6 +174,29 @@ mod tests {
             .query_row("SELECT title FROM places", [], |row| row.get(0))
             .unwrap();
         assert_eq!(title, "Servo");
+    }
+
+    #[test]
+    fn replaced_visits_are_written_by_the_service() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let service = HistoryService::open(path.clone());
+        let redirect = Url::parse("https://servo.org/redirect").unwrap();
+        let target = Url::parse("https://servo.org/").unwrap();
+
+        service.record_visit(redirect.clone(), UNIX_EPOCH);
+        service.replace_visit(redirect, UNIX_EPOCH, Some(target));
+        drop(service);
+
+        let url: String = Connection::open(&path)
+            .unwrap()
+            .query_row(
+                "SELECT url FROM visits JOIN places ON places.id = visits.place_id",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(url, "https://servo.org/");
     }
 
     #[test]

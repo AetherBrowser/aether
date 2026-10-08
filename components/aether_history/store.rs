@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use url::Url;
 
 /// Schema migrations, in order. The database's `user_version` is the number of migrations
@@ -79,6 +79,56 @@ impl HistoryStore {
             params![stored_url(url), title],
         )?;
         Ok(())
+    }
+
+    /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
+    /// is `None`.
+    pub fn replace_visit(
+        &mut self,
+        old_url: &Url,
+        visit_date: SystemTime,
+        new_url: Option<&Url>,
+    ) -> rusqlite::Result<()> {
+        let old_url = stored_url(old_url);
+        let new_url = new_url.map(stored_url);
+        let visit_date = microseconds_since_epoch(visit_date);
+        let transaction = self.connection.transaction()?;
+        if let Some(new_url) = &new_url {
+            transaction.execute(
+                "INSERT INTO places (url, guid) VALUES (?1, lower(hex(randomblob(16))))
+                 ON CONFLICT (url) DO NOTHING",
+                [new_url],
+            )?;
+        }
+        let visit_id: Option<i64> = transaction
+            .query_row(
+                "SELECT visits.id FROM visits JOIN places ON places.id = visits.place_id
+                 WHERE places.url = ?1 AND visits.visit_date = ?2
+                 ORDER BY visits.id DESC LIMIT 1",
+                params![old_url, visit_date],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match (visit_id, &new_url) {
+            (Some(visit_id), Some(new_url)) => transaction.execute(
+                "UPDATE visits SET place_id = (SELECT id FROM places WHERE url = ?1) WHERE id = ?2",
+                params![new_url, visit_id],
+            )?,
+            (Some(visit_id), None) => {
+                transaction.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?
+            },
+            (None, Some(new_url)) => transaction.execute(
+                "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
+                params![new_url, visit_date],
+            )?,
+            (None, None) => 0,
+        };
+        transaction.execute(
+            "DELETE FROM places WHERE url = ?1
+             AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
+            [&old_url],
+        )?;
+        transaction.commit()
     }
 }
 
@@ -333,6 +383,87 @@ mod tests {
                 .iter()
                 .all(|url| !url.contains('@') && !url.contains("secret")),
             "{stored_urls:?}"
+        );
+    }
+
+    #[test]
+    fn a_replaced_visit_moves_to_the_new_url_with_its_date() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let redirect = Url::parse("https://duckduckgo.com/l/?uddg=wikipedia").unwrap();
+        let target = Url::parse("https://www.wikipedia.org/").unwrap();
+        let visit_date = UNIX_EPOCH + Duration::from_micros(42);
+        store.record_visit(&redirect, visit_date).unwrap();
+        store.set_title(&target, Some("Wikipedia")).unwrap();
+
+        store
+            .replace_visit(&redirect, visit_date, Some(&target))
+            .unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://www.wikipedia.org/".to_owned(), 42)]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [(
+                "https://www.wikipedia.org/".to_owned(),
+                Some("Wikipedia".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_replaced_url_with_other_visits_is_kept() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let search = Url::parse("https://www.bing.com/search?q=hello").unwrap();
+        let rewritten = Url::parse("https://www.bing.com/search?q=hello&rdr=1").unwrap();
+        store.record_visit(&search, UNIX_EPOCH).unwrap();
+        store
+            .record_visit(&search, UNIX_EPOCH + Duration::from_micros(1))
+            .unwrap();
+
+        store
+            .replace_visit(
+                &search,
+                UNIX_EPOCH + Duration::from_micros(1),
+                Some(&rewritten),
+            )
+            .unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [
+                ("https://www.bing.com/search?q=hello".to_owned(), 0),
+                ("https://www.bing.com/search?q=hello&rdr=1".to_owned(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_visit_replaced_by_an_unrecorded_page_is_deleted() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let url = Url::parse("https://servo.org/").unwrap();
+        store.record_visit(&url, UNIX_EPOCH).unwrap();
+
+        store.replace_visit(&url, UNIX_EPOCH, None).unwrap();
+
+        assert!(visits(&store.connection).is_empty());
+        assert!(titles(&store.connection).is_empty());
+    }
+
+    #[test]
+    fn a_visit_that_was_not_written_is_given_to_the_new_url() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let old_url = Url::parse("https://servo.org/").unwrap();
+        let new_url = Url::parse("https://servo.org/blog").unwrap();
+
+        store
+            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url))
+            .unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://servo.org/blog".to_owned(), 0)]
         );
     }
 }

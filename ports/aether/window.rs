@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
+use std::time::SystemTime;
 
 use euclid::Scale;
 use log::warn;
@@ -13,11 +14,12 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, MediaSessionEvent, PermissionRequest, RenderingContext, ScreenGeometry,
-    WebView, WebViewBuilder, WebViewId,
+    InputEventResult, MediaSessionEvent, NavigationType, PermissionRequest, RenderingContext,
+    ScreenGeometry, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
+use crate::history::{ActiveEntry, HistoryUpdate, history_update};
 use crate::parser::location_bar_input_to_url;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
 
@@ -95,8 +97,9 @@ pub(crate) struct ServoShellWindow {
     pending_favicon_loads: RefCell<Vec<WebViewId>>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
-    /// The last URL notified for each [`WebView`], to record a history visit only when it changes.
-    last_urls: RefCell<HashMap<WebViewId, Url>>,
+    /// The active session history entry of each [`WebView`], to update the history when the
+    /// next navigation is committed.
+    active_entries: RefCell<HashMap<WebViewId, ActiveEntry>>,
 }
 
 pub(crate) enum TopLevelWebViewCreationRequest {
@@ -114,7 +117,7 @@ impl ServoShellWindow {
             needs_repaint: Default::default(),
             pending_favicon_loads: Default::default(),
             pending_commands: Default::default(),
-            last_urls: Default::default(),
+            active_entries: Default::default(),
         }
     }
 
@@ -279,7 +282,7 @@ impl ServoShellWindow {
         if webview_collection.remove(webview_id).is_none() {
             return;
         }
-        self.last_urls.borrow_mut().remove(&webview_id);
+        self.active_entries.borrow_mut().remove(&webview_id);
         self.platform_window
             .dismiss_embedder_controls_for_webview(webview_id);
 
@@ -287,11 +290,21 @@ impl ServoShellWindow {
         self.set_needs_repaint();
     }
 
-    /// Remembers that `webview_id` now shows `url`. Returns `false` if it already showed it, for
-    /// instance after a reload or a navigation inside an `<iframe>`.
-    pub(crate) fn update_last_url(&self, webview_id: WebViewId, url: Url) -> bool {
-        let previous_url = self.last_urls.borrow_mut().insert(webview_id, url.clone());
-        previous_url != Some(url)
+    pub(crate) fn navigation_committed(
+        &self,
+        webview_id: WebViewId,
+        url: &Url,
+        navigation_type: NavigationType,
+    ) -> Option<HistoryUpdate> {
+        let mut active_entries = self.active_entries.borrow_mut();
+        let (update, active_entry) = history_update(
+            active_entries.get(&webview_id),
+            url,
+            navigation_type,
+            SystemTime::now(),
+        );
+        active_entries.insert(webview_id, active_entry);
+        update
     }
 
     pub(crate) fn notify_favicon_changed(&self, webview: WebView) {

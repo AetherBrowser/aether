@@ -8,7 +8,6 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
-use std::time::SystemTime;
 
 use aether_history::HistoryService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -34,10 +33,10 @@ use servo::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
     EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
-    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, PrefValue, Preferences,
-    ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId, UserContentManager,
-    WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand,
-    WebDriverSenders, WebView, WebViewDelegate, WebViewId,
+    JSValue, LoadStatus, MediaSessionEvent, NavigationType, PermissionRequest, PrefValue,
+    Preferences, ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId,
+    UserContentManager, WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus,
+    WebDriverScriptCommand, WebDriverSenders, WebView, WebViewDelegate, WebViewId,
 };
 use url::Url;
 
@@ -46,7 +45,7 @@ use url::Url;
     not(any(target_os = "android", target_env = "ohos"))
 ))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
-use crate::history::should_record;
+use crate::history::{HistoryUpdate, should_record};
 use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
 use crate::webdriver::WebDriverEmbedderControls;
 use crate::window::{
@@ -776,18 +775,31 @@ impl WebViewDelegate for RunningAppState {
         self.window_for_webview(&webview).set_needs_update();
     }
 
-    fn notify_url_changed(&self, webview: WebView, url: Url) {
-        if self
-            .window_for_webview(&webview)
-            .update_last_url(webview.id(), url.clone()) &&
-            should_record(&url)
-        {
-            self.history.record_visit(url, SystemTime::now());
-        }
-    }
-
     fn notify_history_changed(&self, webview: WebView, _entries: Vec<Url>, _current: usize) {
         self.window_for_webview(&webview).set_needs_update();
+    }
+
+    fn notify_navigation_committed(
+        &self,
+        webview: WebView,
+        url: Url,
+        navigation_type: NavigationType,
+    ) {
+        match self.window_for_webview(&webview).navigation_committed(
+            webview.id(),
+            &url,
+            navigation_type,
+        ) {
+            Some(HistoryUpdate::RecordVisit { url, visit_date }) => {
+                self.history.record_visit(url, visit_date)
+            },
+            Some(HistoryUpdate::ReplaceVisit {
+                old_url,
+                visit_date,
+                new_url,
+            }) => self.history.replace_visit(old_url, visit_date, new_url),
+            None => {},
+        }
     }
 
     fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
