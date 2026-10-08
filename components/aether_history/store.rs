@@ -54,14 +54,15 @@ impl HistoryStore {
     }
 
     /// Records a visit of `url` at `visit_date`.
-    pub fn record_visit(&mut self, url: &Url, visit_date: SystemTime) -> rusqlite::Result<()> {
+    pub fn record_visit(
+        &mut self,
+        url: &Url,
+        visit_date: SystemTime,
+        title: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let url = stored_url(url);
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO places (url, guid) VALUES (?1, lower(hex(randomblob(16))))
-             ON CONFLICT (url) DO NOTHING",
-            [&url],
-        )?;
+        insert_place(&transaction, &url, title)?;
         transaction.execute(
             "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
             params![url, microseconds_since_epoch(visit_date)],
@@ -69,13 +70,10 @@ impl HistoryStore {
         transaction.commit()
     }
 
-    /// Stores `title` as the last title of `url`, or `NULL` when it is missing or empty. The
-    /// title can arrive before the first visit of `url`, which then reuses the same place.
-    pub fn set_title(&mut self, url: &Url, title: Option<&str>) -> rusqlite::Result<()> {
-        let title = title.filter(|title| !title.is_empty());
+    /// Stores `title` as the last title of `url`, if `url` was visited.
+    pub fn set_title(&mut self, url: &Url, title: &str) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO places (url, guid, title) VALUES (?1, lower(hex(randomblob(16))), ?2)
-             ON CONFLICT (url) DO UPDATE SET title = excluded.title",
+            "UPDATE places SET title = ?2 WHERE url = ?1",
             params![stored_url(url), title],
         )?;
         Ok(())
@@ -88,17 +86,14 @@ impl HistoryStore {
         old_url: &Url,
         visit_date: SystemTime,
         new_url: Option<&Url>,
+        title: Option<&str>,
     ) -> rusqlite::Result<()> {
         let old_url = stored_url(old_url);
         let new_url = new_url.map(stored_url);
         let visit_date = microseconds_since_epoch(visit_date);
         let transaction = self.connection.transaction()?;
         if let Some(new_url) = &new_url {
-            transaction.execute(
-                "INSERT INTO places (url, guid) VALUES (?1, lower(hex(randomblob(16))))
-                 ON CONFLICT (url) DO NOTHING",
-                [new_url],
-            )?;
+            insert_place(&transaction, new_url, title)?;
         }
         let visit_id: Option<i64> = transaction
             .query_row(
@@ -130,6 +125,16 @@ impl HistoryStore {
         )?;
         transaction.commit()
     }
+}
+
+/// Adds `url` to the places if needed, and updates its title when `title` is known.
+fn insert_place(connection: &Connection, url: &str, title: Option<&str>) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT INTO places (url, guid, title) VALUES (?1, lower(hex(randomblob(16))), ?2)
+         ON CONFLICT (url) DO UPDATE SET title = coalesce(excluded.title, places.title)",
+        params![url, title],
+    )?;
+    Ok(())
 }
 
 fn stored_url(url: &Url) -> String {
@@ -192,7 +197,7 @@ mod tests {
         let url = Url::parse("https://servo.org/").unwrap();
 
         store
-            .record_visit(&url, UNIX_EPOCH + Duration::from_micros(1_234_567))
+            .record_visit(&url, UNIX_EPOCH + Duration::from_micros(1_234_567), None)
             .unwrap();
 
         assert_eq!(
@@ -207,9 +212,9 @@ mod tests {
         let servo = Url::parse("https://servo.org/").unwrap();
         let rust = Url::parse("https://www.rust-lang.org/").unwrap();
 
-        store.record_visit(&servo, UNIX_EPOCH).unwrap();
-        store.record_visit(&rust, UNIX_EPOCH).unwrap();
-        store.record_visit(&servo, UNIX_EPOCH).unwrap();
+        store.record_visit(&servo, UNIX_EPOCH, None).unwrap();
+        store.record_visit(&rust, UNIX_EPOCH, None).unwrap();
+        store.record_visit(&servo, UNIX_EPOCH, None).unwrap();
 
         let guids: Vec<String> = store
             .connection
@@ -232,7 +237,7 @@ mod tests {
         let url = Url::parse("https://servo.org/").unwrap();
         HistoryStore::open(&path)
             .unwrap()
-            .record_visit(&url, UNIX_EPOCH)
+            .record_visit(&url, UNIX_EPOCH, None)
             .unwrap();
 
         // The second opening must not apply the migrations again.
@@ -270,48 +275,45 @@ mod tests {
     }
 
     #[test]
-    fn titles_are_kept_whether_they_arrive_before_or_after_the_visit() {
+    fn visits_keep_the_last_known_title() {
         let mut store = HistoryStore::open_in_memory().unwrap();
-        let servo = Url::parse("https://servo.org/").unwrap();
-        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+        let url = Url::parse("https://servo.org/").unwrap();
 
-        store.set_title(&servo, Some("Servo")).unwrap();
-        store.record_visit(&servo, UNIX_EPOCH).unwrap();
-        store.record_visit(&rust, UNIX_EPOCH).unwrap();
-        store.set_title(&rust, Some("Rust")).unwrap();
+        store.record_visit(&url, UNIX_EPOCH, Some("Servo")).unwrap();
+        store.record_visit(&url, UNIX_EPOCH, None).unwrap();
 
         assert_eq!(
             titles(&store.connection),
-            [
-                ("https://servo.org/".to_owned(), Some("Servo".to_owned())),
-                (
-                    "https://www.rust-lang.org/".to_owned(),
-                    Some("Rust".to_owned())
-                ),
-            ]
+            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
         );
         assert_eq!(visits(&store.connection).len(), 2);
+    }
+
+    #[test]
+    fn titles_of_urls_without_visit_are_not_stored() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+
+        store
+            .set_title(&Url::parse("https://servo.org/").unwrap(), "Servo")
+            .unwrap();
+
+        assert!(titles(&store.connection).is_empty());
     }
 
     #[test]
     fn the_last_title_replaces_the_previous_one() {
         let mut store = HistoryStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
+        store.record_visit(&url, UNIX_EPOCH, Some("Servo")).unwrap();
 
-        store.set_title(&url, Some("Servo")).unwrap();
-        store.set_title(&url, Some("Servo blog")).unwrap();
+        store.set_title(&url, "Servo blog").unwrap();
+
         assert_eq!(
             titles(&store.connection),
             [(
                 "https://servo.org/".to_owned(),
                 Some("Servo blog".to_owned())
             )]
-        );
-
-        store.set_title(&url, Some("")).unwrap();
-        assert_eq!(
-            titles(&store.connection),
-            [("https://servo.org/".to_owned(), None)]
         );
     }
 
@@ -329,7 +331,7 @@ mod tests {
 
         let mut store = HistoryStore::new(connection).unwrap();
         store
-            .set_title(&Url::parse("https://servo.org/").unwrap(), Some("Servo"))
+            .set_title(&Url::parse("https://servo.org/").unwrap(), "Servo")
             .unwrap();
 
         assert_eq!(
@@ -348,9 +350,13 @@ mod tests {
         let with_password = Url::parse("https://user:secret@example.com/page").unwrap();
         let username_only = Url::parse("https://other@example.com/other").unwrap();
 
-        store.record_visit(&with_password, UNIX_EPOCH).unwrap();
-        store.set_title(&with_password, Some("Example")).unwrap();
-        store.record_visit(&username_only, UNIX_EPOCH).unwrap();
+        store
+            .record_visit(&with_password, UNIX_EPOCH, None)
+            .unwrap();
+        store.set_title(&with_password, "Example").unwrap();
+        store
+            .record_visit(&username_only, UNIX_EPOCH, None)
+            .unwrap();
 
         assert_eq!(
             visits(&store.connection),
@@ -392,11 +398,12 @@ mod tests {
         let redirect = Url::parse("https://duckduckgo.com/l/?uddg=wikipedia").unwrap();
         let target = Url::parse("https://www.wikipedia.org/").unwrap();
         let visit_date = UNIX_EPOCH + Duration::from_micros(42);
-        store.record_visit(&redirect, visit_date).unwrap();
-        store.set_title(&target, Some("Wikipedia")).unwrap();
+        store
+            .record_visit(&redirect, visit_date, Some("DuckDuckGo"))
+            .unwrap();
 
         store
-            .replace_visit(&redirect, visit_date, Some(&target))
+            .replace_visit(&redirect, visit_date, Some(&target), Some("Wikipedia"))
             .unwrap();
 
         assert_eq!(
@@ -417,9 +424,9 @@ mod tests {
         let mut store = HistoryStore::open_in_memory().unwrap();
         let search = Url::parse("https://www.bing.com/search?q=hello").unwrap();
         let rewritten = Url::parse("https://www.bing.com/search?q=hello&rdr=1").unwrap();
-        store.record_visit(&search, UNIX_EPOCH).unwrap();
+        store.record_visit(&search, UNIX_EPOCH, None).unwrap();
         store
-            .record_visit(&search, UNIX_EPOCH + Duration::from_micros(1))
+            .record_visit(&search, UNIX_EPOCH + Duration::from_micros(1), None)
             .unwrap();
 
         store
@@ -427,6 +434,7 @@ mod tests {
                 &search,
                 UNIX_EPOCH + Duration::from_micros(1),
                 Some(&rewritten),
+                None,
             )
             .unwrap();
 
@@ -443,9 +451,9 @@ mod tests {
     fn a_visit_replaced_by_an_unrecorded_page_is_deleted() {
         let mut store = HistoryStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
-        store.record_visit(&url, UNIX_EPOCH).unwrap();
+        store.record_visit(&url, UNIX_EPOCH, None).unwrap();
 
-        store.replace_visit(&url, UNIX_EPOCH, None).unwrap();
+        store.replace_visit(&url, UNIX_EPOCH, None, None).unwrap();
 
         assert!(visits(&store.connection).is_empty());
         assert!(titles(&store.connection).is_empty());
@@ -458,7 +466,7 @@ mod tests {
         let new_url = Url::parse("https://servo.org/blog").unwrap();
 
         store
-            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url))
+            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url), None)
             .unwrap();
 
         assert_eq!(

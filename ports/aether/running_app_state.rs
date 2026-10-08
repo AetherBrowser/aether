@@ -791,20 +791,24 @@ impl WebViewDelegate for RunningAppState {
             navigation_type,
         ) {
             Some(HistoryUpdate::RecordVisit { url, visit_date }) => {
-                self.history.record_visit(url, visit_date)
+                self.history
+                    .record_visit(url, visit_date, webview.page_title())
             },
             Some(HistoryUpdate::ReplaceVisit {
                 old_url,
                 visit_date,
                 new_url,
-            }) => self.history.replace_visit(old_url, visit_date, new_url),
+            }) => self
+                .history
+                .replace_visit(old_url, visit_date, new_url, webview.page_title()),
             None => {},
         }
     }
 
     fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
         self.window_for_webview(&webview).set_needs_update();
-        if let Some(url) = webview.page_title_url() &&
+        if let Some(title) = title &&
+            let Some(url) = webview.url() &&
             should_record(&url)
         {
             self.history.set_title(url, title);

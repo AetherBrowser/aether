@@ -16,15 +16,17 @@ enum HistoryCommand {
     RecordVisit {
         url: Url,
         visit_date: SystemTime,
+        title: Option<String>,
     },
     SetTitle {
         url: Url,
-        title: Option<String>,
+        title: String,
     },
     ReplaceVisit {
         old_url: Url,
         visit_date: SystemTime,
         new_url: Option<Url>,
+        title: Option<String>,
     },
 }
 
@@ -66,14 +68,18 @@ impl HistoryService {
     }
 
     /// Records a visit of `url` at `visit_date`.
-    pub fn record_visit(&self, url: Url, visit_date: SystemTime) {
+    pub fn record_visit(&self, url: Url, visit_date: SystemTime, title: Option<String>) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(HistoryCommand::RecordVisit { url, visit_date });
+            let _ = sender.send(HistoryCommand::RecordVisit {
+                url,
+                visit_date,
+                title,
+            });
         }
     }
 
     /// Stores `title` as the last title of `url`.
-    pub fn set_title(&self, url: Url, title: Option<String>) {
+    pub fn set_title(&self, url: Url, title: String) {
         if let Some(sender) = &self.sender {
             let _ = sender.send(HistoryCommand::SetTitle { url, title });
         }
@@ -81,12 +87,19 @@ impl HistoryService {
 
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
     /// is `None`. See [`HistoryStore::replace_visit`].
-    pub fn replace_visit(&self, old_url: Url, visit_date: SystemTime, new_url: Option<Url>) {
+    pub fn replace_visit(
+        &self,
+        old_url: Url,
+        visit_date: SystemTime,
+        new_url: Option<Url>,
+        title: Option<String>,
+    ) {
         if let Some(sender) = &self.sender {
             let _ = sender.send(HistoryCommand::ReplaceVisit {
                 old_url,
                 visit_date,
                 new_url,
+                title,
             });
         }
     }
@@ -107,13 +120,17 @@ impl Drop for HistoryService {
 fn run(mut store: HistoryStore, receiver: Receiver<HistoryCommand>) {
     for command in receiver {
         match command {
-            HistoryCommand::RecordVisit { url, visit_date } => {
-                if let Err(error) = store.record_visit(&url, visit_date) {
+            HistoryCommand::RecordVisit {
+                url,
+                visit_date,
+                title,
+            } => {
+                if let Err(error) = store.record_visit(&url, visit_date, title.as_deref()) {
                     warn!("Could not record a visit in the history: {error}");
                 }
             },
             HistoryCommand::SetTitle { url, title } => {
-                if let Err(error) = store.set_title(&url, title.as_deref()) {
+                if let Err(error) = store.set_title(&url, &title) {
                     warn!("Could not store a page title in the history: {error}");
                 }
             },
@@ -121,8 +138,11 @@ fn run(mut store: HistoryStore, receiver: Receiver<HistoryCommand>) {
                 old_url,
                 visit_date,
                 new_url,
+                title,
             } => {
-                if let Err(error) = store.replace_visit(&old_url, visit_date, new_url.as_ref()) {
+                if let Err(error) =
+                    store.replace_visit(&old_url, visit_date, new_url.as_ref(), title.as_deref())
+                {
                     warn!("Could not replace a visit in the history: {error}");
                 }
             },
@@ -147,7 +167,7 @@ mod tests {
 
         for index in 0..100 {
             let url = Url::parse(&format!("https://servo.org/{index}")).unwrap();
-            service.record_visit(url, UNIX_EPOCH);
+            service.record_visit(url, UNIX_EPOCH, None);
         }
         drop(service);
 
@@ -165,8 +185,8 @@ mod tests {
         let service = HistoryService::open(path.clone());
         let url = Url::parse("https://servo.org/").unwrap();
 
-        service.record_visit(url.clone(), UNIX_EPOCH);
-        service.set_title(url, Some("Servo".to_owned()));
+        service.record_visit(url.clone(), UNIX_EPOCH, None);
+        service.set_title(url, "Servo".to_owned());
         drop(service);
 
         let title: String = Connection::open(&path)
@@ -184,8 +204,8 @@ mod tests {
         let redirect = Url::parse("https://servo.org/redirect").unwrap();
         let target = Url::parse("https://servo.org/").unwrap();
 
-        service.record_visit(redirect.clone(), UNIX_EPOCH);
-        service.replace_visit(redirect, UNIX_EPOCH, Some(target));
+        service.record_visit(redirect.clone(), UNIX_EPOCH, None);
+        service.replace_visit(redirect, UNIX_EPOCH, Some(target), None);
         drop(service);
 
         let url: String = Connection::open(&path)
@@ -205,7 +225,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let service = HistoryService::open(directory.path().to_owned());
 
-        service.record_visit(Url::parse("https://servo.org/").unwrap(), UNIX_EPOCH);
+        service.record_visit(Url::parse("https://servo.org/").unwrap(), UNIX_EPOCH, None);
         drop(service);
     }
 }
