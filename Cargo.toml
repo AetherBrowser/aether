@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "components/aether_history",
     "components/media/examples",
     "components/svg",
     "components/xpath",
@@ -377,6 +378,8 @@ webxr = { package = "servo-webxr", version = "=0.7.0", path = "components/webxr"
 webxr-api = { package = "servo-webxr-api", version = "=0.7.0", path = "components/shared/webxr" }
 xpath = { package = "servo-xpath", version = "=0.7.0", path = "components/xpath" }
 # End workspace-version dependencies - Don't change this comment, we grep for it in scripts!
+
+aether-history = { path = "components/aether_history" }
 
 [workspace.lints.clippy]
 manual_string_new = "warn"

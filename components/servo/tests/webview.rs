@@ -7,17 +7,20 @@ mod common;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use dpi::PhysicalSize;
 use embedder_traits::{RefreshDriver, UrlRequest};
 use euclid::default::Size2D as UntypedSize2D;
 use euclid::{Point2D, Size2D};
 use http::{HeaderMap, HeaderName, HeaderValue};
+use http_body_util::BodyExt;
 use http_body_util::combinators::BoxBody;
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Bytes, Frame, Incoming};
 use hyper::{Request as HyperRequest, Response as HyperResponse};
 use image::RgbaImage;
 use itertools::Itertools;
@@ -25,9 +28,9 @@ use net::test_util::{make_body, make_server, replace_host_table};
 use servo::profile_traits::mem::MemoryReportResult;
 use servo::{
     CreateNewWebViewRequest, Cursor, EmbedderControl, InputEvent, InputMethodType, JSValue,
-    LoadStatus, MouseButton, MouseLeftViewportEvent, MouseMoveEvent, PrefValue, RenderingContext,
-    Scroll, SimpleDialog, Theme, WebView, WebViewBuilder, WebViewDelegate, WebViewPoint,
-    WebViewVector,
+    LoadStatus, MouseButton, MouseLeftViewportEvent, MouseMoveEvent, NavigationType, PrefValue,
+    RenderingContext, Scroll, SimpleDialog, Theme, WebView, WebViewBuilder, WebViewDelegate,
+    WebViewPoint, WebViewVector,
 };
 use servo_base::generic_channel::GenericCallback;
 use servo_config::prefs::Preferences;
@@ -1120,6 +1123,262 @@ fn test_webview_title_updates_when_title_element_is_created_from_javascript() {
     servo_test.spin(move || load_webview.load_status() != LoadStatus::Complete);
 
     assert_eq!(webview.page_title().as_deref(), Some("Success"));
+}
+
+#[test]
+fn test_navigation_committed_reports_how_the_session_history_changed() {
+    #[derive(Default)]
+    struct NavigationRecorder {
+        navigations: RefCell<Vec<(Url, NavigationType)>>,
+    }
+    impl WebViewDelegate for NavigationRecorder {
+        fn notify_navigation_committed(
+            &self,
+            _webview: WebView,
+            url: Url,
+            navigation_type: NavigationType,
+        ) {
+            self.navigations.borrow_mut().push((url, navigation_type));
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(NavigationRecorder::default());
+    let wait_for_navigations = |count: usize| {
+        let delegate = delegate.clone();
+        servo_test.spin(move || delegate.navigations.borrow().len() < count);
+    };
+    let wait_for_complete_load = |webview: &WebView| {
+        let ready_state =
+            || evaluate_javascript(&servo_test, webview.clone(), "document.readyState");
+        while ready_state() != Ok(JSValue::String("complete".to_owned())) {}
+    };
+
+    // Navigations inside the <iframe> must not be reported.
+    let first_page =
+        Url::parse("data:text/html,<iframe src='data:text/html,inner'></iframe>").unwrap();
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(first_page.clone())
+        .build();
+    wait_for_navigations(1);
+    wait_for_complete_load(&webview);
+
+    let second_page = Url::parse("data:text/html,second").unwrap();
+    webview.load(second_page.clone());
+    wait_for_navigations(2);
+    wait_for_complete_load(&webview);
+
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "location.hash = 'one'");
+    wait_for_navigations(3);
+    let _ = evaluate_javascript(&servo_test, webview.clone(), "location.replace('#two')");
+    wait_for_navigations(4);
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "history.replaceState(null, '', '#three')",
+    );
+    wait_for_navigations(5);
+
+    webview.go_back(1);
+    wait_for_navigations(6);
+
+    let third_page = Url::parse("data:text/html,third").unwrap();
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        format!("location.replace('{third_page}')"),
+    );
+    wait_for_navigations(7);
+
+    let with_fragment = |fragment| {
+        let mut url = second_page.clone();
+        url.set_fragment(Some(fragment));
+        url
+    };
+    assert_eq!(
+        *delegate.navigations.borrow(),
+        [
+            (first_page, NavigationType::Push),
+            (second_page.clone(), NavigationType::Push),
+            (with_fragment("one"), NavigationType::Push),
+            (with_fragment("two"), NavigationType::Replace),
+            (with_fragment("three"), NavigationType::Replace),
+            (second_page, NavigationType::Traverse),
+            (third_page, NavigationType::Replace),
+        ]
+    );
+}
+
+#[test]
+fn test_navigation_before_load_replaces_the_entry_unless_the_user_triggered_it() {
+    #[derive(Default)]
+    struct NavigationRecorder {
+        navigations: RefCell<Vec<(Url, NavigationType)>>,
+        new_frame_ready: Cell<bool>,
+    }
+    impl WebViewDelegate for NavigationRecorder {
+        fn notify_new_frame_ready(&self, webview: WebView) {
+            self.new_frame_ready.set(true);
+            webview.paint();
+        }
+        fn notify_navigation_committed(
+            &self,
+            _webview: WebView,
+            url: Url,
+            navigation_type: NavigationType,
+        ) {
+            self.navigations.borrow_mut().push((url, navigation_type));
+        }
+    }
+
+    struct EndlessBody;
+    impl hyper::body::Body for EndlessBody {
+        type Data = Bytes;
+        type Error = hyper::Error;
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, hyper::Error>>> {
+            Poll::Pending
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let handler = |request: HyperRequest<Incoming>,
+                   response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
+        let body: &[u8] = match request.uri().path() {
+            "/image" => {
+                *response.body_mut() = EndlessBody.boxed();
+                return;
+            },
+            "/scripted" => {
+                b"<!DOCTYPE html><img src=/image>\
+                  <script>setTimeout(() => location.href = '/button')</script>"
+            },
+            "/button" => {
+                b"<!DOCTYPE html><body style='margin: 0'><button style='width: 100px; height: 100px' \
+                  onclick=\"location.href = '/end'\"></button><img src=/image>\
+                  <script>requestAnimationFrame(function frame() {\
+                    document.title = 'ready';\
+                    document.body.style.opacity = document.body.style.opacity == 1 ? 0.9 : 1;\
+                    requestAnimationFrame(frame);\
+                  })</script>"
+            },
+            _ => b"end",
+        };
+        *response.body_mut() = make_body(body.to_vec());
+    };
+    let (server, url) = make_server(handler);
+    let page = |path: &str| url.as_url().join(path).unwrap();
+
+    let delegate = Rc::new(NavigationRecorder::default());
+    let wait_for_navigations = |count: usize| {
+        let delegate = delegate.clone();
+        servo_test.spin(move || delegate.navigations.borrow().len() < count);
+    };
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(page("scripted"))
+        .build();
+    wait_for_navigations(2);
+
+    {
+        let webview = webview.clone();
+        servo_test.spin(move || webview.page_title().as_deref() != Some("ready"));
+    }
+    delegate.new_frame_ready.set(false);
+    {
+        let delegate = delegate.clone();
+        servo_test.spin(move || !delegate.new_frame_ready.get());
+    }
+    click_at_point(&webview, Point2D::new(50., 50.), MouseButton::Primary);
+    wait_for_navigations(3);
+
+    let _ = server.close();
+
+    assert_eq!(
+        *delegate.navigations.borrow(),
+        [
+            (page("scripted"), NavigationType::Push),
+            (page("button"), NavigationType::Replace),
+            (page("end"), NavigationType::Push),
+        ]
+    );
+}
+
+#[test]
+fn test_page_title_belongs_to_the_active_document() {
+    #[derive(Default)]
+    struct TitleRecorder {
+        navigations: RefCell<Vec<(Url, NavigationType, Option<String>)>>,
+        titles: RefCell<Vec<(Option<Url>, Option<String>)>>,
+    }
+    impl WebViewDelegate for TitleRecorder {
+        fn notify_navigation_committed(
+            &self,
+            webview: WebView,
+            url: Url,
+            navigation_type: NavigationType,
+        ) {
+            self.navigations
+                .borrow_mut()
+                .push((url, navigation_type, webview.page_title()));
+        }
+        fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
+            self.titles.borrow_mut().push((webview.url(), title));
+        }
+    }
+
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(TitleRecorder::default());
+    let wait_for_title = |webview: &WebView, title: &'static str| {
+        let webview = webview.clone();
+        servo_test.spin(move || webview.page_title().as_deref() != Some(title));
+    };
+
+    let first_page = Url::parse("data:text/html,<title>One</title>").unwrap();
+    let webview = WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+        .delegate(delegate.clone())
+        .url(first_page.clone())
+        .build();
+    wait_for_title(&webview, "One");
+
+    let _ = evaluate_javascript(
+        &servo_test,
+        webview.clone(),
+        "history.pushState(null, '', '#pushed')",
+    );
+    let mut pushed_page = first_page.clone();
+    pushed_page.set_fragment(Some("pushed"));
+
+    let second_page = Url::parse("data:text/html,<title>Two</title>").unwrap();
+    webview.load(second_page.clone());
+    wait_for_title(&webview, "Two");
+
+    webview.go_back(1);
+    wait_for_title(&webview, "One");
+
+    let one = Some("One".to_owned());
+    let two = Some("Two".to_owned());
+    assert_eq!(
+        *delegate.navigations.borrow(),
+        [
+            (first_page.clone(), NavigationType::Push, None),
+            (pushed_page.clone(), NavigationType::Push, one.clone()),
+            (second_page.clone(), NavigationType::Push, None),
+            (pushed_page.clone(), NavigationType::Traverse, one.clone()),
+        ]
+    );
+    assert_eq!(
+        *delegate.titles.borrow(),
+        [
+            (Some(first_page), one.clone()),
+            (Some(second_page.clone()), None),
+            (Some(second_page), two),
+            (Some(pushed_page), one),
+        ]
+    );
 }
 
 #[test]

@@ -215,6 +215,7 @@ class MachCommands(CommandBase):
             "servo-config",
             "servoshell",
             "aether",
+            "aether-history",
             "servo-url",
             "servo-storage",
             "servo-storage-traits",

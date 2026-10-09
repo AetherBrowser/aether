@@ -181,6 +181,7 @@ name = "aether"
 version = "0.1.0"
 dependencies = [
  "accesskit",
+ "aether-history",
  "android_logger",
  "backtrace",
  "bpaf",
@@ -239,6 +240,17 @@ dependencies = [
  "winit",
  "winresource",
  "xcomponent-sys",
+]
+
+[[package]]
+name = "aether-history"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "rusqlite",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

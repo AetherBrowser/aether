@@ -469,8 +469,6 @@ pub struct BluetoothDeviceDescription {
 pub enum EmbedderMsg {
     /// A status message to be displayed by the browser chrome.
     Status(WebViewId, Option<String>),
-    /// Alerts the embedder that the current page has changed its title.
-    ChangePageTitle(WebViewId, Option<String>),
     /// Move the window to a point
     MoveTo(WebViewId, DeviceIntPoint),
     /// Resize the window to size
@@ -811,6 +809,21 @@ pub enum LoadStatus {
     /// `document.readyState` == `complete`.
     /// See <https://developer.mozilla.org/en-US/docs/Web/API/Document/readyState>
     Complete,
+}
+
+/// How the active entry of the session history of a `WebView` changed when one of its
+/// navigations was committed.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum NavigationType {
+    /// A new entry was added, for instance by following a link or by `history.pushState()`.
+    Push,
+    /// The active entry was replaced. This is what client-side redirects do: a meta refresh,
+    /// `location.replace()`, a script navigation before the page has finished loading, or
+    /// `history.replaceState()`. A reload replaces the active entry with one that has the same
+    /// URL.
+    Replace,
+    /// Another existing entry became active, for instance when going back or forward.
+    Traverse,
 }
 
 /// Data that could be used to display a desktop notification to the end user

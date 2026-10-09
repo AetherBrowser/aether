@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
+use aether_history::HistoryService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
 #[cfg(all(
@@ -32,10 +33,10 @@ use servo::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
     EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
-    JSValue, LoadStatus, MediaSessionEvent, PermissionRequest, PrefValue, Preferences,
-    ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId, UserContentManager,
-    WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand,
-    WebDriverSenders, WebView, WebViewDelegate, WebViewId,
+    JSValue, LoadStatus, MediaSessionEvent, NavigationType, PermissionRequest, PrefValue,
+    Preferences, ScreenshotCaptureError, Servo, ServoDelegate, ServoError, TraversalId,
+    UserContentManager, WebDriverCommandMsg, WebDriverJSResult, WebDriverLoadStatus,
+    WebDriverScriptCommand, WebDriverSenders, WebView, WebViewDelegate, WebViewId,
 };
 use url::Url;
 
@@ -44,6 +45,7 @@ use url::Url;
     not(any(target_os = "android", target_env = "ohos"))
 ))]
 pub(crate) use crate::desktop::gamepad::ServoshellGamepadDelegate;
+use crate::history::{HistoryUpdate, should_record};
 use crate::prefs::{EXPERIMENTAL_PREFS, ServoShellPreferences};
 use crate::webdriver::WebDriverEmbedderControls;
 use crate::window::{
@@ -224,6 +226,9 @@ pub(crate) struct RunningAppState {
     /// The [`UserContentManager`] for all `WebView`s created.
     pub(crate) user_content_manager: Rc<UserContentManager>,
 
+    /// The browsing history of the profile.
+    history: HistoryService,
+
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
     exit_scheduled: Cell<bool>,
@@ -257,6 +262,7 @@ impl RunningAppState {
         event_loop_waker: Box<dyn EventLoopWaker>,
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
+        history: HistoryService,
         #[cfg(all(
             feature = "gamepad",
             not(any(target_os = "android", target_env = "ohos"))
@@ -296,6 +302,7 @@ impl RunningAppState {
             achieved_stable_image: Default::default(),
             exit_scheduled: Default::default(),
             user_content_manager,
+            history,
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -772,8 +779,40 @@ impl WebViewDelegate for RunningAppState {
         self.window_for_webview(&webview).set_needs_update();
     }
 
-    fn notify_page_title_changed(&self, webview: WebView, _: Option<String>) {
+    fn notify_navigation_committed(
+        &self,
+        webview: WebView,
+        url: Url,
+        navigation_type: NavigationType,
+    ) {
+        match self.window_for_webview(&webview).navigation_committed(
+            webview.id(),
+            &url,
+            navigation_type,
+        ) {
+            Some(HistoryUpdate::RecordVisit { url, visit_date }) => {
+                self.history
+                    .record_visit(url, visit_date, webview.page_title())
+            },
+            Some(HistoryUpdate::ReplaceVisit {
+                old_url,
+                visit_date,
+                new_url,
+            }) => self
+                .history
+                .replace_visit(old_url, visit_date, new_url, webview.page_title()),
+            None => {},
+        }
+    }
+
+    fn notify_page_title_changed(&self, webview: WebView, title: Option<String>) {
         self.window_for_webview(&webview).set_needs_update();
+        if let Some(title) = title &&
+            let Some(url) = webview.url() &&
+            should_record(&url)
+        {
+            self.history.set_title(url, title);
+        }
     }
 
     fn notify_traversal_complete(&self, _webview: WebView, traversal_id: TraversalId) {

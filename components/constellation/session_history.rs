@@ -5,7 +5,7 @@
 use std::cmp::PartialEq;
 use std::fmt;
 
-use embedder_traits::ViewportDetails;
+use embedder_traits::{NavigationType, ViewportDetails};
 use log::debug;
 use servo_base::id::{BrowsingContextId, HistoryStateId, PipelineId, WebViewId};
 use servo_constellation_traits::LoadData;
@@ -121,6 +121,10 @@ pub struct SessionHistoryChange {
 
     /// The old pipeline that the new pipeline should replace.
     pub replace: Option<NeedsToReload>,
+
+    /// How the change affects the session history, reported to the embedder once the new
+    /// document is active.
+    pub navigation_type: NavigationType,
 
     /// Holds data for not-yet constructed browsing contexts that are not
     /// easily available when they need to be constructed.
