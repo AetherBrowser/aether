@@ -251,7 +251,7 @@ fn init_app(
         .collect::<Vec<&str>>();
     debug!("Servo commandline args: {:?}", args);
 
-    let config_dir = PathBuf::from(&native_values.cache_dir).join("servo");
+    let config_dir = PathBuf::from(&native_values.cache_dir).join("aether");
     debug!("Configs are located at: {:?}", config_dir);
     let _ = crate::prefs::DEFAULT_CONFIG_DIR
         .set(config_dir.clone())
