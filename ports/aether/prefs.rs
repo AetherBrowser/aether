@@ -148,7 +148,7 @@ impl Default for ServoShellPreferences {
 ))]
 pub fn default_config_dir() -> Option<PathBuf> {
     let mut config_dir = ::dirs::config_dir().unwrap();
-    config_dir.push("servo");
+    config_dir.push("aether");
     config_dir.push("default");
     Some(config_dir)
 }
@@ -166,14 +166,14 @@ pub fn default_config_dir() -> Option<PathBuf> {
     // FIXME: use `config_dir()` ($HOME/Library/Preferences)
     // instead of `data_dir()` ($HOME/Library/Application Support) ?
     let mut config_dir = ::dirs::data_dir().unwrap();
-    config_dir.push("Servo");
+    config_dir.push("Aether");
     Some(config_dir)
 }
 
 #[cfg(target_os = "windows")]
 pub fn default_config_dir() -> Option<PathBuf> {
     let mut config_dir = ::dirs::config_dir().unwrap();
-    config_dir.push("Servo");
+    config_dir.push("Aether");
     Some(config_dir)
 }
 
@@ -395,7 +395,7 @@ struct CmdArgs {
 
     ///
     ///  Config directory following xdg spec on linux platform.
-    #[bpaf(argument("~/.config/servo"))]
+    #[bpaf(argument("~/.config/aether"))]
     config_dir: Option<PathBuf>,
 
     ///
