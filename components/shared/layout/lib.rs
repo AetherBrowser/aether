@@ -401,6 +401,9 @@ pub trait Layout {
         animations: DocumentAnimationSet,
         animation_timeline_value: f64,
     ) -> String;
+
+    fn query_accesskit_node(&self, node: TrustedNodeAddress) -> Option<accesskit::Node>;
+
     fn query_resolved_font_style(
         &self,
         node: TrustedNodeAddress,
@@ -428,17 +431,21 @@ pub trait Layout {
     /// Returns whether accessibility is active for this Layout.
     fn accessibility_active(&self) -> bool;
 
-    /// Whether the accessibility tree must be updated. This is set to true when
-    /// - accessibility is activated; or
-    /// - a page is loaded after accesibility is activated.
+    /// Whether the accessibility tree must be updated. This is true when accessibility is
+    /// activated, and at least one of the following conditions is met:
+    /// - the accessibility tree has not yet been built after activating accessibility;
+    /// - set_force_accessibility_update_if_active() has been called since the accessibility tree
+    ///   was last updated (for example, if a scroll occurred, or the focused element changed);
+    /// - there are pending actions from assistive technology.
     ///
-    /// Checked in can_skip_reflow_request_entirely(), as a dirty accessibility tree
-    /// should force a reflow, and handle_reflow() to determine whether to update the
-    /// accessibility tree during reflow.
+    /// Checked in can_skip_reflow_request_entirely(), as a pending accessibility tree update
+    /// should force a reflow, and during reflow to determine whether to update the
+    /// accessibility tree.
     fn needs_accessibility_update(&self) -> bool;
 
+    /// If accessibility is active, force an accessibility update on the next reflow.
     /// See [Self::needs_accessibility_update()].
-    fn set_force_accessibility_update(&self);
+    fn set_force_accessibility_update_if_active(&self);
 
     /// Handle an accessibility action.
     fn handle_accessibility_action(&self, action_request: ActionRequest);
@@ -575,6 +582,7 @@ pub enum QueryMsg {
     TextIndexQuery,
     PaddingQuery,
     FlushForUpdateTheRenderingQuery,
+    AccessKitNodeQuery,
 }
 
 /// The goal of a reflow request.
@@ -718,6 +726,20 @@ pub struct ReflowRequestRestyle {
     pub pending_restyles: Vec<(TrustedNodeAddress, PendingRestyle)>,
 }
 
+/// Information needed for a script-initiated reflow that requires the accessibility tree to be
+/// updated.
+#[derive(Debug)]
+pub struct ReflowRequestAccessibility {
+    /// Damage to the accessibility tree from DOM mutations.
+    pub damage: Vec<(TrustedNodeAddress, AccessibilityDamage)>,
+    /// The document's focused element at the time of the reflow, if any.
+    pub focused_element: Option<OpaqueNode>,
+    /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
+    /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
+    /// is set.
+    pub rooted_nodes_for_integrity_check: Option<FxHashSet<OpaqueNode>>,
+}
+
 /// Information needed for a script-initiated reflow.
 #[derive(Debug)]
 pub struct ReflowRequest {
@@ -725,7 +747,7 @@ pub struct ReflowRequest {
     pub document: TrustedNodeAddress,
     /// The current layout [`Epoch`] managed by the script thread.
     pub epoch: Epoch,
-    /// If a restyle is necessary, all of the informatio needed to do that restyle.
+    /// If a restyle is necessary, all of the information needed to do that restyle.
     pub restyle: Option<ReflowRequestRestyle>,
     /// The current [`ViewportDetails`] to use for this reflow.
     pub viewport_details: ViewportDetails,
@@ -756,12 +778,8 @@ pub struct ReflowRequest {
     pub paint_timing_info: PaintTimingInfo,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
-    /// Damage to the accessibility tree from DOM mutations.
-    pub accessibility_damage: Option<Vec<(TrustedNodeAddress, AccessibilityDamage)>>,
-    /// Nodes which were removed from the DOM tree since the last reflow, which were rooted in
-    /// [`AccessibilityData`]. Only set if [`pref::expensive_accessibility_test_assertions_enabled`]
-    /// is set.
-    pub rooted_nodes_for_accessibility_integrity_check: Option<FxHashSet<OpaqueNode>>,
+    /// If an accessibility tree update is necessary, all the information needed to do the update.
+    pub accessibility: Option<ReflowRequestAccessibility>,
 }
 
 impl ReflowRequest {

@@ -12,6 +12,7 @@ use std::ffi::CStr;
 use std::fmt::Debug;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::{mem, ptr};
 
 use bytes::{Bytes, BytesMut};
@@ -574,7 +575,7 @@ struct ModuleContext {
     /// `introductionType` value to set in the `CompileOptionsWrapper`.
     introduction_type: Option<&'static CStr>,
     /// <https://html.spec.whatwg.org/multipage/#policy-container>
-    policy_container: Option<PolicyContainer>,
+    policy_container: Option<Arc<PolicyContainer>>,
 }
 
 impl FetchResponseListener for ModuleContext {
@@ -587,10 +588,7 @@ impl FetchResponseListener for ModuleContext {
         _: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
-        self.metadata = metadata.ok().map(|meta| match meta {
-            FetchMetadata::Unfiltered(m) => m,
-            FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-        });
+        self.metadata = metadata.ok().map(Into::into);
 
         let status = self
             .metadata

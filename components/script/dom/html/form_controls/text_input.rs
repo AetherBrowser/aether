@@ -23,7 +23,6 @@ use servo_base::{Rope, RopeIndex, RopeMovement, RopeSlice};
 
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::editing::SelectionGranularity;
 use crate::dom::event::Event;
 use crate::dom::inputevent::HitTestResult;
@@ -350,11 +349,7 @@ impl<T: ClipboardProvider> TextInput<T> {
         let start = self.selection_start();
         let end = self.selection_end();
         let start = (start != rope.first_index()).then(|| rope.index_to_character_offset(start));
-        // TODO: `TextInputWidgetShadowTree::update` has a hack with a "\u{200B}" to force
-        // the text to be non-empty, so `rope.last_index()` is untrustworthy.
-        // For now, use a bounded end unconditionally instead.
-        // let end = (end != rope.last_index()).then(|| rope.index_to_character_offset(end));
-        let end = Some(rope.index_to_character_offset(end));
+        let end = (end != rope.last_index()).then(|| rope.index_to_character_offset(end));
         RangeAny::new(start, end)
     }
 
@@ -577,6 +572,18 @@ impl<T: ClipboardProvider> TextInput<T> {
                     InputEventType::InsertText,
                 )
             },
+            EditingAction::InsertCompositionText(text) => {
+                self.insert_for_composition(&text);
+                KeyReaction::DispatchInput(
+                    Some(text),
+                    IsComposing::Composing,
+                    InputEventType::InsertCompositionText,
+                )
+            },
+            EditingAction::EndComposition(..) => {
+                self.clear_selection();
+                KeyReaction::RedrawSelection
+            },
             EditingAction::Delete => {
                 if self.delete_unit_or_selection(RopeMovement::Grapheme, EditingDirection::Forward)
                 {
@@ -609,55 +616,32 @@ impl<T: ClipboardProvider> TextInput<T> {
                     KeyReaction::Nothing
                 }
             },
-            EditingAction::SelectAll | EditingAction::Clipboard(..) => KeyReaction::Nothing,
+            EditingAction::SelectAll |
+            EditingAction::Clipboard(..) |
+            EditingAction::StartComposition => KeyReaction::Nothing,
         }
     }
 
-    pub(crate) fn handle_compositionend(&mut self, event: &CompositionEvent) -> KeyReaction {
-        let insertion = event.data().str();
-        if insertion.is_empty() {
-            self.clear_selection();
-            return KeyReaction::RedrawSelection;
-        }
-
-        self.insert(insertion.to_string());
-        KeyReaction::DispatchInput(
-            Some(insertion.to_string()),
-            IsComposing::NotComposing,
-            InputEventType::InsertCompositionText,
-        )
-    }
-
-    pub(crate) fn handle_compositionupdate(&mut self, event: &CompositionEvent) -> KeyReaction {
-        let insertion = event.data().str();
-        if insertion.is_empty() {
-            return KeyReaction::Nothing;
-        }
-
+    fn insert_for_composition<S: Into<String>>(&mut self, insertion: S) {
         let start = self.selection_start_offset();
-        let insertion = insertion.to_string();
-        self.insert(insertion.clone());
+        let insertion = insertion.into();
+        self.insert(&insertion);
         self.set_selection_range_utf8(
             start,
-            start + event.data().len_utf8(),
+            start + Utf8CodeUnits(insertion.len() as u32),
             SelectionDirection::Forward,
         );
-        KeyReaction::DispatchInput(
-            Some(insertion),
-            IsComposing::Composing,
-            InputEventType::InsertCompositionText,
-        )
     }
 
     fn edit_point_for_hit_test_result(&self, hit_test_result: &HitTestResult) -> RopeIndex {
         hit_test_result
             .dom_position_for_selection
             .as_ref()
-            .map(|(_, character_offset)| {
+            .map(|boundary| {
                 self.rope.move_by(
                     Default::default(),
                     RopeMovement::Character,
-                    character_offset.0 as isize,
+                    boundary.utf32_offset().0 as isize,
                 )
             })
             .unwrap_or_else(|| self.rope.last_index())

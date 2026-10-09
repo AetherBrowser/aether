@@ -11,7 +11,8 @@ use embedder_traits::{
 };
 use js::context::{JSContext, NoGC};
 use keyboard_types::{
-    Key, KeyState, KeyboardEvent as KeyboardTypesEvent, Modifiers, NamedKey, ShortcutMatcher,
+    CompositionEvent, CompositionState, Key, KeyState, KeyboardEvent as KeyboardTypesEvent,
+    Modifiers, NamedKey, ShortcutMatcher,
 };
 use layout_api::QueryMsg;
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
@@ -23,12 +24,12 @@ use script_bindings::inheritance::Castable;
 use script_bindings::root::DomRoot;
 use script_bindings::str::DOMString;
 use servo_base::generic_channel::GenericCallback;
-use servo_base::text::Utf32CodeUnitsOrNodeOffset;
 
 use crate::dom::clipboardevent::ClipboardEventType;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
 use crate::dom::inputevent::HitTestResult;
+use crate::dom::selection_range::RootedSelectionBoundary;
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
 use crate::dom::types::{
@@ -396,7 +397,10 @@ impl Document {
         // This function does not do any checks for whether or not we are actually inside an
         // editing host, since those checks are performed by exec_command_for_command_id either way.
         let (command, argument) = match editing_action {
-            EditingAction::MoveCursor(..) => return false,
+            // TODO: composition should be supported once editing hosts have selection support
+            EditingAction::MoveCursor(..) |
+            EditingAction::StartComposition |
+            EditingAction::EndComposition(..) => return false,
             EditingAction::SelectAll | EditingAction::Clipboard(_) => {
                 unreachable!("Should have been handled before this point.")
             },
@@ -433,7 +437,8 @@ impl Document {
             // > with value equal to the text the user provided. If the user inserts multiple
             // > characters at once or in quick succession, this specification does not define
             // > whether it is treated as one insertion or several consecutive insertions.
-            EditingAction::InsertText(text) => (
+            // TODO: composition should be supported once editing hosts have selection support
+            EditingAction::InsertText(text) | EditingAction::InsertCompositionText(text) => (
                 DOMString::from_static("inserttext"),
                 DOMString::from(text.as_str()),
             ),
@@ -470,17 +475,16 @@ impl Document {
         // When the hit test cannot find a suitable DOM position for selection, just
         // use the first offset within the target node of the `mousedown` event. This
         // is a reasonable place to start the selection from.
-        let (container, offset) = hit_test_result
+        let boundary = hit_test_result
             .dom_position_for_selection
-            .as_ref()
-            .map(|(node, offset)| (node, *offset))
-            .unwrap_or((&hit_test_result.node, Utf32CodeUnitsOrNodeOffset(0)));
-        let Some((container, offset, user_select_contain_node)) =
-            adjust_anchor_for_user_select(cx, container.clone(), offset)
+            .clone()
+            .unwrap_or_else(|| RootedSelectionBoundary::start_of(&hit_test_result.node));
+        let Some((boundary, user_select_contain_node)) =
+            adjust_anchor_for_user_select(cx, boundary)
         else {
             return;
         };
-        selection.collapse_to_dom_position(cx, &container, offset);
+        selection.collapse_to_dom_position(cx, &boundary);
         self.event_handler().install_drag_gesture(DragGesture::new(
             DragHandler::DocumentSelection(DocumentSelectionDragHandler::new(
                 user_select_contain_node.as_deref(),
@@ -963,4 +967,12 @@ pub(crate) fn editing_action_from_keyboard_event(
             _ => None,
         })
         .flatten()
+}
+
+pub(crate) fn editing_action_from_composition_event(event: &CompositionEvent) -> EditingAction {
+    match event.state {
+        CompositionState::Start => EditingAction::StartComposition,
+        CompositionState::Update => EditingAction::InsertCompositionText(event.data.to_string()),
+        CompositionState::End => EditingAction::EndComposition(event.data.to_string()),
+    }
 }

@@ -18,7 +18,7 @@ use net_traits::image_cache::{
 };
 use net_traits::request::{CorsSettings, Destination, Initiator, RequestId};
 use net_traits::{
-    FetchMetadata, FetchResponseMsg, NetworkError, ReferrerPolicy, ResourceFetchTiming,
+    FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming,
 };
 use num_traits::ToPrimitive;
 use pixels::{CorsStatus, ImageMetadata, Snapshot};
@@ -205,10 +205,7 @@ impl FetchResponseListener for ImageContext {
             FetchResponseMsg::ProcessResponse(request_id, metadata.clone()),
         );
 
-        let metadata = metadata.ok().map(|meta| match meta {
-            FetchMetadata::Unfiltered(m) => m,
-            FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-        });
+        let metadata: Option<Metadata> = metadata.ok().map(Into::into);
 
         // Step 14.5 of https://html.spec.whatwg.org/multipage/#img-environment-changes
         if let Some(metadata) = metadata.as_ref() &&
@@ -743,7 +740,7 @@ impl HTMLImageElement {
         let Some((selected_source, selected_pixel_density)) = self
             .source_set
             .borrow_mut()
-            .select_image_source(self.upcast::<Element>())
+            .select_image_source(cx.no_gc(), self.upcast::<Element>())
         else {
             // Step 11. If selected source is null, then:
 
@@ -990,7 +987,7 @@ impl HTMLImageElement {
         let Some((selected_source, selected_pixel_density)) = self
             .source_set
             .borrow_mut()
-            .select_image_source(self.upcast::<Element>())
+            .select_image_source(cx.no_gc(), self.upcast::<Element>())
         else {
             // Step 4. If selected source is null, then return.
             return;

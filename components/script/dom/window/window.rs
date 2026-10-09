@@ -51,8 +51,9 @@ use layout_api::{
     AccessibilityActionRequest, AxesOverflow, BoxAreaType, CSSPixelRectVec, FragmentType,
     HitTestFlags, LCPCandidate, Layout, LayoutImageDestination, PendingImage, PendingImageState,
     PendingRasterizationImage, PhysicalSides, QueryMsg, ReflowGoal, ReflowPhasesRun, ReflowRequest,
-    ReflowRequestRestyle, ReflowStatistics, RestyleReason, ScrollContainerQueryFlags,
-    ScrollContainerResponse, TrustedNodeAddress, combine_id_with_fragment_type,
+    ReflowRequestAccessibility, ReflowRequestRestyle, ReflowStatistics, RestyleReason,
+    ScrollContainerQueryFlags, ScrollContainerResponse, TrustedNodeAddress,
+    combine_id_with_fragment_type,
 };
 use malloc_size_of::MallocSizeOf;
 use media::WindowGLContext;
@@ -154,7 +155,7 @@ use crate::dom::css::cssstyledeclaration::{
 use crate::dom::customelementregistry::CustomElementRegistry;
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::document::{
-    AnimationFrameCallback, Document, SameOriginDescendantNavigablesIterator,
+    AbortReason, AnimationFrameCallback, Document, SameOriginDescendantNavigablesIterator,
 };
 use crate::dom::element::Element;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
@@ -179,6 +180,7 @@ use crate::dom::promise::RootedPromise;
 use crate::dom::reporting::reportingendpoint::{ReportingEndpoint, SendReportsToEndpoints};
 use crate::dom::reporting::reportingobserver::ReportingObserver;
 use crate::dom::selection::Selection;
+use crate::dom::selection_range::RootedSelectionBoundary;
 use crate::dom::serviceworker::cachestorage::CacheStorage;
 use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::storage::Storage;
@@ -456,7 +458,7 @@ pub(crate) struct Window {
     layout_marker: DomRefCell<Rc<Cell<bool>>>,
 
     /// <https://dom.spec.whatwg.org/#window-current-event>
-    current_event: DomRefCell<Option<Dom<Event>>>,
+    current_event: MutNullableDom<Event>,
 
     /// <https://w3c.github.io/reporting/#windoworworkerglobalscope-registered-reporting-observer-list>
     reporting_observer_list: DomRefCell<Vec<Dom<ReportingObserver>>>,
@@ -888,7 +890,7 @@ impl Window {
         self.set_ongoing_navigation();
 
         // 3. Abort a document and its descendants given document.
-        doc.abort_a_document_and_its_descendants(cx);
+        doc.abort_a_document_and_its_descendants(cx, AbortReason::StopLoading);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#destroy-a-top-level-traversable>
@@ -2292,7 +2294,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
     /// <https://dom.spec.whatwg.org/#dom-window-event>
     fn Event(&self, cx: &mut JSContext, rval: MutableHandleValue) {
-        if let Some(ref event) = *self.current_event.borrow() {
+        if let Some(ref event) = self.current_event.get() {
             event.reflector().get_jsobject().to_jsval(cx, rval);
         }
     }
@@ -2430,15 +2432,12 @@ impl Window {
     }
 
     pub(crate) fn current_event(&self) -> Option<DomRoot<Event>> {
-        self.current_event
-            .borrow()
-            .as_ref()
-            .map(|e| DomRoot::from_ref(&**e))
+        self.current_event.get()
     }
 
     pub(crate) fn set_current_event(&self, event: Option<&Event>) -> Option<DomRoot<Event>> {
         let current = self.current_event();
-        *self.current_event.borrow_mut() = event.map(Dom::from_ref);
+        self.current_event.set(event);
         current
     }
 
@@ -2577,9 +2576,29 @@ impl Window {
         _behavior: ScrollBehavior,
         element: Option<&Element>,
     ) {
-        // TODO Step 1
-        // TODO(mrobinson, #18709): Add smooth scrolling support to WebRender so that we can
-        // properly process ScrollBehavior here.
+        // Step 1. Abort any ongoing smooth scroll for box.
+        // TODO: Implement this when we have smooth scrolling.
+
+        // Step 2. Resolve all pending scroll Promises whose scroll container is box with
+        // an interrupted scroll result.
+        // TODO: Implement this when we have smooth scrolling.
+
+        // Step 3. Let scrollPromise be a new Promise.
+        // TODO: Implement this when we have smooth scrolling.
+
+        // Step 4. Return scrollPromise, and run the remaining steps in parallel.
+        // TODO: Implement this when we have smooth scrolling.
+
+        // Step 5. If the user agent honors the scroll-behavior property and one of the
+        // following is true:
+        // * behavior is "auto" and element is not null and its computed value of the
+        //   scroll-behavior property is smooth, or
+        // * behavior is smooth
+        // then perform a smooth scroll of box to position; otherwise, perform an instant
+        // scroll of box to position.
+        //
+        // TODO(mrobinson, #18709): Add smooth scrolling support to WebRender so that we
+        // can properly process ScrollBehavior here.
         let (reflow_phases_run, _) = self.reflow(
             cx,
             ReflowGoal::UpdateScrollNode(scroll_id, Vector2D::new(x, y)),
@@ -2589,16 +2608,22 @@ impl Window {
                 .generate_frame(vec![self.webview_id().into()]);
         }
 
-        // > If the scroll position did not change as a result of the user interaction or programmatic
-        // > invocation, where no translations were applied as a result, then no scrollend event fires
-        // > because no scrolling occurred.
-        // Even though the note mention the scrollend, it is relevant to the scroll as well.
+        // Step 6. Wait until either the position has finished updating, or scrollPromise
+        // has been resolved.
+        // TODO: Implement this when we have smooth scrolling.
+
+        // Step 7. If scrollPromise is still in the pending state:
+        // Step 7.1. If the scroll position changed as a result of this call, emit the
+        // scrollend event.
         if reflow_phases_run.contains(ReflowPhasesRun::UpdatedScrollNodeOffset) {
             match element {
                 Some(element) if !scroll_id.is_root() => element.handle_scroll_event(),
                 _ => self.Document().handle_viewport_scroll_event(),
             };
         }
+
+        // Step 7.2. Resolve scrollPromise with a non-interrupted scroll result.
+        // TODO: Implement this when we have smooth scrolling.
     }
 
     pub(crate) fn device_pixel_ratio(&self) -> Scale<f32, CSSPixel, DevicePixel> {
@@ -2716,15 +2741,30 @@ impl Window {
         document.id_map().resolve_all(cx.no_gc(), document.upcast());
 
         let document_context = self.web_font_context(cx.no_gc());
-
-        let mut rooted_nodes_for_accessibility_integrity_check = None;
-        let mut accessibility_damage = None;
-        if reflow_goal == ReflowGoal::UpdateTheRendering && self.layout().accessibility_active() {
-            rooted_nodes_for_accessibility_integrity_check =
-                document.rooted_nodes_for_accessibility_integrity_check();
-            let mut accessibility_data = document.accessibility_data_mut();
-            accessibility_damage = Some(accessibility_data.drain_pending_accessibility_damage());
-        }
+        let should_update_accessibility_tree = matches!(
+            reflow_goal,
+            ReflowGoal::UpdateTheRendering | ReflowGoal::LayoutQuery(QueryMsg::AccessKitNodeQuery)
+        );
+        let accessibility =
+            if should_update_accessibility_tree && self.layout().accessibility_active() {
+                let rooted_nodes_for_integrity_check =
+                    document.rooted_nodes_for_accessibility_integrity_check();
+                let focused_element = document
+                    .focus_handler()
+                    .focused_area()
+                    .element()
+                    .map(|element| element.upcast::<Node>().to_opaque());
+                let damage = document
+                    .accessibility_data_mut()
+                    .drain_pending_accessibility_damage();
+                Some(ReflowRequestAccessibility {
+                    damage,
+                    focused_element,
+                    rooted_nodes_for_integrity_check,
+                })
+            } else {
+                None
+            };
 
         // Send new document and relevant styles to layout.
         let reflow = ReflowRequest {
@@ -2745,8 +2785,7 @@ impl Window {
             paint_timing_eligible: document.paint_timing_eligible(),
             paint_timing_info: document.paint_timing_info(),
             document_context,
-            accessibility_damage,
-            rooted_nodes_for_accessibility_integrity_check,
+            accessibility,
         };
 
         let Some(reflow_result) = self.layout.borrow_mut().reflow(reflow) else {
@@ -3147,6 +3186,14 @@ impl Window {
         ))
     }
 
+    pub(crate) fn accesskit_node_query(
+        &self,
+        element: TrustedNodeAddress,
+    ) -> Option<accesskit::Node> {
+        self.layout_reflow(QueryMsg::AccessKitNodeQuery);
+        self.layout.borrow().query_accesskit_node(element)
+    }
+
     /// If the given |browsing_context_id| refers to an `<iframe>` that is an element
     /// in this [`Window`] and that `<iframe>` has been laid out, return its size.
     /// Otherwise, return `None`.
@@ -3282,9 +3329,9 @@ impl Window {
         };
         Some(HitTestResult {
             node: from_opaque_node(item.node),
-            dom_position_for_selection: result
-                .dom_position_for_selection
-                .map(|(node, offset)| (from_opaque_node(node), offset)),
+            dom_position_for_selection: result.dom_position_for_selection.map(|(node, offset)| {
+                RootedSelectionBoundary::new_with_utf32_offset(from_opaque_node(node), offset)
+            }),
             cursor: item.cursor,
             point_in_node: item.point_in_target,
             point_in_frame,
@@ -4013,7 +4060,7 @@ impl Window {
             player_context,
             throttled: Cell::new(false),
             layout_marker: DomRefCell::new(Rc::new(Cell::new(true))),
-            current_event: DomRefCell::new(None),
+            current_event: MutNullableDom::new(None),
             trusted_types: Default::default(),
             reporting_observer_list: Default::default(),
             report_list: Default::default(),
