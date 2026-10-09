@@ -3,7 +3,7 @@
 /etc/ci/                                    @AxelBattigelli
 
 # Rewiers for ports/aether
-/ports/aether/                              @AxelBattigelli @Mambokara @Toteri2 
+/ports/aether/                              @AxelBattigelli @Mambokara 
 
 # Reviewers for the `script` crate
 #/components/script/  @gterzian
