@@ -8,7 +8,6 @@ use std::io::{Read, Seek, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::{Bytes, BytesMut};
-use crossbeam_channel::Sender;
 use cssparser::SourceLocation;
 use encoding_rs::UTF_8;
 use js::context::JSContext;
@@ -19,7 +18,6 @@ use net_traits::{
     ResourceFetchTiming,
 };
 use servo_arc::Arc;
-use servo_base::id::PipelineId;
 use servo_config::pref;
 use servo_url::ServoUrl;
 use style::context::QuirksMode;
@@ -50,9 +48,7 @@ use crate::dom::window::CSSErrorReporter;
 use crate::event_loop::document_loader::LoadType;
 use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
-use crate::messaging::{CommonScriptMsg, MainThreadScriptMsg};
-use crate::runtime::script_runtime::ScriptThreadEventCategory;
-use crate::tasks::task_source::TaskSourceName;
+use crate::tasks::task_source::SendableTaskSource;
 use crate::unminify::{
     BeautifyFileType, create_output_file, create_temp_files, execute_js_beautify,
 };
@@ -361,10 +357,7 @@ impl FetchResponseListener for StylesheetContext {
             self.origin_clean = false;
         }
 
-        self.metadata = metadata.ok().map(|m| match m {
-            FetchMetadata::Unfiltered(m) => m,
-            FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-        });
+        self.metadata = metadata.ok().map(Into::into);
     }
 
     fn process_response_chunk(
@@ -579,25 +572,22 @@ impl ElementStylesheetLoader<'_> {
             },
             ElementStylesheetLoader::Asynchronous(asynchronous_loader) => {
                 let css_error_reporter = window.css_error_reporter().clone();
+                let task_source = window
+                    .as_global_scope()
+                    .task_manager()
+                    .networking_task_source()
+                    .to_sendable();
 
                 let parse_stylesheet = move || {
-                    let pipeline_id = asynchronous_loader.pipeline_id;
-                    let main_thread_sender = asynchronous_loader.main_thread_sender.clone();
                     let loader = ElementStylesheetLoader::Asynchronous(asynchronous_loader);
                     let stylesheet =
                         listener.parse(quirks_mode, shared_lock, &css_error_reporter, loader);
 
-                    let task = task!(finish_parsing_of_stylesheet_on_main_thread: move |cx| {
-                        listener.do_post_parse_tasks(true, stylesheet, cx);
-                    });
-                    let _ = main_thread_sender.send(MainThreadScriptMsg::Common(
-                        CommonScriptMsg::Task(
-                            ScriptThreadEventCategory::StylesheetLoad,
-                            Box::new(task),
-                            Some(pipeline_id),
-                            TaskSourceName::Networking,
-                        ),
-                    ));
+                    task_source.queue(
+                        task!(finish_parsing_of_stylesheet_on_main_thread: move |cx| {
+                            listener.do_post_parse_tasks(true, stylesheet, cx);
+                        }),
+                    );
                 };
 
                 let thread_pool = STYLE_THREAD_POOL.pool();
@@ -676,31 +666,20 @@ impl StyleStylesheetLoader for ElementStylesheetLoader<'_> {
             },
             ElementStylesheetLoader::Asynchronous(AsynchronousStylesheetLoader {
                 element,
-                main_thread_sender,
-                pipeline_id,
+                task_source,
             }) => {
                 let element = element.clone();
-                let task = task!(load_import_stylesheet_on_main_thread: move || {
-                    // TODO: https://github.com/servo/servo/issues/44685
-                    #[expect(unsafe_code)]
-                    let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
+                task_source.queue(task!(load_import_stylesheet_on_main_thread: move |cx| {
                     Self::load_with_element(
-                        &mut cx,
+                        cx,
                         &element.root(),
                         source,
                         media,
                         resolved_url.into(),
                         None,
-                        String::new()
+                        String::new(),
                     );
-                });
-                let _ =
-                    main_thread_sender.send(MainThreadScriptMsg::Common(CommonScriptMsg::Task(
-                        ScriptThreadEventCategory::StylesheetLoad,
-                        Box::new(task),
-                        Some(*pipeline_id),
-                        TaskSourceName::Networking,
-                    )));
+                }));
             },
         }
 
@@ -710,8 +689,7 @@ impl StyleStylesheetLoader for ElementStylesheetLoader<'_> {
 
 pub(crate) struct AsynchronousStylesheetLoader {
     element: Trusted<HTMLElement>,
-    main_thread_sender: Sender<MainThreadScriptMsg>,
-    pipeline_id: PipelineId,
+    task_source: SendableTaskSource,
 }
 
 impl AsynchronousStylesheetLoader {
@@ -719,8 +697,11 @@ impl AsynchronousStylesheetLoader {
         let window = element.owner_window();
         Self {
             element: Trusted::new(element),
-            main_thread_sender: window.main_thread_script_chan().clone(),
-            pipeline_id: window.pipeline_id(),
+            task_source: window
+                .as_global_scope()
+                .task_manager()
+                .networking_task_source()
+                .into(),
         }
     }
 }

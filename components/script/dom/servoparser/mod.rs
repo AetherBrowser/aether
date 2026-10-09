@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::mem;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose;
@@ -67,7 +68,9 @@ use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::csp::parse_csp_list_from_metadata;
 use crate::dom::customelementregistry::{CustomElementReactionStack, CustomElementRegistry};
-use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument};
+use crate::dom::document::{
+    AbortReason, Document, HasBrowsingContext, IsHTMLDocument, SetParserReason,
+};
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::documenttype::DocumentType;
 use crate::dom::domstringlist::DOMStringList;
@@ -224,9 +227,15 @@ impl ServoParser {
         //
         // Set as the document's current parser and initialize with `input`, if given.
         if let Some(input) = input {
-            parser.parse_complete_string_chunk(cx, String::from(input));
+            parser.parse_complete_string_chunk(
+                cx,
+                String::from(input),
+                SetParserReason::ParsingHtmlDocument,
+            );
         } else {
-            parser.document.set_current_parser(Some(&parser));
+            parser
+                .document
+                .set_current_parser(Some(&parser), SetParserReason::ParsingHtmlDocument);
         }
     }
 
@@ -306,7 +315,11 @@ impl ServoParser {
             None,
             None,
         );
-        parser.parse_complete_string_chunk(cx, String::from(input));
+        parser.parse_complete_string_chunk(
+            cx,
+            String::from(input),
+            SetParserReason::ParsingHtmlFragment,
+        );
 
         // Step 14.
         let root_element = document.GetDocumentElement().expect("no document element");
@@ -333,7 +346,7 @@ impl ServoParser {
             None,
             None,
         );
-        document.set_current_parser(Some(&parser));
+        document.set_current_parser(Some(&parser), SetParserReason::ParsingHtmlScriptInput);
     }
 
     pub(crate) fn parse_xml_document(
@@ -354,9 +367,15 @@ impl ServoParser {
 
         // Set as the document's current parser and initialize with `input`, if given.
         if let Some(input) = input {
-            parser.parse_complete_string_chunk(cx, String::from(input));
+            parser.parse_complete_string_chunk(
+                cx,
+                String::from(input),
+                SetParserReason::ParsingXmlDocument,
+            );
         } else {
-            parser.document.set_current_parser(Some(&parser));
+            parser
+                .document
+                .set_current_parser(Some(&parser), SetParserReason::ParsingXmlDocument);
         }
     }
 
@@ -478,7 +497,7 @@ impl ServoParser {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-parser>
-    pub(crate) fn abort(&self, cx: &mut JSContext) {
+    pub(crate) fn abort(&self, cx: &mut JSContext, reason: AbortReason) {
         assert!(!self.aborted.get());
         self.aborted.set(true);
 
@@ -492,7 +511,8 @@ impl ServoParser {
 
         // Step 3.
         self.tokenizer.end(cx);
-        self.document.set_current_parser(None);
+        self.document
+            .set_current_parser(None, SetParserReason::Abort(reason));
 
         // Step 4.
         self.document
@@ -676,8 +696,13 @@ impl ServoParser {
         }
     }
 
-    fn parse_complete_string_chunk(&self, cx: &mut JSContext, input: String) {
-        self.document.set_current_parser(Some(self));
+    fn parse_complete_string_chunk(
+        &self,
+        cx: &mut JSContext,
+        input: String,
+        reason: SetParserReason,
+    ) {
+        self.document.set_current_parser(Some(self), reason);
         self.push_string_input_chunk(input);
         self.last_chunk_received.set(true);
         if !self.suspended.get() {
@@ -688,7 +713,8 @@ impl ServoParser {
     fn parse_bytes_chunk(&self, cx: &mut JSContext, input: &[u8]) {
         let mut realm = enter_auto_realm(cx, &*self.document);
         let cx = &mut realm.current_realm();
-        self.document.set_current_parser(Some(self));
+        self.document
+            .set_current_parser(Some(self), SetParserReason::ParsingBytesChunk);
         self.push_bytes_input_chunk(input.as_ref());
         if !self.suspended.get() {
             self.parse_sync(cx);
@@ -768,7 +794,8 @@ impl ServoParser {
         self.document
             .update_the_current_document_readiness(cx, DocumentReadyState::Interactive);
         // Step 4. Pop all the nodes off the stack of open elements.
-        self.document.set_current_parser(None);
+        self.document
+            .set_current_parser(None, SetParserReason::FinishingParser);
         // Step 5. While the list of scripts that will execute when the document has finished parsing is not empty:
         self.document.start_the_end_loading_phase();
         let url = self.tokenizer.url().clone();
@@ -901,7 +928,7 @@ impl Tokenizer {
 /// of the struct when used in loading document spec algorithms.
 struct NavigationParams {
     /// <https://html.spec.whatwg.org/multipage/#navigation-params-policy-container>
-    policy_container: PolicyContainer,
+    policy_container: Arc<PolicyContainer>,
     /// content-type of this document, if known. Otherwise need to sniff it
     content_type: Option<Mime>,
     /// link headers from the response
@@ -981,11 +1008,11 @@ impl ParserContext {
         }
     }
 
-    pub(crate) fn set_policy_container(&mut self, policy_container: Option<&PolicyContainer>) {
+    pub(crate) fn set_policy_container(&mut self, policy_container: Option<Arc<PolicyContainer>>) {
         let Some(policy_container) = policy_container else {
             return;
         };
-        self.navigation_params.policy_container = policy_container.clone();
+        self.navigation_params.policy_container = policy_container;
     }
 
     pub(crate) fn set_about_base_url(&mut self, about_base_url: Option<ServoUrl>) {
@@ -1328,7 +1355,7 @@ impl ParserContext {
         // `Document::update_the_current_document_readiness`.
         debug_assert_eq!(document.ReadyState(), DocumentReadyState::Complete);
 
-        document.set_current_parser(None);
+        document.set_current_parser(None, SetParserReason::AboutBlankComplete);
         document.finish_load(LoadType::PageSource(self.url.clone()), cx);
 
         document.notify_embedder_of_load_completion();
@@ -1343,13 +1370,7 @@ impl ParserContext {
         meta_result: Result<FetchMetadata, NetworkError>,
     ) {
         let (metadata, mut error) = match meta_result {
-            Ok(meta) => (
-                Some(match meta {
-                    FetchMetadata::Unfiltered(m) => m,
-                    FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-                }),
-                None,
-            ),
+            Ok(meta) => (Some(meta.into()), None),
             Err(error) => (
                 // Check variant without moving
                 match &error {
@@ -1491,7 +1512,7 @@ impl ParserContext {
             self.parser = Some(Trusted::new(&*parser));
         }
         self.navigation_params = NavigationParams {
-            policy_container,
+            policy_container: Arc::new(policy_container),
             content_type,
             final_sandboxing_flag_set,
             link_headers,

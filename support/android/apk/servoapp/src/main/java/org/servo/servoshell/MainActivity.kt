@@ -11,7 +11,6 @@ import android.os.Bundle
 import android.system.ErrnoException
 import android.system.Os
 import android.util.Log
-import android.view.inputmethod.InputMethodManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -53,7 +52,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.content.getSystemService
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
@@ -65,14 +63,13 @@ import org.servo.servoview.ServoNavigator
 import org.servo.servoview.ServoView
 
 class MainActivity : ComponentActivity(), Servo.Client {
-    private lateinit var servoView: ServoView
-
     private val urlTextFieldState = TextFieldState()
     private var isRefreshing by mutableStateOf(false)
     private lateinit var mediaSession: MediaSession
     private lateinit var historyManager: HistoryManager
     private var currentUrl = ""
     private var currentTitle = ""
+    private var softKeyboardVisible by mutableStateOf(false)
     private var alertMessage by mutableStateOf<String?>(null)
 
     private class Settings(preferences: SharedPreferences) {
@@ -85,20 +82,25 @@ class MainActivity : ComponentActivity(), Servo.Client {
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         var settings = Settings(sharedPreferences)
         val navigator = ServoNavigator()
-        servoView =
+        val servo =
+            Servo(
+                args = intent.getStringExtra("servoargs"),
+                url = if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
+                logStr = intent.getStringExtra("servolog"),
+                experimentalMode = settings.experimental,
+                scope = lifecycleScope,
+                client = this,
+                context = this,
+                navigator = navigator,
+            )
+        val servoView =
             ServoView(
                 context = this,
-                client = this,
-                servoArgs = intent.getStringExtra("servoargs"),
-                servoLog = intent.getStringExtra("servolog"),
-                experimentalMode = settings.experimental,
-                initialUri =
-                    if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
+                servo = servo,
                 navigator = navigator,
-                scope = lifecycleScope,
             )
 
-        mediaSession = MediaSession(servoView, applicationContext)
+        mediaSession = MediaSession(servo, applicationContext)
         historyManager = HistoryManager(this)
 
         val historyActivityResultLauncher =
@@ -117,7 +119,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
             LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                 val updatedSettings = Settings(sharedPreferences)
                 if (updatedSettings.experimental != settings.experimental) {
-                    servoView.setExperimentalMode(updatedSettings.experimental)
+                    servo.setExperimentalMode(updatedSettings.experimental)
                 }
                 settings = updatedSettings
             }
@@ -254,6 +256,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
             ) { innerPadding ->
                 Servo(
                     servoView = servoView,
+                    softKeyboardVisible = softKeyboardVisible,
                     modifier = Modifier.padding(innerPadding).focusRequester(servoFocusRequester),
                 )
                 BackHandler(enabled = navigator.canGoBack) { navigator.back() }
@@ -313,13 +316,11 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     override fun onImeShow() {
-        getSystemService<InputMethodManager>()
-            ?.showSoftInput(servoView, InputMethodManager.SHOW_IMPLICIT)
+        softKeyboardVisible = true
     }
 
     override fun onImeHide() {
-        getSystemService<InputMethodManager>()
-            ?.hideSoftInputFromWindow(servoView.windowToken, InputMethodManager.HIDE_IMPLICIT_ONLY)
+        softKeyboardVisible = false
     }
 
     override fun onAlert(message: String) {

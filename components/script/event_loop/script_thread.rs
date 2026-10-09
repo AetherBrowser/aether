@@ -133,7 +133,9 @@ use crate::dom::customelementregistry::{
     CallbackReaction, CustomElementDefinition, CustomElementReactionStack,
 };
 use crate::dom::document::focus::FocusableArea;
-use crate::dom::document::{Document, HasBrowsingContext, IsHTMLDocument, RenderingUpdateReason};
+use crate::dom::document::{
+    AbortReason, Document, HasBrowsingContext, IsHTMLDocument, RenderingUpdateReason,
+};
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::{HTMLIFrameElement, IframeContext, ProcessingMode};
@@ -3292,7 +3294,7 @@ impl ScriptThread {
             );
 
             if let Some(parser) = document.get_current_parser() {
-                parser.abort(cx);
+                parser.abort(cx, AbortReason::PipelineExited);
             }
 
             if !document.window_detached() {
@@ -4416,7 +4418,7 @@ impl ScriptThread {
         self.incomplete_loads.borrow_mut().push(incomplete);
 
         context.process_response(self, cx, Ok(FetchMetadata::Unfiltered(meta)));
-        context.set_policy_container(policy_container.as_ref());
+        context.set_policy_container(policy_container);
         context.set_about_base_url(about_base_url);
         context.process_response_chunk(cx, chunk.into());
         context.process_response_eof(
@@ -4461,7 +4463,7 @@ impl ScriptThread {
             source_origin,
         );
         context.process_response(self, cx, Ok(FetchMetadata::Unfiltered(meta)));
-        context.set_policy_container(policy_container.as_ref());
+        context.set_policy_container(policy_container);
         context.set_about_base_url(about_base_url);
         context.process_response_chunk(cx, Bytes::copy_from_slice(&chunk));
         context.process_response_eof(

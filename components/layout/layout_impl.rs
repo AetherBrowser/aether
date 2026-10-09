@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
-use accesskit::ActionRequest;
+use accesskit::{ActionRequest, Node};
 use app_units::Au;
 use bitflags::bitflags;
 use embedder_traits::{
@@ -25,8 +25,8 @@ use layout_api::{
     DangerousStyleNode, HitTestFlags, HitTestResult, IFrameSizes, Layout, LayoutConfig,
     LayoutDamage, LayoutElement, LayoutFactory, LayoutNode, NodeRenderingType,
     OffsetParentResponse, PhysicalSides, QueryMsg, ReflowGoal, ReflowPhasesRun, ReflowRequest,
-    ReflowRequestRestyle, ReflowResult, ReflowStatistics, ScrollContainerQueryFlags,
-    ScrollContainerResponse, TrustedNodeAddress, with_layout_state,
+    ReflowRequestAccessibility, ReflowRequestRestyle, ReflowResult, ReflowStatistics,
+    ScrollContainerQueryFlags, ScrollContainerResponse, TrustedNodeAddress, with_layout_state,
 };
 use log::{debug, warn};
 use malloc_size_of::{MallocConditionalSizeOf, MallocSizeOf, MallocSizeOfOps};
@@ -39,7 +39,7 @@ use profile_traits::time::{
     self as profile_time, TimerMetadata, TimerMetadataFrameType, TimerMetadataReflowType,
 };
 use profile_traits::{path, time_profile};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use script::layout_dom::{
     ServoDangerousStyleDocument, ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode,
 };
@@ -228,7 +228,7 @@ pub struct LayoutThread {
     accessibility_tree: RefCell<Option<AccessibilityTree>>,
 
     /// See [Layout::force_accessibility_update()].
-    force_accessibility_update: Cell<bool>,
+    force_accessibility_update_if_active: Cell<bool>,
 
     /// Accessibility action requests which have arrived from assistive technology since the last
     /// reflow, in chronological order.
@@ -531,6 +531,15 @@ impl Layout for LayoutThread {
         })
     }
 
+    fn query_accesskit_node(&self, node: TrustedNodeAddress) -> Option<Node> {
+        with_layout_state(|| {
+            let node = unsafe { ServoLayoutNode::new(&node) };
+            let accessibility_tree = self.accessibility_tree.borrow();
+            let accessibility_tree = accessibility_tree.as_ref()?;
+            accessibility_tree.accesskit_node_for_dom_node(&node)
+        })
+    }
+
     #[servo_tracing::instrument(skip_all)]
     fn query_resolved_font_style(
         &self,
@@ -727,7 +736,7 @@ impl Layout for LayoutThread {
                 accessibility_tree.add_pending_scroll_updates(offsets);
             };
 
-            self.set_force_accessibility_update();
+            self.set_force_accessibility_update_if_active();
         }
     }
 
@@ -759,7 +768,7 @@ impl Layout for LayoutThread {
             return;
         }
 
-        self.set_force_accessibility_update();
+        self.set_force_accessibility_update_if_active();
         let mut accessibility_tree = self.accessibility_tree.borrow_mut();
         if accessibility_tree.is_none() {
             *accessibility_tree = Some(AccessibilityTree::new(self.id.into(), epoch));
@@ -771,7 +780,10 @@ impl Layout for LayoutThread {
     }
 
     fn needs_accessibility_update(&self) -> bool {
-        if self.force_accessibility_update.get() {
+        if !self.accessibility_active() {
+            return false;
+        }
+        if self.force_accessibility_update_if_active.get() {
             return true;
         }
         if !self.pending_accessibility_actions.borrow().is_empty() {
@@ -781,8 +793,8 @@ impl Layout for LayoutThread {
         false
     }
 
-    fn set_force_accessibility_update(&self) {
-        self.force_accessibility_update.set(true);
+    fn set_force_accessibility_update_if_active(&self) {
+        self.force_accessibility_update_if_active.set(true);
     }
 
     fn handle_accessibility_action(&self, action_request: ActionRequest) {
@@ -863,7 +875,7 @@ impl LayoutThread {
             user_stylesheets: config.user_stylesheets,
             accessibility_active: Cell::new(false),
             accessibility_tree: Default::default(),
-            force_accessibility_update: Cell::new(false),
+            force_accessibility_update_if_active: Cell::new(false),
             pending_accessibility_actions: RefCell::new(vec![]),
             web_font_finished_loading_callback: Arc::new(web_font_finished_loading_callback)
                 as StylesheetWebFontLoadFinishedCallback,
@@ -904,7 +916,7 @@ impl LayoutThread {
             return false;
         }
         // If the accessibility tree needs an update, we need reflow to build the accessibility tree.
-        if self.needs_accessibility_update() || reflow_request.accessibility_damage.is_some() {
+        if self.needs_accessibility_update() || reflow_request.accessibility.is_some() {
             return false;
         }
 
@@ -966,10 +978,13 @@ impl LayoutThread {
         &self,
         root_element: &ServoLayoutNode,
         accessibility_damage: Option<AccessibilityDamageMap>,
-        rooted_nodes: Option<FxHashSet<OpaqueNode>>,
+        reflow_accessibility: Option<ReflowRequestAccessibility>,
         pending_accessibility_actions: &mut Vec<AccessibilityActionRequest>,
         reflow_statistics: &mut ReflowStatistics,
     ) -> bool {
+        let Some(reflow_accessibility) = reflow_accessibility else {
+            return false;
+        };
         let Some(damage) = accessibility_damage else {
             return false;
         };
@@ -984,9 +999,6 @@ impl LayoutThread {
 
         let accessibility_tree = &mut *accessibility_tree;
 
-        // Check for the stacking context tree before draining any state out of `reflow_request`, so
-        // that we don't discard accessibility damage if it is missing. In practice it is always
-        // present here, since we only reach this method for an `UpdateTheRendering` reflow.
         let stacking_context_tree = self.stacking_context_tree.borrow();
         let Some(stacking_context_tree) = stacking_context_tree.as_ref() else {
             return false;
@@ -996,6 +1008,8 @@ impl LayoutThread {
         let accessibility_context = AccessibilityContext {
             layout_thread: self,
             stacking_context_tree,
+            focused_element: reflow_accessibility.focused_element,
+            rooted_nodes_for_integrity_check: reflow_accessibility.rooted_nodes_for_integrity_check,
         };
 
         let action_requests = self.pending_accessibility_actions.take();
@@ -1005,7 +1019,6 @@ impl LayoutThread {
             damage,
             action_requests,
             accessibility_context,
-            rooted_nodes,
         );
         if let Some(tree_update) = tree_update {
             // FIXME: Handle send error. Could have a method on accessibility tree to
@@ -1025,7 +1038,7 @@ impl LayoutThread {
         reflow_statistics.nodes_updated_bounds = counters.nodes_updated_bounds;
         reflow_statistics.nodes_in_tree_update = counters.nodes_in_tree_update;
 
-        self.force_accessibility_update.set(false);
+        self.force_accessibility_update_if_active.set(false);
 
         *pending_accessibility_actions = accessibility_tree.take_pending_actions();
 
@@ -1071,8 +1084,12 @@ impl LayoutThread {
         });
         let mut reflow_statistics = Default::default();
 
-        let mut accessibility_damage =
-            to_accessibility_damage_map(std::mem::take(&mut reflow_request.accessibility_damage));
+        let mut reflow_accessibility = std::mem::take(&mut reflow_request.accessibility);
+        let mut accessibility_damage = to_accessibility_damage_map(
+            reflow_accessibility
+                .as_mut()
+                .map(|accessibility| std::mem::take(&mut accessibility.damage)),
+        );
 
         let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
             .restyle_and_build_trees(
@@ -1096,7 +1113,7 @@ impl LayoutThread {
         if self.handle_accessibility_tree_update(
             &root_element.as_node(),
             accessibility_damage,
-            reflow_request.rooted_nodes_for_accessibility_integrity_check,
+            reflow_accessibility,
             &mut pending_accessibility_actions,
             &mut reflow_statistics,
         ) {
@@ -1638,7 +1655,7 @@ impl LayoutThread {
 
                 // Ensure the scroll updates are applied in the accessibility tree and sent to the
                 // embedder, even if there are no other changes which affect the accessibility tree.
-                self.set_force_accessibility_update();
+                self.set_force_accessibility_update_if_active();
             }
             true
         } else {
@@ -2029,6 +2046,7 @@ impl ReflowPhases {
                 QueryMsg::NodesFromPointQuery => {
                     Self::StackingContextTreeConstruction | Self::DisplayListConstruction
                 },
+                QueryMsg::AccessKitNodeQuery |
                 QueryMsg::BoxArea |
                 QueryMsg::BoxAreas |
                 QueryMsg::ElementsFromPoint |
