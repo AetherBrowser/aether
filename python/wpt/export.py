@@ -25,16 +25,16 @@ def main() -> int:
     logging.getLogger().level = logging.INFO
 
     success = WPTSync(
-        servo_repo="servo/servo",
+        servo_repo="AetherBrowser/aether",
         wpt_repo="web-platform-tests/wpt",
-        downstream_wpt_repo="servo/wpt",
+        downstream_wpt_repo="AetherBrowser/wpt",
         servo_path="./servo",
         wpt_path="./wpt",
         github_api_token=os.environ["WPT_SYNC_TOKEN"],
         github_api_url="https://api.github.com/",
-        github_username="servo-wpt-sync",
-        github_email="ghbot+wpt-sync@servo.org",
-        github_name="Servo WPT Sync",
+        github_username="AxelBattigelli",
+        github_email="146363061+AxelBattigelli@users.noreply.github.com",
+        github_name="Axel Battigelli",
     ).run(github_event)
     return 0 if success else 1
 
