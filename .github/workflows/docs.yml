@@ -7,10 +7,10 @@ on:
 
 jobs:
   upload-docs:
-    # This job is only useful when run on upstream servo.
-    if: github.repository == 'servo/servo' || github.event_name == 'workflow_dispatch'
+    # This job is only useful when run on upstream aether.
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Upload docs to GitHub Pages
-    runs-on: ubuntu-22.04
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6
       - name: Free Disk Space (Ubuntu)
@@ -45,8 +45,8 @@ jobs:
           git init
           git add .
           git -c user.name="Workflow" -c user.email="" \
-              commit -q -m "Rebuild Servo documentation"
-          git remote add origin https://git:${DOC_SERVO_ORG}@github.com/servo/doc.servo.org
+              commit -q -m "Rebuild Aether documentation"
+          git remote add origin https://git:${DOC_SERVO_ORG}@github.com/aetherbrowser/doc.aetherbrowser.org
           git push --force origin main:gh-pages
         env:
           DOC_SERVO_ORG: ${{ secrets.DOC_SERVO_ORG }}
