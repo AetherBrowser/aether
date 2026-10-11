@@ -59,7 +59,7 @@ pub trait DomHelpers<D: DomTypes> {
     fn push_new_element_queue();
     fn pop_current_element_queue(cx: &mut JSContext);
 
-    fn reflect_dom_object_with_cx<T, U>(cx: &mut JSContext, obj: Box<T>, global: &U) -> DomRoot<T>
+    fn reflect_dom_object<T, U>(cx: &mut JSContext, obj: Box<T>, global: &U) -> DomRoot<T>
     where
         T: DomObject + DomObjectWrap<D>,
         U: DerivedFrom<D::GlobalScope>;
@@ -149,4 +149,12 @@ pub trait WindowHelpers {
 
 pub trait HasOrigin {
     fn origin(&self) -> MutableOrigin;
+}
+
+/// Helper trait to allow script_webcrypto access SubtleCrypto in script crate. Temporarily used
+/// until SubtleCrypto is moved from script crate to script_webcrypto crate.
+#[cfg(feature = "webcrypto")]
+#[allow(clippy::new_ret_no_self)]
+pub trait SubtleCryptoHelpers<D: DomTypes> {
+    fn new(cx: &mut JSContext, global: &D::GlobalScope) -> DomRoot<D::SubtleCrypto>;
 }

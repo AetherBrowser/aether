@@ -40,16 +40,16 @@ use crate::dom::csp::CspReporting;
 use crate::dom::document::RefreshRedirectDue;
 use crate::dom::eventsource::EventSourceTimeoutCallback;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::globalscope::script_execution::RethrowErrors;
-use crate::dom::script_execution::ScriptOptions;
 #[cfg(feature = "testbinding")]
 use crate::dom::testbinding::TestBindingCallback;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::types::Window;
 use crate::dom::xmlhttprequest::XHRTimeoutCallback;
 use crate::event_loop::script_thread::ScriptThread;
-use crate::modules::script_module::{ScriptFetchOptions, module_script_from_reference_private};
 use crate::runtime::script_runtime::IntroductionType;
+use crate::scripting::fetching_options::ScriptFetchOptions;
+use crate::scripting::script_execution::{RethrowErrors, ScriptOptions};
+use crate::scripting::script_module::module_script_from_reference_private;
 use crate::tasks::task_source::SendableTaskSource;
 
 type TimerKey = i32;
@@ -442,7 +442,7 @@ impl OneshotTimers {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#timer-initialisation-steps>
-    pub(crate) fn fire_timer(&self, id: TimerEventId, cx: &mut JSContext) {
+    pub(crate) fn fire_timer(&self, cx: &mut JSContext, id: TimerEventId) {
         // Step 9.2. If id does not exist in global's map of setTimeout and setInterval IDs, then abort these steps.
         let expected_id = self.expected_event_id.get();
         if expected_id != id {
@@ -1089,7 +1089,7 @@ impl TimerListener {
                     None => return,
                 },
             };
-            global.fire_timer(id, cx);
+            global.fire_timer(cx, id);
         }));
     }
 
@@ -1101,6 +1101,7 @@ impl TimerListener {
 
 #[derive(Clone, JSTraceable, MallocSizeOf)]
 pub(crate) struct InitiatingScriptFetchInfo {
+    #[no_trace]
     fetch_options: ScriptFetchOptions,
     #[no_trace]
     base_url: ServoUrl,
