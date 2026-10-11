@@ -2,7 +2,6 @@
 and it should go at the top of the pull request.*
 
 Testing: *Describe the new automated tests that cover this change or explain why it doesn't require tests.*
-Fixes: *Link to an issue this pull request fixes or remove this line if there is no issue.*
 
 ### Checklist
 - [ ] **Self-review:** I reviewed all of my code before submitting this PR.
