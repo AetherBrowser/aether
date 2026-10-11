@@ -27,16 +27,56 @@
 
       html,
       body {
+        height: 100%;
         margin: 0;
         background: var(--bg);
         color: var(--text);
         font-family: sans-serif;
       }
 
+      .layout {
+        display: flex;
+        height: 100%;
+        min-height: 100%;
+      }
+
+      nav {
+        flex: 0 0 14rem;
+        box-sizing: border-box;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        padding: 12px 8px;
+        overflow: auto;
+      }
+
+      nav a {
+        display: block;
+        margin: 2px 0;
+        padding: 8px 12px;
+        border-radius: 6px;
+        color: inherit;
+        text-decoration: none;
+      }
+
+      nav a:hover {
+        background: var(--bg);
+      }
+
+      nav a[aria-current="page"] {
+        background: var(--accent);
+        color: #fff;
+      }
+
       main {
+        flex: 1;
+        min-width: 0;
+        overflow: auto;
+        padding: 24px 16px 48px;
+      }
+
+      main section {
         max-width: 40rem;
         margin: 0 auto;
-        padding: 24px 16px 48px;
       }
 
       h1 {
@@ -141,8 +181,18 @@
     </style>
   </head>
   <body>
-    <main>
-      <section id="search" hidden>
+    <div class="layout">
+      <nav aria-label="Settings sections">
+        <a href="#home">Home and startup</a>
+        <a href="#search">Search</a>
+        <a href="#download">Downloads</a>
+        <a href="#appearance">Appearance</a>
+      </nav>
+      <main>
+        <section id="home" hidden>
+          <h2>Home and startup</h2>
+        </section>
+        <section id="search" hidden>
         <h2>Search</h2>
         <p id="search-error" role="alert"></p>
         <label for="default-engine">Default search engine</label>
@@ -173,7 +223,14 @@
           <button type="button" id="add-builtin">Add</button>
         </div>
       </section>
-    </main>
+        <section id="download" hidden>
+          <h2>Downloads</h2>
+        </section>
+        <section id="appearance" hidden>
+          <h2>Appearance</h2>
+        </section>
+      </main>
+    </div>
     <script>
       const defaultEngine = document.getElementById("default-engine");
       const engineList = document.getElementById("engine-list");
@@ -258,10 +315,21 @@
       });
 
       const searchPane = document.getElementById("search");
+      const sectionIds = ["home", "search", "download", "appearance"];
 
       function showCurrentPane() {
+        const requested = location.hash.slice(1);
+        const current = sectionIds.includes(requested) ? requested : "home";
+        for (const id of sectionIds) {
+          document.getElementById(id).hidden = id !== current;
+          const link = document.querySelector('nav a[href="#' + id + '"]');
+          if (id === current) {
+            link.setAttribute("aria-current", "page");
+          } else {
+            link.removeAttribute("aria-current");
+          }
+        }
         const showSearch = location.hash === "#search";
-        searchPane.hidden = !showSearch;
         if (showSearch && !searchPane.dataset.loaded) {
           searchPane.dataset.loaded = "1";
           apply();

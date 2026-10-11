@@ -389,6 +389,13 @@ fn settings_page_has_a_search_section() {
     let html = include_str!("../../resources/resource_protocol/settings.html");
     assert!(html.contains("<title>Settings</title>"));
     assert!(html.contains("<section id=\"search\" hidden>"));
+    assert!(html.contains("href=\"#home\""));
+    assert!(html.contains("href=\"#search\""));
+    assert!(html.contains("href=\"#download\""));
+    assert!(html.contains("href=\"#appearance\""));
+    assert!(html.contains("Home and startup"));
+    assert!(html.contains(">Downloads<"));
+    assert!(html.contains(">Appearance<"));
     assert!(html.contains("location.hash === \"#search\""));
     assert!(html.contains("servo:search-engines"));
     assert!(html.contains("Default search engine"));
