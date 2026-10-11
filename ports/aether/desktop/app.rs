@@ -85,6 +85,10 @@ impl App {
             self.opts.config_dir.clone(),
             self.servoshell_preferences.search_engines.clone(),
         );
+        crate::home::install_home_settings(
+            self.opts.config_dir.clone(),
+            self.servoshell_preferences.home_settings.clone(),
+        );
 
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(

@@ -394,12 +394,30 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("href=\"#download\""));
     assert!(html.contains("href=\"#appearance\""));
     assert!(html.contains("Home and startup"));
+    assert!(html.contains("id=\"new-windows\""));
+    assert!(html.contains("Aether home page"));
+    assert!(html.contains(">URL<"));
+    assert!(html.contains("Blank page"));
+    assert!(html.contains("id=\"new-tabs\""));
+    assert!(html.contains("id=\"show-search\""));
+    assert!(html.contains("Aether logo"));
+    assert!(html.contains("servo:home"));
     assert!(html.contains(">Downloads<"));
     assert!(html.contains(">Appearance<"));
     assert!(html.contains("location.hash === \"#search\""));
     assert!(html.contains("servo:search-engines"));
     assert!(html.contains("Default search engine"));
     assert!(html.contains("Add a search engine"));
+}
+
+#[test]
+fn new_tab_page_follows_home_content_preferences() {
+    let html = include_str!("../../resources/resource_protocol/newtab.html");
+    assert!(html.contains("id=\"home-logo\""));
+    assert!(html.contains("id=\"home-search\""));
+    assert!(html.contains("servo:home"));
+    assert!(html.contains("showLogo"));
+    assert!(html.contains("showSearch"));
 }
 
 #[test]

@@ -13,6 +13,7 @@
 //! - servo:process-list
 //! - servo:history
 //! - servo:settings
+//! - servo:home
 //! - servo:search-engines
 
 use std::future::Future;
@@ -107,6 +108,15 @@ impl ProtocolHandler for ServoProtocolHandler {
                 context,
                 "/settings.html",
             ),
+
+            "home" => {
+                if request_is_from_web_content(request) {
+                    return Box::pin(std::future::ready(Response::network_error(
+                        NetworkError::ResourceLoadError("Forbidden".to_owned()),
+                    )));
+                }
+                json_response(request, crate::home::handle_home_request(url.query()))
+            },
 
             "search-engines" => {
                 if request_is_from_settings_page(request) {

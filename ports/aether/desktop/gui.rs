@@ -61,8 +61,8 @@ use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
-    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url, processes_url,
-    settings_url,
+    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url, new_window_url,
+    processes_url, settings_url,
 };
 
 /// The user interface of a headed servoshell. Currently this is implemented via
@@ -764,7 +764,7 @@ impl Gui {
                         },
                         Some(AppMenuAction::NewWindow) => {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWindow(
-                                TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
+                                TopLevelWebViewCreationRequest::WithUrl(new_window_url()),
                             ));
                         },
                         Some(AppMenuAction::History) => {

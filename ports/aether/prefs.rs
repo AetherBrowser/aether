@@ -24,6 +24,7 @@ use servo::{
 };
 use url::Url;
 
+use crate::home::{HomeSettings, load_home_settings};
 use crate::search::{SearchEngines, load_search_engines};
 use crate::version;
 
@@ -63,8 +64,13 @@ pub(crate) struct ServoShellPreferences {
     pub clean_shutdown: bool,
     /// Enable native window's titlebar and decorations.
     pub no_native_titlebar: bool,
-    /// URL string of the homepage.
+    /// URL opened for a new window when the command line does not pass one.
+    ///
+    /// Resolved from [`Self::home_settings`]: the Aether home page, a custom URL,
+    /// or `about:blank`.
     pub homepage: String,
+    /// Homepage, new-tab, and Aether home page preferences from `home.json`.
+    pub home_settings: HomeSettings,
     /// Configured search engines: the default, the others, and any the user added.
     ///
     /// Loaded from `search.json` in the config directory. Without that file, this is
@@ -116,7 +122,8 @@ impl Default for ServoShellPreferences {
             clean_shutdown: false,
             device_pixel_ratio_override: None,
             headless: false,
-            homepage: "https://servo.org".into(),
+            homepage: HomeSettings::default().new_window_url(),
+            home_settings: HomeSettings::default(),
             initial_window_size: Size2D::new(1024, 740),
             no_native_titlebar: true,
             screen_size_override: None,
@@ -577,8 +584,8 @@ struct CmdArgs {
     #[bpaf(long)]
     zealous_gc: bool,
 
-    /// The url we should load.
-    #[bpaf(positional("URL"), fallback(String::from("https://www.servo.org")))]
+    /// The url we should load. When omitted, the configured homepage is opened.
+    #[bpaf(positional("URL"), fallback(String::new()))]
     url: String,
 }
 
@@ -707,15 +714,22 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
             default_window_size.min(screen_size_override)
         });
 
-    // Argument-parsing tests must not depend on a search.json on this machine.
+    // Argument-parsing tests must not depend on a search.json or home.json on this machine.
     let search_engines = if cfg!(test) {
         SearchEngines::builtin()
     } else {
         load_search_engines(config_dir.as_deref())
     };
+    let home_settings = if cfg!(test) {
+        HomeSettings::default()
+    } else {
+        load_home_settings(config_dir.as_deref())
+    };
 
     let servoshell_preferences = ServoShellPreferences {
         url: Some(cmd_args.url),
+        homepage: home_settings.new_window_url(),
+        home_settings,
         no_native_titlebar: cmd_args.no_native_titlebar,
         device_pixel_ratio_override: cmd_args.device_pixel_ratio,
         clean_shutdown: cmd_args.clean_shutdown,

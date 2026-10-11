@@ -309,6 +309,10 @@ pub struct App {
 impl App {
     #[servo::servo_tracing::instrument(skip_all, name = "App::new", level = "info")]
     pub(super) fn new(init: AppInitOptions) -> Rc<Self> {
+        crate::home::install_home_settings(
+            init.opts.config_dir.clone(),
+            init.servoshell_preferences.home_settings.clone(),
+        );
         let history = open_history(&init.opts);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)

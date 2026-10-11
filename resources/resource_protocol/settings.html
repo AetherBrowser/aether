@@ -125,7 +125,10 @@
       #default-engine,
       #add-name,
       #add-url,
-      #builtin-engine {
+      #builtin-engine,
+      #new-windows,
+      #new-tabs,
+      #homepage-url {
         width: 100%;
         box-sizing: border-box;
         margin-bottom: 8px;
@@ -178,6 +181,18 @@
         font-size: 0.9rem;
         margin: 0 0 8px;
       }
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+      }
+
+      #home-error {
+        color: #b42318;
+        min-height: 1.2em;
+      }
     </style>
   </head>
   <body>
@@ -191,6 +206,36 @@
       <main>
         <section id="home" hidden>
           <h2>Home and startup</h2>
+          <p id="home-error" role="alert"></p>
+
+          <h3>Homepage</h3>
+          <label for="new-windows">New windows</label>
+          <select id="new-windows">
+            <option value="home">Aether home page</option>
+            <option value="url">URL</option>
+            <option value="blank">Blank page</option>
+          </select>
+          <div id="homepage-url-row" hidden>
+            <label for="homepage-url">URL</label>
+            <input id="homepage-url" type="url" placeholder="https://example.com" />
+          </div>
+
+          <h3>New tabs</h3>
+          <label for="new-tabs">New tabs</label>
+          <select id="new-tabs">
+            <option value="home">Aether home page</option>
+            <option value="blank">Blank page</option>
+          </select>
+
+          <h3>Aether home page</h3>
+          <label class="check" for="show-search">
+            <input id="show-search" type="checkbox" />
+            Search
+          </label>
+          <label class="check" for="show-logo">
+            <input id="show-logo" type="checkbox" />
+            Aether logo
+          </label>
         </section>
         <section id="search" hidden>
         <h2>Search</h2>
@@ -314,6 +359,73 @@
         apply("addBuiltin=" + encodeURIComponent(builtinEngine.value));
       });
 
+      const newWindows = document.getElementById("new-windows");
+      const newTabs = document.getElementById("new-tabs");
+      const homepageUrlRow = document.getElementById("homepage-url-row");
+      const homepageUrl = document.getElementById("homepage-url");
+      const showSearch = document.getElementById("show-search");
+      const showLogo = document.getElementById("show-logo");
+      const homeError = document.getElementById("home-error");
+      const homePane = document.getElementById("home");
+
+      function renderHome(data) {
+        newWindows.value = data.newWindows;
+        homepageUrlRow.hidden = data.newWindows !== "url";
+        if (data.newWindows === "url") {
+          homepageUrl.value = data.homepage || "";
+        }
+        newTabs.value = data.newTabs;
+        showSearch.checked = !!data.showSearch;
+        showLogo.checked = !!data.showLogo;
+      }
+
+      async function applyHome(query) {
+        const url = query ? "servo:home?" + query : "servo:home";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          homeError.textContent = data.error || "";
+          if (data.newWindows) {
+            renderHome(data);
+          }
+        } catch (error) {
+          homeError.textContent = "Could not update homepage settings.";
+        }
+      }
+
+      newWindows.addEventListener("change", () => {
+        homepageUrlRow.hidden = newWindows.value !== "url";
+        if (newWindows.value === "url") {
+          homepageUrl.focus();
+          if (homepageUrl.value.trim()) {
+            applyHome(
+              "newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value)
+            );
+          }
+          return;
+        }
+        applyHome("newWindows=" + encodeURIComponent(newWindows.value));
+      });
+
+      homepageUrl.addEventListener("change", () => {
+        if (newWindows.value !== "url") {
+          return;
+        }
+        applyHome("newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value));
+      });
+
+      newTabs.addEventListener("change", () => {
+        applyHome("newTabs=" + encodeURIComponent(newTabs.value));
+      });
+
+      showSearch.addEventListener("change", () => {
+        applyHome("showSearch=" + showSearch.checked);
+      });
+
+      showLogo.addEventListener("change", () => {
+        applyHome("showLogo=" + showLogo.checked);
+      });
+
       const searchPane = document.getElementById("search");
       const sectionIds = ["home", "search", "download", "appearance"];
 
@@ -329,8 +441,12 @@
             link.removeAttribute("aria-current");
           }
         }
-        const showSearch = location.hash === "#search";
-        if (showSearch && !searchPane.dataset.loaded) {
+        if (current === "home" && !homePane.dataset.loaded) {
+          homePane.dataset.loaded = "1";
+          applyHome();
+        }
+        const showSearchPane = location.hash === "#search";
+        if (showSearchPane && !searchPane.dataset.loaded) {
           searchPane.dataset.loaded = "1";
           apply();
         }
