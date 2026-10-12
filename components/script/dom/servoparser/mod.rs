@@ -270,7 +270,6 @@ impl ServoParser {
             loader,
             None,
             None,
-            Default::default(),
             false,
             allow_declarative_shadow_roots,
             Some(context_document.insecure_requests_policy()),
@@ -1437,11 +1436,11 @@ impl ParserContext {
         );
 
         let Some(document) = script_thread.handle_page_headers_available(
+            cx,
             self.webview_id,
             self.pipeline_id,
             metadata.as_ref(),
             origin.clone(),
-            cx,
         ) else {
             return;
         };

@@ -155,11 +155,6 @@ impl HTMLImageElement {
         self.current_request.borrow().image.clone()
     }
 
-    /// The time the image became completely available, if it has.
-    pub(crate) fn load_time(&self) -> Option<CrossProcessInstant> {
-        self.current_request.borrow().load_time
-    }
-
     /// Gets the copy of the raster image data.
     pub(crate) fn get_raster_image_data(&self) -> Option<Snapshot> {
         let Some(raster_image) = self.image_data()?.as_raster_image() else {
@@ -413,7 +408,7 @@ impl HTMLImageElement {
 
         self.pending_request.borrow_mut().take();
 
-        LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
+        LoadBlocker::terminate(cx, &self.current_request.borrow().blocker);
         // Mark the node dirty
         self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
         self.resolve_image_decode_promises(cx);
@@ -530,6 +525,7 @@ impl HTMLImageElement {
                     pending_request.metadata = Some(image.metadata());
                     pending_request.final_url = Some(url);
                     pending_request.image = Some(image);
+                    pending_request.load_time = Some(CrossProcessInstant::now());
                 }
                 self.finish_reacting_to_environment_change(
                     selected_source,
@@ -560,7 +556,7 @@ impl HTMLImageElement {
     fn abort_request(&self, cx: &mut JSContext, state: State, request: ImageRequestPhase) {
         match request {
             ImageRequestPhase::Current => {
-                LoadBlocker::terminate(&self.current_request.borrow().blocker, cx);
+                LoadBlocker::terminate(cx, &self.current_request.borrow().blocker);
 
                 let mut request = self.current_request.safe_borrow_mut(cx);
                 request.state = state;
@@ -570,7 +566,7 @@ impl HTMLImageElement {
             },
             ImageRequestPhase::Pending => {
                 if let Some(pending_request) = &*self.pending_request.borrow() {
-                    LoadBlocker::terminate(&pending_request.blocker, cx);
+                    LoadBlocker::terminate(cx, &pending_request.blocker);
                 }
                 self.pending_request.borrow_mut().take();
             },
@@ -598,7 +594,7 @@ impl HTMLImageElement {
             request.metadata = None;
         }
         let document = self.owner_document();
-        LoadBlocker::terminate(&request.borrow().blocker, cx);
+        LoadBlocker::terminate(cx, &request.borrow().blocker);
         *request.borrow_mut().blocker.borrow_mut() =
             Some(LoadBlocker::new(&document, LoadType::Image(url.clone())));
     }
@@ -620,12 +616,12 @@ impl HTMLImageElement {
         }
         let document = self.owner_document();
         LoadBlocker::terminate(
+            cx,
             &request
                 .borrow()
                 .as_ref()
                 .expect("Just created a request")
                 .blocker,
-            cx,
         );
         *request
             .safe_borrow_mut(cx)
@@ -935,6 +931,7 @@ impl HTMLImageElement {
                                     this.current_request.borrow_mut();
                                 current_request.source_url = Some(selected_source);
                                 current_request.parsed_url = Some(image_url);
+                                current_request.load_time = Some(CrossProcessInstant::now());
                             }
 
                             // Step 7.4.7.3. If maybe omit events is not set or previousURL is not
@@ -948,6 +945,12 @@ impl HTMLImageElement {
                 }
             }
         }
+
+        // TODO(https://github.com/whatwg/html/issues/8207): Add spec step once spec is aligned
+        // with implementations
+        self.source_set
+            .borrow_mut()
+            .update_source_set(cx.no_gc(), self.upcast::<Element>());
 
         // Step 8. Queue a microtask to perform the rest of this algorithm, allowing the task that
         // invoked this algorithm to continue.
@@ -1440,6 +1443,10 @@ impl<'dom> LayoutDom<'dom, HTMLImageElement> {
     pub(crate) fn image_data(self) -> (Option<Image>, Option<ImageMetadata>) {
         let current_request = self.current_request();
         (current_request.image.clone(), current_request.metadata)
+    }
+
+    pub(crate) fn load_time(self) -> Option<CrossProcessInstant> {
+        self.current_request().load_time
     }
 
     pub(crate) fn image_density(self) -> Option<f64> {

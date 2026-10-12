@@ -2,29 +2,27 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::VecDeque;
+use std::f64;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use std::{f64, mem};
 
 use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use dom_struct::dom_struct;
 use embedder_traits::{MediaPositionState, MediaSessionEvent, MediaSessionPlaybackState};
-use euclid::default::Size2D;
 use headers::{ContentLength, ContentRange, HeaderMapExt, Range as RangeHeader};
-use html5ever::{LocalName, Prefix, QualName, local_name, ns};
+use html5ever::{LocalName, Prefix, local_name};
 use http::StatusCode;
 use http::header::HeaderMap;
 use js::context::{JSContext, NoGC};
 use js::realm::CurrentRealm;
 use layout_api::MediaFrame;
-use media::{GLPlayerMsg, GLPlayerMsgForward, WindowGLContext};
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::{Destination, RequestId};
 use net_traits::{CoreResourceThread, FetchMetadata, Metadata, NetworkError, ResourceFetchTiming};
-use paint_api::{CrossProcessPaintApi, ImageUpdate, SerializableImageData};
 use pixels::RasterImage;
 use script_bindings::assert::assert_in_script;
 use script_bindings::cell::DomRefCell;
@@ -32,8 +30,7 @@ use script_bindings::codegen::InheritTypes::{
     ElementTypeId, HTMLElementTypeId, HTMLMediaElementTypeId, NodeTypeId,
 };
 use script_bindings::weakref::WeakRef;
-use servo_base::generic_channel::{self, GenericCallback, GenericSharedMemory};
-use servo_base::id::WebViewId;
+use servo_base::generic_channel::{self};
 use servo_config::pref;
 use servo_media::player::audio::AudioRenderer;
 use servo_media::player::video::{VideoFrame, VideoFrameRenderer};
@@ -42,10 +39,6 @@ use servo_media::{ClientContextId, ServoMedia, SupportsMediaType};
 use servo_url::ServoUrl;
 use stylo_atoms::Atom;
 use uuid::Uuid;
-use webrender_api::{
-    ExternalImageData, ExternalImageId, ExternalImageType, ImageBufferKind, ImageDescriptor,
-    ImageDescriptorFlags, ImageFormat, ImageKey,
-};
 
 use crate::dom::audio::audiotrack::AudioTrack;
 use crate::dom::audio::audiotracklist::AudioTrackList;
@@ -77,12 +70,13 @@ use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{
-    AttributeMutation, CustomElementCreationMode, Element, ElementCreator,
-    cors_setting_for_element, reflect_cross_origin_attribute, set_cross_origin_attribute,
+    AttributeMutation, Element, cors_setting_for_element, reflect_cross_origin_attribute,
+    set_cross_origin_attribute,
 };
 use crate::dom::event::Event;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
+use crate::dom::html::embedded_content::media_elements::media_frame_renderer::MediaFrameRenderer;
 use crate::dom::html::htmlaudioelement::HTMLAudioElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlsourceelement::HTMLSourceElement;
@@ -98,6 +92,8 @@ use crate::dom::promise::Promise;
 use crate::dom::rules_for_rendering::{
     RulesForUpdatingTheTextTrackRendering, ShouldResetRenderingControls,
 };
+use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::ua_shadowroot::{CreateUAShadowRootForSelf, UAShadowRoot};
 use crate::dom::texttrack::TextTrack;
 use crate::dom::texttrackcue::TextTrackCue;
 use crate::dom::texttracklist::TextTrackList;
@@ -109,13 +105,10 @@ use crate::dom::videotracklist::VideoTrackList;
 use crate::dom::{RootedPromise, TracedPromise, referrer_policy_for_element};
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::event_loop::script_thread::ScriptThread;
-use crate::fetch::fetch::{
-    FetchCanceller, RequestWithGlobalScope, create_a_potential_cors_request,
-};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
 use crate::runtime::job_queue::MicrotaskRunnable;
-use crate::tasks::task_source::SendableTaskSource;
 
 /// A CSS file to style the media controls.
 static MEDIA_CONTROL_CSS: &str = include_str!("../../../resources/media-controls.css");
@@ -127,341 +120,6 @@ static MEDIA_CONTROL_JS: &str = include_str!("../../../resources/media-controls.
 /// requested position (e.g. snapping to the nearest keyframe), so we use a threshold
 /// instead of strict equality. (Unit is second)
 const SEEK_POSITION_THRESHOLD: f64 = 0.5;
-
-#[derive(MallocSizeOf, PartialEq)]
-enum FrameStatus {
-    Locked,
-    Unlocked,
-}
-
-#[derive(MallocSizeOf)]
-struct FrameHolder(FrameStatus, VideoFrame);
-
-impl FrameHolder {
-    fn new(frame: VideoFrame) -> FrameHolder {
-        FrameHolder(FrameStatus::Unlocked, frame)
-    }
-
-    fn lock(&mut self) {
-        if self.0 == FrameStatus::Unlocked {
-            self.0 = FrameStatus::Locked;
-        };
-    }
-
-    fn unlock(&mut self) {
-        if self.0 == FrameStatus::Locked {
-            self.0 = FrameStatus::Unlocked;
-        };
-    }
-
-    fn set(&mut self, new_frame: VideoFrame) {
-        if self.0 == FrameStatus::Unlocked {
-            self.1 = new_frame
-        };
-    }
-
-    fn get(&self) -> (u32, Size2D<i32>, usize) {
-        if self.0 == FrameStatus::Locked {
-            (
-                self.1.get_texture_id(),
-                Size2D::new(self.1.get_width(), self.1.get_height()),
-                0,
-            )
-        } else {
-            unreachable!();
-        }
-    }
-
-    fn get_frame(&self) -> VideoFrame {
-        self.1.clone()
-    }
-}
-
-#[derive(MallocSizeOf)]
-pub(crate) struct MediaFrameRenderer {
-    webview_id: WebViewId,
-    player_id: Option<usize>,
-    #[conditional_malloc_size_of]
-    glplayer_id: Arc<RwLock<Option<u64>>>,
-    paint_api: CrossProcessPaintApi,
-    #[ignore_malloc_size_of = "Defined in other crates"]
-    player_context: WindowGLContext,
-    current_frame: Option<MediaFrame>,
-    old_frame: Option<ImageKey>,
-    very_old_frame: Option<ImageKey>,
-    current_frame_holder: Option<FrameHolder>,
-    /// <https://html.spec.whatwg.org/multipage/#poster-frame>
-    poster_frame: Option<MediaFrame>,
-}
-
-impl MediaFrameRenderer {
-    fn new(
-        webview_id: WebViewId,
-        paint_api: CrossProcessPaintApi,
-        player_context: WindowGLContext,
-    ) -> Self {
-        Self {
-            webview_id,
-            player_id: None,
-            glplayer_id: Arc::new(RwLock::new(None)),
-            paint_api,
-            player_context,
-            current_frame: None,
-            old_frame: None,
-            very_old_frame: None,
-            current_frame_holder: None,
-            poster_frame: None,
-        }
-    }
-
-    fn setup(
-        &mut self,
-        player_id: usize,
-        task_source: SendableTaskSource,
-        weak_video_renderer: Weak<Mutex<MediaFrameRenderer>>,
-    ) {
-        self.player_id = Some(player_id);
-        let glplayer_id = self.glplayer_id.clone();
-        let callback = GenericCallback::new(move |message| {
-            let message = message.unwrap();
-            let weak_video_renderer = weak_video_renderer.clone();
-
-            let glplayer_id = glplayer_id.clone();
-            task_source.queue(task!(handle_glplayer_message: move || {
-                trace!("GLPlayer message {:?}", message);
-
-                let Some(video_renderer) = weak_video_renderer.upgrade() else {
-                    return;
-                };
-
-                match message {
-                    GLPlayerMsgForward::Lock(sender) => {
-                        if let Some(holder) = video_renderer
-                            .lock()
-                            .unwrap()
-                            .current_frame_holder
-                            .as_mut() {
-                                holder.lock();
-                                sender.send(holder.get()).unwrap();
-                            };
-                    },
-                    GLPlayerMsgForward::Unlock() => {
-                        if let Some(holder) = video_renderer
-                            .lock()
-                            .unwrap()
-                            .current_frame_holder
-                            .as_mut() { holder.unlock() }
-                    },
-                    GLPlayerMsgForward::PlayerId(id) => {
-                        let mut glplayer_id = glplayer_id.write().unwrap();
-                        if let Some(already_set_id) = *glplayer_id {
-                            error!("Player id already set to {already_set_id} will be replaced with {id}");
-                        }
-                        *glplayer_id = Some(id);
-                    },
-                }
-            }));
-        })
-        .expect("Could not create callback");
-
-        if let Some(glplayer_thread_sender) = &self.player_context.glplayer_thread_sender {
-            glplayer_thread_sender
-                .send(GLPlayerMsg::RegisterPlayer(callback))
-                .unwrap();
-        }
-    }
-
-    fn reset(&mut self) {
-        self.player_id = None;
-
-        if let Some(glplayer_id) = self.glplayer_id.write().unwrap().take() {
-            self.player_context
-                .send(GLPlayerMsg::UnregisterPlayer(glplayer_id));
-        }
-
-        self.current_frame_holder = None;
-
-        let mut updates = smallvec::smallvec![];
-
-        if let Some(current_frame) = self.current_frame.take() {
-            updates.push(ImageUpdate::DeleteImage(current_frame.image_key));
-        }
-
-        if let Some(old_image_key) = self.old_frame.take() {
-            updates.push(ImageUpdate::DeleteImage(old_image_key));
-        }
-
-        if let Some(very_old_image_key) = self.very_old_frame.take() {
-            updates.push(ImageUpdate::DeleteImage(very_old_image_key));
-        }
-
-        if !updates.is_empty() {
-            self.paint_api
-                .update_images(self.webview_id.into(), updates);
-        }
-    }
-
-    fn set_poster_frame(&mut self, image: Option<Arc<RasterImage>>) {
-        self.poster_frame = image.and_then(|image| {
-            image.id.map(|image_key| MediaFrame {
-                image_key,
-                width: image.metadata.width as i32,
-                height: image.metadata.height as i32,
-            })
-        });
-    }
-}
-
-impl Drop for MediaFrameRenderer {
-    fn drop(&mut self) {
-        self.reset();
-    }
-}
-
-impl VideoFrameRenderer for MediaFrameRenderer {
-    fn render(&mut self, frame: VideoFrame) {
-        if self.player_id.is_none() ||
-            (frame.is_gl_texture() && self.glplayer_id.read().unwrap().is_none())
-        {
-            return;
-        }
-
-        let mut updates = smallvec::smallvec![];
-
-        if let Some(old_image_key) = mem::replace(&mut self.very_old_frame, self.old_frame.take()) {
-            updates.push(ImageUpdate::DeleteImage(old_image_key));
-        }
-
-        let descriptor = ImageDescriptor::new(
-            frame.get_width(),
-            frame.get_height(),
-            ImageFormat::BGRA8,
-            ImageDescriptorFlags::empty(),
-        );
-
-        match &mut self.current_frame {
-            Some(current_frame)
-                if current_frame.width == frame.get_width() &&
-                    current_frame.height == frame.get_height() =>
-            {
-                if !frame.is_gl_texture() {
-                    updates.push(ImageUpdate::UpdateImage(
-                        current_frame.image_key,
-                        descriptor,
-                        SerializableImageData::Raw(GenericSharedMemory::from_arc_vec(
-                            frame.get_data(),
-                        )),
-                        None,
-                    ));
-                }
-
-                self.current_frame_holder
-                    .get_or_insert_with(|| FrameHolder::new(frame.clone()))
-                    .set(frame);
-
-                if let Some(old_image_key) = self.old_frame.take() {
-                    updates.push(ImageUpdate::DeleteImage(old_image_key));
-                }
-            },
-            Some(current_frame) => {
-                self.old_frame = Some(current_frame.image_key);
-
-                let Some(new_image_key) =
-                    self.paint_api.generate_image_key_blocking(self.webview_id)
-                else {
-                    return;
-                };
-
-                /* update current_frame */
-                current_frame.image_key = new_image_key;
-                current_frame.width = frame.get_width();
-                current_frame.height = frame.get_height();
-
-                // FIXME: This code is duplicated below this branch
-                let image_data = self
-                    .glplayer_id
-                    .read()
-                    .unwrap()
-                    .filter(|_| frame.is_gl_texture())
-                    .map(|glplayer_id| {
-                        let texture_target = if frame.is_external_oes() {
-                            ImageBufferKind::TextureExternal
-                        } else {
-                            ImageBufferKind::Texture2D
-                        };
-
-                        SerializableImageData::External(ExternalImageData {
-                            id: ExternalImageId(glplayer_id),
-                            channel_index: 0,
-                            image_type: ExternalImageType::TextureHandle(texture_target),
-                            normalized_uvs: false,
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        SerializableImageData::Raw(GenericSharedMemory::from_arc_vec(
-                            frame.get_data(),
-                        ))
-                    });
-
-                self.current_frame_holder
-                    .get_or_insert_with(|| FrameHolder::new(frame.clone()))
-                    .set(frame);
-
-                updates.push(ImageUpdate::AddImage(
-                    new_image_key,
-                    descriptor,
-                    image_data,
-                    false,
-                ));
-            },
-            None => {
-                let Some(image_key) = self.paint_api.generate_image_key_blocking(self.webview_id)
-                else {
-                    return;
-                };
-
-                self.current_frame = Some(MediaFrame {
-                    image_key,
-                    width: frame.get_width(),
-                    height: frame.get_height(),
-                });
-
-                let image_data = self
-                    .glplayer_id
-                    .read()
-                    .unwrap()
-                    .filter(|_| frame.is_gl_texture())
-                    .map(|glplayer_id| {
-                        let texture_target = if frame.is_external_oes() {
-                            ImageBufferKind::TextureExternal
-                        } else {
-                            ImageBufferKind::Texture2D
-                        };
-
-                        SerializableImageData::External(ExternalImageData {
-                            id: ExternalImageId(glplayer_id),
-                            channel_index: 0,
-                            image_type: ExternalImageType::TextureHandle(texture_target),
-                            normalized_uvs: false,
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        SerializableImageData::Raw(GenericSharedMemory::from_arc_vec(
-                            frame.get_data(),
-                        ))
-                    });
-
-                self.current_frame_holder = Some(FrameHolder::new(frame));
-
-                updates.push(ImageUpdate::AddImage(
-                    image_key, descriptor, image_data, false,
-                ));
-            },
-        }
-        self.paint_api
-            .update_images(self.webview_id.into(), updates);
-    }
-}
 
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 #[derive(JSTraceable, MallocSizeOf)]
@@ -625,6 +283,7 @@ pub(crate) struct HTMLMediaElement {
     position_when_time_marches_on_ran: Cell<Option<f64>>,
     /// <https://html.spec.whatwg.org/multipage/#list-of-newly-introduced-cues>
     newly_introduced_cues: DomRefCell<Vec<Dom<TextTrackCue>>>,
+    shadow_tree: DomRefCell<Option<ShadowTree>>,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#dom-media-networkstate>
@@ -664,6 +323,63 @@ enum PlaybackPositionWasMoved {
     #[default]
     ExplicitMove,
     NormalPlayback,
+}
+
+/// Holds handles to all slots in the UA shadow tree
+#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct ShadowTree {
+    // TODO(22314): add cue element here
+}
+
+impl UAShadowRoot<ShadowTree> for HTMLMediaElement {
+    fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
+        let script = self.create_element_in_ua_shadowroot(cx, local_name!("script"));
+        // This is our hacky way to temporarily workaround the lack of a privileged
+        // JS context.
+        // The media controls UI accesses the document.servoGetMediaControls(id) API
+        // to get an instance to the media controls ShadowRoot.
+        // `id` needs to match the internally generated UUID assigned to a media element.
+        let id = Uuid::new_v4().to_string();
+        let document = self.owner_document();
+        document.register_media_controls(&id, &shadow_root);
+        let media_controls_script = MEDIA_CONTROL_JS.replace("@@@id@@@", &id);
+        *self.media_controls_id.borrow_mut() = Some(id);
+        script
+            .upcast::<Node>()
+            .set_text_content_for_element(cx, Some(DOMString::from(media_controls_script)));
+        if let Err(e) = shadow_root
+            .upcast::<Node>()
+            .AppendChild(cx, script.upcast::<Node>())
+        {
+            warn!("Could not render media controls {:?}", e);
+            return;
+        }
+
+        let style = self.create_element_in_ua_shadowroot(cx, local_name!("style"));
+
+        style
+            .upcast::<Node>()
+            .set_text_content_for_element(cx, Some(DOMString::from(MEDIA_CONTROL_CSS)));
+
+        if let Err(e) = shadow_root
+            .upcast::<Node>()
+            .AppendChild(cx, style.upcast::<Node>())
+        {
+            warn!("Could not render media controls {:?}", e);
+        }
+
+        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {});
+    }
+
+    fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
+        self.shadow_tree.borrow()
+    }
+
+    // TODO: Remove this and properly implement controls in the UA shadow root
+    fn should_mark_as_ua_widget(&self) -> bool {
+        false
+    }
 }
 
 impl HTMLMediaElement {
@@ -721,6 +437,7 @@ impl HTMLMediaElement {
             did_perform_automatic_track_selection: Default::default(),
             position_when_time_marches_on_ran: Default::default(),
             newly_introduced_cues: Default::default(),
+            shadow_tree: Default::default(),
         }
     }
 
@@ -785,7 +502,7 @@ impl HTMLMediaElement {
                     Some(LoadBlocker::new(&self.owner_document(), LoadType::Media));
             }
         } else {
-            LoadBlocker::terminate(blocker, cx);
+            LoadBlocker::terminate(cx, blocker);
         }
     }
 
@@ -3036,7 +2753,7 @@ impl HTMLMediaElement {
             return;
         }
 
-        if let Some(frame) = self.video_renderer.lock().unwrap().current_frame {
+        if let Some(frame) = self.video_renderer.lock().unwrap().current_frame() {
             if video_element.set_natural_dimensions(
                 no_gc,
                 Some(frame.width as u32),
@@ -3207,66 +2924,11 @@ impl HTMLMediaElement {
     }
 
     fn render_controls(&self, cx: &mut JSContext) {
-        if self.upcast::<Element>().is_shadow_host() {
+        if self.borrow_for_shadow_tree().is_some() {
             // Bail out if we are already showing the controls.
             return;
         }
-
-        // FIXME(stevennovaryo): Recheck styling of media element to avoid
-        //                       reparsing styles.
-        let shadow_root = self.upcast::<Element>().attach_ua_shadow_root(cx, false);
-        let document = self.owner_document();
-        let script = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("script")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-        // This is our hacky way to temporarily workaround the lack of a privileged
-        // JS context.
-        // The media controls UI accesses the document.servoGetMediaControls(id) API
-        // to get an instance to the media controls ShadowRoot.
-        // `id` needs to match the internally generated UUID assigned to a media element.
-        let id = Uuid::new_v4().to_string();
-        document.register_media_controls(&id, &shadow_root);
-        let media_controls_script = MEDIA_CONTROL_JS.replace("@@@id@@@", &id);
-        *self.media_controls_id.borrow_mut() = Some(id);
-        script
-            .upcast::<Node>()
-            .set_text_content_for_element(cx, Some(DOMString::from(media_controls_script)));
-        if let Err(e) = shadow_root
-            .upcast::<Node>()
-            .AppendChild(cx, script.upcast::<Node>())
-        {
-            warn!("Could not render media controls {:?}", e);
-            return;
-        }
-
-        let style = Element::create(
-            cx,
-            QualName::new(None, ns!(html), local_name!("style")),
-            None,
-            &document,
-            ElementCreator::ScriptCreated,
-            CustomElementCreationMode::Asynchronous,
-            None,
-        );
-
-        style
-            .upcast::<Node>()
-            .set_text_content_for_element(cx, Some(DOMString::from(MEDIA_CONTROL_CSS)));
-
-        if let Err(e) = shadow_root
-            .upcast::<Node>()
-            .AppendChild(cx, style.upcast::<Node>())
-        {
-            warn!("Could not render media controls {:?}", e);
-        }
-
-        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+        let _ = self.shadow_tree(cx);
 
         // https://html.spec.whatwg.org/multipage/#embedded-content-rendering-rules:rules-for-updating-the-text-track-rendering
         // > When the user agent starts exposing a user interface for a video element,
@@ -3312,8 +2974,7 @@ impl HTMLMediaElement {
         self.video_renderer
             .lock()
             .unwrap()
-            .current_frame_holder
-            .as_ref()
+            .current_frame_holder()
             .map(|holder| holder.get_frame())
     }
 
@@ -3322,7 +2983,7 @@ impl HTMLMediaElement {
     pub(crate) fn get_current_frame_to_present(&self) -> Option<MediaFrame> {
         let (current_frame, poster_frame) = {
             let renderer = self.video_renderer.lock().unwrap();
-            (renderer.current_frame, renderer.poster_frame)
+            (renderer.current_frame(), renderer.poster_frame())
         };
 
         // If the show poster flag is set (or there is no current video frame to
@@ -4225,9 +3886,9 @@ pub(crate) struct HTMLMediaElementFetchContext {
     origin_clean: bool,
     /// The buffered data source which to be processed by media backend.
     data_source: RefCell<BufferedDataSource>,
-    /// Fetch canceller. Allows cancelling the current fetch request by
+    /// Fetch controller. Allows cancelling the current fetch request by
     /// manually calling its .cancel() method or automatically on Drop.
-    fetch_canceller: FetchCanceller,
+    fetch_controller: FetchController,
 }
 
 impl HTMLMediaElementFetchContext {
@@ -4241,7 +3902,7 @@ impl HTMLMediaElementFetchContext {
             is_seekable: false,
             origin_clean: true,
             data_source: RefCell::new(BufferedDataSource::new()),
-            fetch_canceller: FetchCanceller::new(request_id, false, core_resource_thread),
+            fetch_controller: FetchController::new(request_id, false, core_resource_thread),
         }
     }
 
@@ -4275,7 +3936,7 @@ impl HTMLMediaElementFetchContext {
         }
         self.cancel_reason = Some(reason);
         self.data_source.borrow_mut().reset();
-        self.fetch_canceller.abort();
+        self.fetch_controller.abort();
     }
 
     fn cancel_reason(&self) -> &Option<CancelReason> {
