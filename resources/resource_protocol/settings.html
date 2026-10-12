@@ -189,7 +189,8 @@
         margin: 8px 0;
       }
 
-      #home-error {
+      #home-error,
+      #homepage-url-error {
         color: #b42318;
         min-height: 1.2em;
       }
@@ -217,7 +218,8 @@
           </select>
           <div id="homepage-url-row" hidden>
             <label for="homepage-url">URL</label>
-            <input id="homepage-url" type="url" placeholder="https://example.com" />
+            <input id="homepage-url" type="text" placeholder="https://example.com" />
+            <p id="homepage-url-error" role="alert"></p>
           </div>
 
           <h3>New tabs</h3>
@@ -363,6 +365,7 @@
       const newTabs = document.getElementById("new-tabs");
       const homepageUrlRow = document.getElementById("homepage-url-row");
       const homepageUrl = document.getElementById("homepage-url");
+      const homepageUrlError = document.getElementById("homepage-url-error");
       const showSearch = document.getElementById("show-search");
       const showLogo = document.getElementById("show-logo");
       const homeError = document.getElementById("home-error");
@@ -379,12 +382,46 @@
         showLogo.checked = !!data.showLogo;
       }
 
+      function invalidHomepageUrl(value) {
+        const raw = value.trim();
+        if (!raw) {
+          return "Enter a homepage URL";
+        }
+        let url;
+        try {
+          url = new URL(raw);
+        } catch (error) {
+          if (raw.includes(" ")) {
+            return "Enter a valid homepage URL";
+          }
+          try {
+            url = new URL("https://" + raw);
+          } catch (error) {
+            return "Enter a valid homepage URL";
+          }
+        }
+        if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "file:") {
+          return "Homepage URL must be http, https, or file";
+        }
+        return "";
+      }
+
       async function applyHome(query) {
         const url = query ? "servo:home?" + query : "servo:home";
         try {
           const response = await fetch(url);
           const data = await response.json();
-          homeError.textContent = data.error || "";
+          if (data.error) {
+            if (query && query.indexOf("homepage=") !== -1) {
+              homepageUrlError.textContent = data.error;
+              homeError.textContent = "";
+            } else {
+              homeError.textContent = data.error;
+            }
+            return;
+          }
+          homeError.textContent = "";
+          homepageUrlError.textContent = "";
           if (data.newWindows) {
             renderHome(data);
           }
@@ -393,26 +430,29 @@
         }
       }
 
+      function commitHomepageUrl() {
+        if (newWindows.value !== "url") {
+          return;
+        }
+        const error = invalidHomepageUrl(homepageUrl.value);
+        homepageUrlError.textContent = error;
+        if (error) {
+          return;
+        }
+        applyHome("newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value.trim()));
+      }
+
       newWindows.addEventListener("change", () => {
         homepageUrlRow.hidden = newWindows.value !== "url";
         if (newWindows.value === "url") {
           homepageUrl.focus();
-          if (homepageUrl.value.trim()) {
-            applyHome(
-              "newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value)
-            );
-          }
           return;
         }
+        homepageUrlError.textContent = "";
         applyHome("newWindows=" + encodeURIComponent(newWindows.value));
       });
 
-      homepageUrl.addEventListener("change", () => {
-        if (newWindows.value !== "url") {
-          return;
-        }
-        applyHome("newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value));
-      });
+      homepageUrl.addEventListener("blur", commitHomepageUrl);
 
       newTabs.addEventListener("change", () => {
         applyHome("newTabs=" + encodeURIComponent(newTabs.value));

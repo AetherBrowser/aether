@@ -402,6 +402,9 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("id=\"show-search\""));
     assert!(html.contains("Aether logo"));
     assert!(html.contains("servo:home"));
+    assert!(html.contains("id=\"homepage-url-error\""));
+    assert!(html.contains("addEventListener(\"blur\", commitHomepageUrl)"));
+    assert!(html.contains("Enter a valid homepage URL"));
     assert!(html.contains(">Downloads<"));
     assert!(html.contains(">Appearance<"));
     assert!(html.contains("location.hash === \"#search\""));
