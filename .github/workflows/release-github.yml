@@ -33,8 +33,34 @@ env:
   RELEASE_REPO: ${{ github.repository_owner }}/${{ inputs.regular_release && 'aether' || 'aether-nightly-builds' }}
 
 jobs:
+  resolve-tag:
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.tag.outputs.name }}
+    steps:
+      - id: tag
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+          REGULAR_RELEASE: ${{ inputs.regular_release }}
+        run: |
+          if [[ -n "${INPUT_TAG}" ]]; then
+            # Same check as before: a regular release tag is cargo-semver compatible.
+            if [[ "${REGULAR_RELEASE}" == "true" && ! "${INPUT_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
+              echo "Error: release_tag '${INPUT_TAG}' is not of the form vX.Y.Z or vX.Y.Z-<suffix>."
+              exit 1
+            fi
+            TAG="${INPUT_TAG}"
+          else
+            TAG=$(date "+%F")
+          fi
+          echo "name=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "Release tag: ${TAG}"
+
   create-draft-release:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Create Draft GH Release
     runs-on: ubuntu-latest
@@ -42,26 +68,18 @@ jobs:
       name: publish
       deployment: false
     steps:
-      - name: Validate release tag
-        if: ${{ inputs.release_tag != '' && inputs.regular_release }}
-        run: |
-          # Check if the tag starts with a v and is cargo-semver compatible, i.e `vX.Y.Z` with
-          # an optional `-suffix`.
-          if [[ ! "${{ inputs.release_tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
-            echo "Error: release_tag '${{ inputs.release_tag }}' is not of the form vX.Y.Z or vX.Y.Z-<suffix>."
-            exit 1
-          fi
       - id: create-release
+        env:
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.name }}
+          GITHUB_TOKEN: ${{ inputs.regular_release && github.token || secrets.NIGHTLY_REPO_TOKEN }}
         run: |
-          if [[ "${{ inputs.release_tag }}" != "" ]]; then
-            RELEASE_TAG="${{ inputs.release_tag }}"
+          if [[ -n "${{ inputs.release_tag }}" ]]; then
             if [[ "${{ inputs.regular_release }}" == "true" ]]; then
-              RELEASE_NOTES="Aether release ${{ inputs.release_tag }}"
+              RELEASE_NOTES="Aether release ${RELEASE_TAG}"
             else
-              RELEASE_NOTES="Aether release ${{ inputs.release_tag }} based on ${{ github.repository }}@${{ github.sha }}"          
+              RELEASE_NOTES="Aether release ${RELEASE_TAG} based on ${{ github.repository }}@${{ github.sha }}"
             fi
           else
-            RELEASE_TAG=$(date "+%F")
             RELEASE_NOTES="Nightly build based on ${{ github.repository }}@${{ github.sha }}"
           fi
           RELEASE_URL=$(gh release create "${RELEASE_TAG}" \
@@ -78,8 +96,6 @@ jobs:
           )
           echo "RELEASE_ID=${RELEASE_ID}" >> ${GITHUB_OUTPUT}
           echo "RELEASE_TAG=${RELEASE_TAG}" >> ${GITHUB_OUTPUT}
-        env:
-          GITHUB_TOKEN: ${{ inputs.regular_release && github.token || secrets.NIGHTLY_REPO_TOKEN }}
     outputs:
       release-id: ${{ steps.create-release.outputs.RELEASE_ID }}
       release-tag: ${{ steps.create-release.outputs.RELEASE_TAG }}
@@ -137,6 +153,7 @@ jobs:
 
   build-win:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Windows)
     uses: ./.github/workflows/windows.yml
@@ -144,6 +161,7 @@ jobs:
       profile: "production"
       upload_zip: true
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
 
   upload-vendored-source:
     # This job is only useful when run on upstream aether.
@@ -285,55 +303,67 @@ jobs:
 
   build-mac:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (macOS)
     uses: ./.github/workflows/mac.yml
     with:
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
 
   build-mac-arm64:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (macOS Arm64)
     uses: ./.github/workflows/mac-arm64.yml
     with:
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
 
   build-linux:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Linux)
     uses: ./.github/workflows/linux.yml
     with:
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
 
   build-linux-arm64:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (Linux Arm64)
     uses: ./.github/workflows/linux-arm64.yml
     with:
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
 
   # build-android:
   #   # This job is only useful when run on upstream aether.
+  #   needs: resolve-tag
   #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
   #   name: Build release (Android)
   #   uses: ./.github/workflows/android.yml
   #   with:
   #     profile: "production"
+  #     release-tag: ${{ needs.resolve-tag.outputs.name }}
   #   secrets: inherit
 
   build-ohos:
     # This job is only useful when run on upstream aether.
+    needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Build production release (OpenHarmony)
     uses: ./.github/workflows/ohos.yml
     with:
       profile: "production"
       upload_library: true
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
     secrets: inherit

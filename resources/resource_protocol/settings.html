@@ -178,6 +178,32 @@
         font-size: 0.9rem;
         margin: 0 0 8px;
       }
+
+      #about dl {
+        margin: 0;
+      }
+
+      #about dt {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-top: 12px;
+      }
+
+      #about dt:first-child {
+        margin-top: 0;
+      }
+
+      #about dd {
+        margin: 2px 0 0;
+      }
+
+      #about-error {
+        color: #b42318;
+      }
+
+      #about-error:empty {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -187,6 +213,7 @@
         <a href="#search">Search</a>
         <a href="#download">Downloads</a>
         <a href="#appearance">Appearance</a>
+        <a href="#about">About</a>
       </nav>
       <main>
         <section id="home" hidden>
@@ -228,6 +255,18 @@
         </section>
         <section id="appearance" hidden>
           <h2>Appearance</h2>
+        </section>
+        <section id="about" hidden>
+          <h2>About</h2>
+          <p id="about-error" role="alert"></p>
+          <dl>
+            <dt>Version</dt>
+            <dd id="about-version"></dd>
+            <dt>Channel</dt>
+            <dd id="about-channel"></dd>
+            <dt>Architecture</dt>
+            <dd id="about-architecture"></dd>
+          </dl>
         </section>
       </main>
     </div>
@@ -315,7 +354,23 @@
       });
 
       const searchPane = document.getElementById("search");
-      const sectionIds = ["home", "search", "download", "appearance"];
+      const aboutPane = document.getElementById("about");
+      const aboutError = document.getElementById("about-error");
+      const sectionIds = ["home", "search", "download", "appearance", "about"];
+
+      async function loadAbout() {
+        try {
+          const response = await fetch("servo:about");
+          const data = await response.json();
+          document.getElementById("about-version").textContent = data.version || "";
+          document.getElementById("about-channel").textContent = data.channel || "";
+          document.getElementById("about-architecture").textContent =
+            data.architecture || "";
+          aboutError.textContent = "";
+        } catch (error) {
+          aboutError.textContent = "Could not load version information.";
+        }
+      }
 
       function showCurrentPane() {
         const requested = location.hash.slice(1);
@@ -333,6 +388,10 @@
         if (showSearch && !searchPane.dataset.loaded) {
           searchPane.dataset.loaded = "1";
           apply();
+        }
+        if (current === "about" && !aboutPane.dataset.loaded) {
+          aboutPane.dataset.loaded = "1";
+          loadAbout();
         }
       }
 
