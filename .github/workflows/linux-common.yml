@@ -73,10 +73,16 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
+  AETHER_RELEASE_TAG: ${{ inputs.release-tag }}
 
 jobs:
   runner-select:

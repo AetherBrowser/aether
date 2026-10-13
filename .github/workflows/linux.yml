@@ -57,6 +57,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
   workflow_dispatch:
     inputs:
@@ -104,6 +109,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
 env:
   RUST_BACKTRACE: 1
@@ -134,6 +144,7 @@ jobs:
       bencher: ${{ inputs.bencher }}
       coverage: ${{ inputs.coverage }}
       capi: ${{ inputs.capi }}
+      release-tag: ${{ inputs.release-tag }}
       perf-analysis: ${{ inputs.bencher && inputs.profile == 'release' }}
 
   wpt-2020:

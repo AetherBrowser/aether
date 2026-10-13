@@ -115,22 +115,192 @@ pub fn init_tracing(filter_directives: Option<&str>) {
     }
 }
 
-/// Product version reported by `--version`.
+/// Product version reported by `--version` and `servo:settings#about`.
 ///
 /// Aether's number is this package's `version` in `Cargo.toml`. The Servo number
-/// is [`servo::SERVO_VERSION`], which follows `[workspace.package] version`
+/// is [`servo::SERVO_VERSION`], which follows `[workspace.package] version`.
+/// The release tag only adds a suffix: the date for nightly, the prerelease id
+/// for beta (`rc1`), and nothing for a final release. A build with no tag keeps
+/// the git commit instead.
 pub fn version() -> &'static str {
     static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     VERSION
         .get_or_init(|| {
-            format!(
-                "Aether {}-{} (Based on Servo {})",
+            format_version(
                 env!("CARGO_PKG_VERSION"),
                 env!("GIT_SHA"),
-                servo::SERVO_VERSION
+                servo::SERVO_VERSION,
+                env!("AETHER_RELEASE_TAG"),
             )
         })
         .as_str()
+}
+
+fn format_version(cargo: &str, sha: &str, servo: &str, tag: &str) -> String {
+    let product = if let Some(suffix) = prerelease_suffix(tag) {
+        format!("v{cargo}-{suffix}")
+    } else if is_nightly_tag(tag) {
+        format!("v{cargo}-{tag}")
+    } else if is_plain_release_tag(tag) {
+        format!("v{cargo}")
+    } else {
+        format!("{cargo}-{sha}")
+    };
+    format!("Aether {product} (Based on Servo {servo})")
+}
+
+fn prerelease_suffix(tag: &str) -> Option<&str> {
+    let rest = tag.strip_prefix('v')?;
+    let (version, prerelease) = rest.split_once('-')?;
+    if is_dotted_version(version) && is_prerelease_id(prerelease) {
+        Some(prerelease)
+    } else {
+        None
+    }
+}
+
+fn is_plain_release_tag(tag: &str) -> bool {
+    match tag.strip_prefix('v') {
+        Some(version) => is_dotted_version(version),
+        None => false,
+    }
+}
+
+fn is_prerelease_id(prerelease: &str) -> bool {
+    !prerelease.is_empty() &&
+        prerelease
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+}
+
+/// `dev`, `nightly`, `beta`, or `release`, deduced from the baked-in release tag.
+pub(crate) fn release_channel() -> &'static str {
+    channel_from_release_tag(env!("AETHER_RELEASE_TAG"))
+}
+
+fn channel_from_release_tag(tag: &str) -> &'static str {
+    if tag.is_empty() {
+        return "dev";
+    }
+    if is_nightly_tag(tag) {
+        return "nightly";
+    }
+    let Some(rest) = tag.strip_prefix('v') else {
+        return "dev";
+    };
+    let (version, prerelease) = match rest.split_once('-') {
+        Some((version, prerelease)) => (version, Some(prerelease)),
+        None => (rest, None),
+    };
+    if !is_dotted_version(version) {
+        return "dev";
+    }
+    match prerelease {
+        None => "release",
+        Some(prerelease) if is_prerelease_id(prerelease) => "beta",
+        Some(_) => "dev",
+    }
+}
+
+fn is_nightly_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let Some(year) = parts.next() else {
+        return false;
+    };
+    let Some(month) = parts.next() else {
+        return false;
+    };
+    let Some(day) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none() &&
+        year.len() == 4 &&
+        month.len() == 2 &&
+        day.len() == 2 &&
+        is_ascii_digits(year) &&
+        is_ascii_digits(month) &&
+        is_ascii_digits(day)
+}
+
+fn is_dotted_version(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    let Some(patch) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none() &&
+        is_ascii_digits(major) &&
+        is_ascii_digits(minor) &&
+        is_ascii_digits(patch)
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+pub(crate) fn about_info_json() -> String {
+    serde_json::json!({
+        "version": version(),
+        "channel": release_channel(),
+        "architecture": std::env::consts::ARCH,
+    })
+    .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn version_uses_the_package_number_and_the_tag_suffix() {
+        assert_eq!(
+            super::format_version("0.1.0", "5c997ef1118", "0.7.0", ""),
+            "Aether 0.1.0-5c997ef1118 (Based on Servo 0.7.0)"
+        );
+        assert_eq!(
+            super::format_version("0.1.0", "5c997ef1118", "0.7.0", "2026-10-13"),
+            "Aether v0.1.0-2026-10-13 (Based on Servo 0.7.0)"
+        );
+        assert_eq!(
+            super::format_version("0.1.0", "5c997ef1118", "0.7.0", "v0.7.0-rc1"),
+            "Aether v0.1.0-rc1 (Based on Servo 0.7.0)"
+        );
+        assert_eq!(
+            super::format_version("0.1.0", "5c997ef1118", "0.7.0", "v0.7.0"),
+            "Aether v0.1.0 (Based on Servo 0.7.0)"
+        );
+        assert_eq!(
+            super::version(),
+            super::format_version(
+                env!("CARGO_PKG_VERSION"),
+                env!("GIT_SHA"),
+                servo::SERVO_VERSION,
+                env!("AETHER_RELEASE_TAG"),
+            )
+        );
+    }
+
+    #[test]
+    fn channel_is_deduced_from_the_release_tag() {
+        assert_eq!(super::channel_from_release_tag(""), "dev");
+        assert_eq!(super::channel_from_release_tag("2026-10-12"), "nightly");
+        assert_eq!(super::channel_from_release_tag("v0.7.0-rc1"), "beta");
+        assert_eq!(super::channel_from_release_tag("v0.7.0-beta.1"), "beta");
+        assert_eq!(super::channel_from_release_tag("v0.7.0"), "release");
+        assert_eq!(super::channel_from_release_tag("nightly"), "dev");
+    }
+
+    #[test]
+    fn about_info_reports_version_channel_and_architecture() {
+        let value: serde_json::Value =
+            serde_json::from_str(&super::about_info_json()).expect("about JSON");
+        assert_eq!(value["version"], super::version());
+        assert_eq!(value["channel"], super::release_channel());
+        assert_eq!(value["architecture"], std::env::consts::ARCH);
+    }
 }
 
 /// Plumbs tracing spans into HiTrace, with the following caveats:
