@@ -359,16 +359,23 @@
       const sectionIds = ["home", "search", "download", "appearance", "about"];
 
       async function loadAbout() {
+        aboutPane.dataset.loading = "1";
         try {
           const response = await fetch("servo:about");
+          if (!response.ok) {
+            throw new Error(response.statusText);
+          }
           const data = await response.json();
           document.getElementById("about-version").textContent = data.version || "";
           document.getElementById("about-channel").textContent = data.channel || "";
           document.getElementById("about-architecture").textContent =
             data.architecture || "";
           aboutError.textContent = "";
+          aboutPane.dataset.loaded = "1";
         } catch (error) {
           aboutError.textContent = "Could not load version information.";
+        } finally {
+          delete aboutPane.dataset.loading;
         }
       }
 
@@ -389,8 +396,11 @@
           searchPane.dataset.loaded = "1";
           apply();
         }
-        if (current === "about" && !aboutPane.dataset.loaded) {
-          aboutPane.dataset.loaded = "1";
+        if (
+          current === "about" &&
+          !aboutPane.dataset.loaded &&
+          !aboutPane.dataset.loading
+        ) {
           loadAbout();
         }
       }
