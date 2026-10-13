@@ -16,7 +16,7 @@ on:
       release_tag:
         required: false
         type: string
-        description: 'The tag to create for the release. Leave empty for a date-stamped nightly.'
+        description: 'The tag to create for the release. Required when regular_release is true. Leave empty for a date-stamped nightly.'
 
 # contents: create releases and upload assets for regular releases on this repo.
 # actions: upload/download build artifacts. id-token/attestations: provenance.
@@ -45,6 +45,10 @@ jobs:
           INPUT_TAG: ${{ inputs.release_tag }}
           REGULAR_RELEASE: ${{ inputs.regular_release }}
         run: |
+          if [[ "${REGULAR_RELEASE}" == "true" && -z "${INPUT_TAG}" ]]; then
+            echo "Error: release_tag is required when regular_release is true."
+            exit 1
+          fi
           if [[ -n "${INPUT_TAG}" ]]; then
             # Same check as before: a regular release tag is cargo-semver compatible.
             if [[ "${REGULAR_RELEASE}" == "true" && ! "${INPUT_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
@@ -76,12 +80,10 @@ jobs:
           REGULAR_RELEASE: ${{ inputs.regular_release }}
           GITHUB_TOKEN: ${{ inputs.regular_release && github.token || secrets.NIGHTLY_REPO_TOKEN }}
         run: |
-          if [[ "${HAS_CUSTOM_TAG}" == "true" ]]; then
-            if [[ "${REGULAR_RELEASE}" == "true" ]]; then
-              RELEASE_NOTES="Aether release ${RELEASE_TAG}"
-            else
-              RELEASE_NOTES="Aether release ${RELEASE_TAG} based on ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
-            fi
+          if [[ "${REGULAR_RELEASE}" == "true" ]]; then
+            RELEASE_NOTES="Aether release ${RELEASE_TAG}"
+          elif [[ "${HAS_CUSTOM_TAG}" == "true" ]]; then
+            RELEASE_NOTES="Aether release ${RELEASE_TAG} based on ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           else
             RELEASE_NOTES="Nightly build based on ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           fi
