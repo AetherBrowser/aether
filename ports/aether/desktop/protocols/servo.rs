@@ -109,20 +109,19 @@ impl ProtocolHandler for ServoProtocolHandler {
                 "/settings.html",
             ),
 
+            // Internal JSON used by `settings.html` and `newtab.html`. A
+            // navigation would show that JSON to the user. Web pages can also
+            // fetch this scheme, because `is_fetchable` is true.
             "home" => {
-                if request_is_from_web_content(request) {
-                    return Box::pin(std::future::ready(Response::network_error(
-                        NetworkError::ResourceLoadError("Forbidden".to_owned()),
-                    )));
+                if internal_endpoint_is_hidden(request) {
+                    return forbidden_response();
                 }
                 json_response(request, crate::home::handle_home_request(url.query()))
             },
 
             "search-engines" => {
-                if request_is_from_settings_page(request) {
-                    return Box::pin(std::future::ready(Response::network_error(
-                        NetworkError::ResourceLoadError("Forbidden".to_owned()),
-                    )));
+                if internal_endpoint_is_hidden(request) {
+                    return forbidden_response();
                 }
                 json_response(
                     request,
@@ -164,12 +163,14 @@ impl ProtocolHandler for ServoProtocolHandler {
     }
 }
 
-fn request_is_from_settings_page(request: &Request) -> bool {
-    matches!(
-        &request.referrer,
-        Referrer::Client(url) | Referrer::ReferrerUrl(url)
-            if url.as_str() == "servo:settings"
-    )
+fn internal_endpoint_is_hidden(request: &Request) -> bool {
+    request.is_navigation_request() || request_is_from_web_content(request)
+}
+
+fn forbidden_response() -> Pin<Box<dyn Future<Output = Response> + Send>> {
+    Box::pin(std::future::ready(Response::network_error(
+        NetworkError::ResourceLoadError("Forbidden".to_owned()),
+    )))
 }
 
 fn request_is_from_web_content(request: &Request) -> bool {
