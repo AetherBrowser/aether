@@ -71,16 +71,19 @@ jobs:
       - id: create-release
         env:
           RELEASE_TAG: ${{ needs.resolve-tag.outputs.name }}
+          # Boolean only. The raw tag stays in resolve-tag, which validates it.
+          HAS_CUSTOM_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
+          REGULAR_RELEASE: ${{ inputs.regular_release }}
           GITHUB_TOKEN: ${{ inputs.regular_release && github.token || secrets.NIGHTLY_REPO_TOKEN }}
         run: |
-          if [[ -n "${{ inputs.release_tag }}" ]]; then
-            if [[ "${{ inputs.regular_release }}" == "true" ]]; then
+          if [[ "${HAS_CUSTOM_TAG}" == "true" ]]; then
+            if [[ "${REGULAR_RELEASE}" == "true" ]]; then
               RELEASE_NOTES="Aether release ${RELEASE_TAG}"
             else
-              RELEASE_NOTES="Aether release ${RELEASE_TAG} based on ${{ github.repository }}@${{ github.sha }}"
+              RELEASE_NOTES="Aether release ${RELEASE_TAG} based on ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
             fi
           else
-            RELEASE_NOTES="Nightly build based on ${{ github.repository }}@${{ github.sha }}"
+            RELEASE_NOTES="Nightly build based on ${GITHUB_REPOSITORY}@${GITHUB_SHA}"
           fi
           RELEASE_URL=$(gh release create "${RELEASE_TAG}" \
             --draft \
