@@ -828,6 +828,13 @@ pub struct Request {
     pub origin: Origin,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
+    /// Document URL when this request was started by a `servo:` page.
+    ///
+    /// Those pages have an opaque origin, so the referrer is omitted and a
+    /// protocol handler cannot tell `servo:settings` from `file:` or another
+    /// opaque caller. `main_fetch` records the URL here and still sends no
+    /// `Referer` header.
+    pub source_document_url: Option<ServoUrl>,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer-policy>
     pub referrer_policy: ReferrerPolicy,
     pub pipeline_id: Option<PipelineId>,
@@ -892,6 +899,7 @@ impl Request {
             destination: Destination::None,
             origin: origin.unwrap_or(Origin::Client),
             referrer,
+            source_document_url: None,
             referrer_policy: ReferrerPolicy::EmptyString,
             pipeline_id,
             target_webview_id: webview_id,

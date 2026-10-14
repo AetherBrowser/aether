@@ -111,16 +111,18 @@ impl ProtocolHandler for ServoProtocolHandler {
 
             // Internal JSON used by `settings.html` and `newtab.html`. A
             // navigation would show that JSON to the user. Web pages can also
-            // fetch this scheme, because `is_fetchable` is true.
+            // fetch this scheme, because `is_fetchable` is true. A non-empty
+            // query persists settings, so only `servo:settings` may send one.
+            // `newtab.html` reads with an empty query.
             "home" => {
-                if internal_endpoint_is_hidden(request) {
+                if !internal_json_request_is_allowed(request, url.query()) {
                     return forbidden_response();
                 }
                 json_response(request, crate::home::handle_home_request(url.query()))
             },
 
             "search-engines" => {
-                if internal_endpoint_is_hidden(request) {
+                if !internal_json_request_is_allowed(request, url.query()) {
                     return forbidden_response();
                 }
                 json_response(
@@ -167,6 +169,27 @@ fn internal_endpoint_is_hidden(request: &Request) -> bool {
     request.is_navigation_request() || request_is_from_web_content(request)
 }
 
+/// Reads stay available to internal pages such as `newtab.html`. A query
+/// writes settings, and `file:` or another opaque caller is not rejected by
+/// [`request_is_from_web_content`].
+fn internal_json_request_is_allowed(request: &Request, query: Option<&str>) -> bool {
+    if internal_endpoint_is_hidden(request) {
+        return false;
+    }
+    query.is_none_or(|query| query.is_empty()) || request_is_from_settings_page(request)
+}
+
+fn request_is_from_settings_page(request: &Request) -> bool {
+    request
+        .source_document_url
+        .as_ref()
+        .is_some_and(|url| is_settings_page_url(url.as_url()))
+}
+
+fn is_settings_page_url(url: &url::Url) -> bool {
+    url.scheme() == "servo" && url.path() == "settings"
+}
+
 fn forbidden_response() -> Pin<Box<dyn Future<Output = Response> + Send>> {
     Box::pin(std::future::ready(Response::network_error(
         NetworkError::ResourceLoadError("Forbidden".to_owned()),
@@ -200,4 +223,23 @@ fn json_response(
     response.headers.typed_insert(ContentType::json());
     *response.body.lock() = ResponseBody::Done(body.into_bytes());
     Box::pin(std::future::ready(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use url::Url;
+
+    use super::is_settings_page_url;
+
+    #[test]
+    fn settings_page_url_is_the_settings_path() {
+        let settings = Url::parse("servo:settings#home").unwrap();
+        assert!(is_settings_page_url(&settings));
+
+        let newtab = Url::parse("servo:newtab").unwrap();
+        assert!(!is_settings_page_url(&newtab));
+
+        let file = Url::parse("file:///tmp/page.html").unwrap();
+        assert!(!is_settings_page_url(&file));
+    }
 }
