@@ -245,6 +245,7 @@ dependencies = [
 name = "aether-media-mpv"
 version = "0.6.0"
 dependencies = [
+ "log",
  "servo-base",
  "servo-media",
  "servo-media-audio",
