@@ -319,14 +319,14 @@ fn test_issue_35754() {
 #[test]
 fn test_home_url_is_new_tab_page() {
     let home = crate::window::new_tab_url();
-    assert_eq!(home.as_str(), crate::window::NEW_TAB_URL);
+    assert_eq!(home.as_str(), crate::home::AETHER_HOME_URL);
     assert_eq!(home.as_str(), "servo:newtab");
 }
 
 #[test]
 fn test_location_bar_accepts_new_tab_url() {
     let url = location_bar_input_to_url(
-        crate::window::NEW_TAB_URL,
+        crate::home::AETHER_HOME_URL,
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("new tab URL should parse");

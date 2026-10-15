@@ -23,9 +23,6 @@ use crate::history::{ActiveEntry, HistoryUpdate, history_update};
 use crate::parser::location_bar_input_to_url;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
 
-/// The Aether home page. Preferences store this as Firefox's `about:home`.
-pub(crate) const NEW_TAB_URL: &str = "servo:newtab";
-
 /// Page opened by a new tab. A blank page when `browser.newtabpage.enabled` is false.
 pub(crate) fn new_tab_url() -> Url {
     crate::home::new_tab_url()
