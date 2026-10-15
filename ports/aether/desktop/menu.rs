@@ -375,7 +375,7 @@ mod tests {
     fn more_tools_developer_tools_row_selects_that_action() {
         let ctx = egui::Context::default();
         let mut icons = ToolbarIconCache::default();
-        ctx.run_ui(screen_input(vec![]), |ui| {
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             let mut menu = AppMenu::default();
             menu.page = AppMenuPage::MoreTools;
             assert!(menu.more_tools_page(ui, &mut icons).is_none());
@@ -384,7 +384,7 @@ mod tests {
         let mut found = false;
         for y in (0..160).step_by(8) {
             let mut action = None;
-            ctx.run_ui(screen_input(click(egui::pos2(40.0, y as f32))), |ui| {
+            let _ = ctx.run_ui(screen_input(click(egui::pos2(40.0, y as f32))), |ui| {
                 let mut menu = AppMenu::default();
                 menu.page = AppMenuPage::MoreTools;
                 action = menu.more_tools_page(ui, &mut icons);

@@ -1111,7 +1111,7 @@ mod tests {
             close_button_rect: egui::Rect::NOTHING,
         };
 
-        ctx.run_ui(screen_input(vec![]), |ui| {
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             let content = ui.available_rect_before_wrap();
             dock = Gui::show_devtools_dock(ui, &mut icons);
             page = ui.available_rect_before_wrap();
@@ -1137,13 +1137,13 @@ mod tests {
         let mut icons = ToolbarIconCache::default();
         let mut close_button_rect = egui::Rect::NOTHING;
 
-        ctx.run_ui(screen_input(vec![]), |ui| {
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             close_button_rect = Gui::show_devtools_dock(ui, &mut icons).close_button_rect;
         });
         assert!(close_button_rect.is_positive());
 
         let mut close_clicked = false;
-        ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
+        let _ = ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
             close_clicked = Gui::show_devtools_dock(ui, &mut icons).close_clicked;
         });
         assert!(close_clicked);
