@@ -15,6 +15,7 @@ name = "aether_media_mpv"
 path = "lib.rs"
 
 [dependencies]
+data-url = { workspace = true }
 log = { workspace = true }
 servo-base = { workspace = true }
 servo-media = { workspace = true }

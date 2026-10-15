@@ -5,8 +5,9 @@
 //! Safe wrapper around an `mpv_handle`. This is the only module allowed to call into `ffi`.
 
 use std::ffi::{CStr, CString, c_int};
-use std::fmt;
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
+use std::{fmt, slice};
 
 use crate::ffi;
 
@@ -23,6 +24,8 @@ pub enum MpvError {
     UnsupportedApi { major: u32, minor: u32 },
     /// A string passed to libmpv contains an interior NUL byte.
     InvalidString(String),
+    /// A property did not have the expected shape.
+    UnexpectedFormat { property: String },
 }
 
 impl fmt::Display for MpvError {
@@ -38,6 +41,9 @@ impl fmt::Display for MpvError {
             ),
             MpvError::InvalidString(string) => {
                 write!(formatter, "string contains a NUL byte: {string:?}")
+            },
+            MpvError::UnexpectedFormat { property } => {
+                write!(formatter, "property {property:?} has an unexpected format")
             },
         }
     }
@@ -67,6 +73,98 @@ fn check(code: c_int, call: impl FnOnce() -> String) -> Result<(), MpvError> {
 
 fn to_cstring(string: &str) -> Result<CString, MpvError> {
     CString::new(string).map_err(|_| MpvError::InvalidString(string.to_owned()))
+}
+
+/// An owned copy of an `mpv_node`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Node {
+    None,
+    String(String),
+    Flag(bool),
+    Int64(i64),
+    Double(f64),
+    Array(Vec<Node>),
+    Map(Vec<(String, Node)>),
+    /// A format this crate does not convert (e.g. byte arrays).
+    Unsupported,
+}
+
+impl Node {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Node::String(string) => Some(string),
+            _ => None,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&Node> {
+        match self {
+            Node::Map(entries) => entries
+                .iter()
+                .find_map(|(name, value)| (name == key).then_some(value)),
+            _ => None,
+        }
+    }
+
+    /// Deep-copies a node owned by libmpv.
+    ///
+    /// # Safety
+    /// `node` must be a valid `mpv_node` as returned by libmpv.
+    unsafe fn from_raw(node: &ffi::mpv_node) -> Node {
+        unsafe {
+            match node.format {
+                ffi::MPV_FORMAT_NONE => Node::None,
+                ffi::MPV_FORMAT_STRING => Node::String(string_from_raw(node.u.string)),
+                ffi::MPV_FORMAT_FLAG => Node::Flag(node.u.flag != 0),
+                ffi::MPV_FORMAT_INT64 => Node::Int64(node.u.int64),
+                ffi::MPV_FORMAT_DOUBLE => Node::Double(node.u.double_),
+                ffi::MPV_FORMAT_NODE_ARRAY => Node::Array(
+                    list_values(node.u.list)
+                        .iter()
+                        .map(|value| Node::from_raw(value))
+                        .collect(),
+                ),
+                ffi::MPV_FORMAT_NODE_MAP => {
+                    let list = node.u.list;
+                    let values = list_values(list);
+                    let keys = if list.is_null() || (*list).keys.is_null() {
+                        &[]
+                    } else {
+                        slice::from_raw_parts((*list).keys, values.len())
+                    };
+                    Node::Map(
+                        keys.iter()
+                            .zip(values)
+                            .map(|(key, value)| (string_from_raw(*key), Node::from_raw(value)))
+                            .collect(),
+                    )
+                },
+                _ => Node::Unsupported,
+            }
+        }
+    }
+}
+
+/// # Safety
+/// `string` must be NULL or a valid NUL-terminated string.
+unsafe fn string_from_raw(string: *const std::ffi::c_char) -> String {
+    if string.is_null() {
+        return String::new();
+    }
+    unsafe { CStr::from_ptr(string) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// # Safety
+/// `list` must be NULL or a valid `mpv_node_list` that outlives the returned slice.
+unsafe fn list_values<'a>(list: *const ffi::mpv_node_list) -> &'a [ffi::mpv_node] {
+    unsafe {
+        if list.is_null() || (*list).values.is_null() || (*list).num <= 0 {
+            return &[];
+        }
+        slice::from_raw_parts((*list).values, (*list).num as usize)
+    }
 }
 
 /// An initialized mpv instance, destroyed on drop.
@@ -111,6 +209,28 @@ impl MpvHandle {
             || format!("mpv_set_option_string({name}={value})"),
         )
     }
+
+    /// Reads a property as an owned [`Node`].
+    pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut raw = MaybeUninit::<ffi::mpv_node>::uninit();
+        check(
+            unsafe {
+                ffi::mpv_get_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_NODE,
+                    raw.as_mut_ptr().cast(),
+                )
+            },
+            || format!("mpv_get_property({name})"),
+        )?;
+        // On success, libmpv filled the node and we own its contents.
+        let mut raw = unsafe { raw.assume_init() };
+        let node = unsafe { Node::from_raw(&raw) };
+        unsafe { ffi::mpv_free_node_contents(&mut raw) };
+        Ok(node)
+    }
 }
 
 impl Drop for MpvHandle {
@@ -146,5 +266,16 @@ mod tests {
             MpvHandle::new(&[("vid", "n\0o")]).err(),
             Some(MpvError::InvalidString("n\0o".to_owned()))
         );
+    }
+
+    #[test]
+    fn properties_are_read_as_owned_nodes() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        let version = handle.get_node("mpv-version").unwrap();
+        assert!(version.as_str().is_some_and(|version| !version.is_empty()));
+        assert!(matches!(
+            handle.get_node("not-a-property"),
+            Err(MpvError::Api { .. })
+        ));
     }
 }

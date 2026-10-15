@@ -7,6 +7,8 @@
 //! libmpv only plays media: everything else the `Backend` trait covers (Web Audio, WebRTC,
 //! capture, media streams) is delegated to a fallback backend.
 
+mod capabilities;
+#[expect(non_camel_case_types, reason = "Mirrors the C names of mpv/client.h")]
 mod ffi;
 mod handle;
 mod player;
@@ -15,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use handle::{MpvError, MpvHandle};
+use capabilities::Capabilities;
 use log::{error, warn};
 pub use player::MpvPlayer;
 use servo_base::generic_channel::GenericCallback;
@@ -50,6 +52,8 @@ type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstan
 pub struct MpvBackend {
     /// Handles everything libmpv cannot do.
     fallback: Box<dyn Backend>,
+    /// `None` when libmpv is missing or incompatible: nothing is then reported as playable.
+    capabilities: Option<Capabilities>,
     instances: Arc<Mutex<Instances>>,
     next_instance_id: AtomicUsize,
 }
@@ -57,14 +61,18 @@ pub struct MpvBackend {
 impl MpvBackend {
     /// Creates the backend, delegating non-playback features to `fallback`.
     ///
-    /// This checks that libmpv is usable, so it should run off the main thread, as
-    /// `ServoMedia::init` does.
+    /// This probes libmpv, so it should run off the main thread, as `ServoMedia::init` does.
     pub fn with_fallback(fallback: Box<dyn Backend>) -> MpvBackend {
-        if let Err(error) = check_libmpv() {
-            error!("MPV backend: cannot use libmpv, media playback is disabled: {error}");
-        }
+        let capabilities = match Capabilities::probe() {
+            Ok(capabilities) => Some(capabilities),
+            Err(error) => {
+                error!("MPV backend: cannot use libmpv, media playback is disabled: {error}");
+                None
+            },
+        };
         MpvBackend {
             fallback,
+            capabilities,
             instances: Default::default(),
             next_instance_id: AtomicUsize::new(0),
         }
@@ -106,17 +114,6 @@ impl MpvBackend {
     }
 }
 
-/// Creates and destroys a libmpv instance with the options players will use, without
-/// opening any output.
-fn check_libmpv() -> Result<(), MpvError> {
-    let options: Vec<_> = BASE_OPTIONS
-        .iter()
-        .chain(&[("ao", "null"), ("vid", "no")])
-        .copied()
-        .collect();
-    MpvHandle::new(&options).map(drop)
-}
-
 impl BackendInit for MpvBackend {
     fn init() -> Box<dyn Backend> {
         Box::new(MpvBackend::with_fallback(DummyBackend::init()))
@@ -152,9 +149,11 @@ impl Backend for MpvBackend {
         player
     }
 
-    fn can_play_type(&self, _media_type: &str) -> SupportsMediaType {
-        // libmpv is not used yet, so nothing can be played.
-        SupportsMediaType::No
+    fn can_play_type(&self, media_type: &str) -> SupportsMediaType {
+        match self.capabilities {
+            Some(ref capabilities) => capabilities.can_play_type(media_type),
+            None => SupportsMediaType::No,
+        }
     }
 
     fn mute(&self, id: &ClientContextId, val: bool) {
@@ -243,10 +242,11 @@ mod tests {
         }
     }
 
-    /// A backend built directly, to test the instance bookkeeping alone.
+    /// A backend that never touches libmpv, to test the instance bookkeeping alone.
     fn backend() -> MpvBackend {
         MpvBackend {
             fallback: DummyBackend::init(),
+            capabilities: None,
             instances: Default::default(),
             next_instance_id: AtomicUsize::new(0),
         }
@@ -304,6 +304,11 @@ mod tests {
             Ok(())
         });
         assert_eq!(registered(&backend, &context), 0);
+    }
+
+    #[test]
+    fn without_libmpv_nothing_is_playable() {
+        assert_eq!(backend().can_play_type("audio/mpeg"), SupportsMediaType::No);
     }
 
     #[test]
