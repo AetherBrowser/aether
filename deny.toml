@@ -72,7 +72,26 @@ allow = [
 confidence-threshold = 0.8
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
-exceptions = []
+# libmpv2 declares the deprecated SPDX id LGPL-2.1. Clarify it to LGPL-2.1-only
+# and allow that license only for these two crates.
+exceptions = [
+    { crate = "libmpv2@6.0.0", allow = ["LGPL-2.1-only"] },
+    { crate = "libmpv2-sys@4.0.1", allow = ["LGPL-2.1-only"] },
+]
+
+[[licenses.clarify]]
+crate = "libmpv2@6.0.0"
+expression = "LGPL-2.1-only"
+license-files = [
+    { path = "LICENSE", hash = 0x13b834cd },
+]
+
+[[licenses.clarify]]
+crate = "libmpv2-sys@4.0.1"
+expression = "LGPL-2.1-only"
+license-files = [
+    { path = "LICENSE", hash = 0x13b834cd },
+]
 
 
 # This section is considered when running `cargo deny check bans`.
