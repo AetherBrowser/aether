@@ -7,13 +7,16 @@
 //! libmpv only plays media: everything else the `Backend` trait covers (Web Audio, WebRTC,
 //! capture, media streams) is delegated to a fallback backend.
 
+mod ffi;
+mod handle;
 mod player;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
-use log::warn;
+use handle::{MpvError, MpvHandle};
+use log::{error, warn};
 pub use player::MpvPlayer;
 use servo_base::generic_channel::GenericCallback;
 use servo_media::{Backend, BackendDeInit, BackendInit, MediaInstanceError, SupportsMediaType};
@@ -31,6 +34,16 @@ use servo_media_streams::{MediaOutput, MediaSocket, MediaStreamType};
 use servo_media_traits::{ClientContextId, MediaInstance};
 use servo_media_webrtc::{WebRtcController, WebRtcSignaller};
 
+/// Options applied to every libmpv instance, on top of the embedding defaults of the
+/// `libmpv` profile (no config files, no terminal, no OSC, no input bindings).
+/// They turn off command line player features a browser never uses.
+const BASE_OPTIONS: &[(&str, &str)] = &[
+    ("load-scripts", "no"),
+    ("ytdl", "no"),
+    ("load-auto-profiles", "no"),
+    ("audio-display", "no"),
+];
+
 /// Media instances per client context (a pipeline), weakly referenced.
 type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstance>>)>>;
 
@@ -43,7 +56,13 @@ pub struct MpvBackend {
 
 impl MpvBackend {
     /// Creates the backend, delegating non-playback features to `fallback`.
+    ///
+    /// This checks that libmpv is usable, so it should run off the main thread, as
+    /// `ServoMedia::init` does.
     pub fn with_fallback(fallback: Box<dyn Backend>) -> MpvBackend {
+        if let Err(error) = check_libmpv() {
+            error!("MPV backend: cannot use libmpv, media playback is disabled: {error}");
+        }
         MpvBackend {
             fallback,
             instances: Default::default(),
@@ -85,6 +104,17 @@ impl MpvBackend {
             }
         }
     }
+}
+
+/// Creates and destroys a libmpv instance with the options players will use, without
+/// opening any output.
+fn check_libmpv() -> Result<(), MpvError> {
+    let options: Vec<_> = BASE_OPTIONS
+        .iter()
+        .chain(&[("ao", "null"), ("vid", "no")])
+        .copied()
+        .collect();
+    MpvHandle::new(&options).map(drop)
 }
 
 impl BackendInit for MpvBackend {

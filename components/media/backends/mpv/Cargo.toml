@@ -8,6 +8,7 @@ publish.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 description = "libmpv-based media backend for servo-media."
+build = "build.rs"
 
 [lib]
 name = "aether_media_mpv"
@@ -23,6 +24,9 @@ servo-media-player = { workspace = true }
 servo-media-streams = { workspace = true }
 servo-media-traits = { workspace = true }
 servo-media-webrtc = { workspace = true }
+
+[build-dependencies]
+pkg-config = { workspace = true }
 
 [lints]
 workspace = true

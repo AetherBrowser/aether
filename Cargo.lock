@@ -246,6 +246,7 @@ name = "aether-media-mpv"
 version = "0.6.0"
 dependencies = [
  "log",
+ "pkg-config",
  "servo-base",
  "servo-media",
  "servo-media-audio",
