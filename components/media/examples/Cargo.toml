@@ -18,5 +18,13 @@ servo-media = { workspace = true }
 servo-media-auto = { workspace = true }
 servo-media-dummy = { workspace = true }
 
+[features]
+mpv = []
+
+[[example]]
+name = "mpv_spike_ffi"
+path = "examples/mpv_spike_ffi/main.rs"
+required-features = ["mpv"]
+
 [lints]
 workspace = true
