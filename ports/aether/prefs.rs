@@ -751,7 +751,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         }),
         #[cfg(target_env = "ohos")]
         log_to_file: cmd_args.log_to_file,
-        ..Default::default()
     };
 
     let Ok(debug_options) = parse_diagnostics_logging(cmd_args.debug) else {
