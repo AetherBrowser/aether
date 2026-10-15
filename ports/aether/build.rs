@@ -8,6 +8,84 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
+/// Tag used to choose the channel and the suffix of `--version`. Empty means a
+/// local `dev` build, which shows the git commit instead.
+///
+/// CI sets `AETHER_RELEASE_TAG` to one of:
+/// - `YYYY-MM-DD` for a nightly
+/// - `vX.Y.Z-<prerelease>` (for example `v0.1.0-rc1`) when `regular_release` is off
+/// - `vX.Y.Z` (for example `v0.1.0`) for a regular release
+fn release_tag() -> Result<String, String> {
+    let tag = match std::env::var("AETHER_RELEASE_TAG") {
+        Ok(tag) => tag,
+        Err(std::env::VarError::NotPresent) => return Ok(String::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let tag = tag.trim();
+    if tag.is_empty() || is_nightly_tag(tag) || is_release_tag(tag) || is_prerelease_tag(tag) {
+        Ok(tag.to_owned())
+    } else {
+        Err(format!(
+            "AETHER_RELEASE_TAG must be empty, YYYY-MM-DD, vX.Y.Z, or vX.Y.Z-<prerelease> (got {tag:?})"
+        ))
+    }
+}
+
+fn is_ascii_digits(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_nightly_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let Some(year) = parts.next() else {
+        return false;
+    };
+    let Some(month) = parts.next() else {
+        return false;
+    };
+    let Some(day) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none() &&
+        year.len() == 4 &&
+        month.len() == 2 &&
+        day.len() == 2 &&
+        is_ascii_digits(year) &&
+        is_ascii_digits(month) &&
+        is_ascii_digits(day)
+}
+
+fn is_release_tag(tag: &str) -> bool {
+    let Some(rest) = tag.strip_prefix('v') else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    let Some(patch) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none() &&
+        is_ascii_digits(major) &&
+        is_ascii_digits(minor) &&
+        is_ascii_digits(patch)
+}
+
+fn is_prerelease_tag(tag: &str) -> bool {
+    let Some((version, prerelease)) = tag.split_once('-') else {
+        return false;
+    };
+    is_release_tag(version) &&
+        !prerelease.is_empty() &&
+        prerelease
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-')
+}
+
 fn git_sha() -> Result<String, String> {
     let output = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -25,6 +103,15 @@ fn git_sha() -> Result<String, String> {
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rustc-check-cfg=cfg(servo_production)");
     println!("cargo::rustc-check-cfg=cfg(servo_do_not_use_in_production)");
+    // The cfg is part of the rustc command line, so sccache will not reuse a
+    // binary built for a different tag. The string itself is read via rustc-env.
+    println!("cargo::rustc-check-cfg=cfg(aether_release_tag, values(any()))");
+    println!("cargo:rerun-if-env-changed=AETHER_RELEASE_TAG");
+    let tag = release_tag()?;
+    println!("cargo:rustc-env=AETHER_RELEASE_TAG={tag}");
+    if !tag.is_empty() {
+        println!("cargo:rustc-cfg=aether_release_tag=\"{tag}\"");
+    }
     // Cargo does not expose the profile name to crates or their build scripts,
     // but we can extract it from OUT_DIR and set a custom cfg() ourselves.
     let out = std::env::var("OUT_DIR")?;

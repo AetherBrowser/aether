@@ -393,6 +393,13 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("href=\"#search\""));
     assert!(html.contains("href=\"#download\""));
     assert!(html.contains("href=\"#appearance\""));
+    assert!(html.contains("href=\"#about\""));
+    assert!(html.contains("<section id=\"about\" hidden>"));
+    assert!(html.contains(">About<"));
+    assert!(html.contains("servo:about"));
+    assert!(html.contains(">Version<"));
+    assert!(html.contains(">Channel<"));
+    assert!(html.contains(">Architecture<"));
     assert!(html.contains("Home and startup"));
     assert!(html.contains("id=\"new-windows\""));
     assert!(html.contains("Aether home page"));

@@ -14,6 +14,7 @@
 //! - servo:history
 //! - servo:settings
 //! - servo:home
+//! - servo:about
 //! - servo:search-engines
 
 use std::future::Future;
@@ -119,6 +120,13 @@ impl ProtocolHandler for ServoProtocolHandler {
                     return forbidden_response();
                 }
                 json_response(request, crate::home::handle_home_request(url.query()))
+            },
+
+            "about" => {
+                if request_is_from_web_content(request) {
+                    return forbidden_response();
+                }
+                json_response(request, crate::about_info_json())
             },
 
             "search-engines" => {
