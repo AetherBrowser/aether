@@ -311,6 +311,10 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.home_settings.clone(),
         );
+        crate::search::install_search_engines(
+            init.opts.config_dir.clone(),
+            init.servoshell_preferences.search_engines.clone(),
+        );
         let history = open_history(&init.opts);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)
