@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-#![allow(rustdoc::private_intra_doc_links)]
+#![expect(rustdoc::private_intra_doc_links)]
 
 //! Flow layout, also known as block-and-inline layout.
 
@@ -15,7 +15,7 @@ use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::computed_values::clear::T as StyleClear;
 use style::context::SharedStyleContext;
-use style::logical_geometry::Direction;
+use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
 use style::servo::selector_parser::PseudoElement;
 use style::values::specified::align::AlignFlags;
@@ -97,6 +97,15 @@ impl BlockContainer {
                 .sum(),
             BlockContainer::InlineFormattingContext(inline_formatting_context) => {
                 inline_formatting_context.subtree_size()
+            },
+        }
+    }
+
+    pub(crate) fn inline_formatting_context(&self) -> Option<&InlineFormattingContext> {
+        match self {
+            BlockContainer::BlockLevelBoxes(..) => None,
+            BlockContainer::InlineFormattingContext(inline_formatting_context) => {
+                Some(inline_formatting_context)
             },
         }
     }
@@ -266,7 +275,7 @@ impl BlockLevelBox {
                 .sizes
         };
         let inline_size = content_box_sizes.inline.resolve(
-            Direction::Inline,
+            LogicalAxis::Inline,
             Size::Stretch,
             Au::zero,
             Some(available_inline_size),
@@ -529,6 +538,10 @@ impl BlockFormattingContext {
 
     pub(crate) fn attached_to_tree(&self, layout_box: WeakLayoutBox) {
         self.contents.attached_to_tree(layout_box);
+    }
+
+    pub(crate) fn inline_formatting_context(&self) -> Option<&InlineFormattingContext> {
+        self.contents.inline_formatting_context()
     }
 }
 
@@ -936,7 +949,7 @@ fn layout_block_level_child(
 }
 
 impl BlockLevelBox {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn layout(
         &self,
         layout_context: &LayoutContext,
@@ -1086,7 +1099,7 @@ impl IndependentFormattingContext {
 
         let lazy_block_size = LazySize::new(
             &block_sizes,
-            Direction::Block,
+            LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
             available_block_size,
@@ -1266,7 +1279,7 @@ impl IndependentFormattingContext {
                 update_cache(cache, stretch_size);
             }
             content_box_sizes.inline.resolve(
-                Direction::Inline,
+                LogicalAxis::Inline,
                 automatic_inline_size,
                 Au::zero,
                 Some(stretch_size),
@@ -1278,7 +1291,7 @@ impl IndependentFormattingContext {
         let get_lazy_block_size = || {
             LazySize::new(
                 &content_box_sizes.block,
-                Direction::Block,
+                LogicalAxis::Block,
                 Size::FitContent,
                 Au::zero,
                 available_block_size,
@@ -1593,7 +1606,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     });
     let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
         SizeConstraint::Definite(content_box_sizes.block.resolve(
-            Direction::Block,
+            LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
             available_block_size,
@@ -1619,7 +1632,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     };
     let justify_self = resolve_justify_self(style, containing_block.style, has_inline_parent);
     let inline_size = content_box_sizes.inline.resolve(
-        Direction::Inline,
+        LogicalAxis::Inline,
         automatic_inline_size(justify_self, context),
         Au::zero,
         Some(available_inline_size),
@@ -1704,9 +1717,9 @@ fn resolve_justify_self(
     // In that case, since `justify-items` doesn't apply to inline boxes, we need to treat
     // `justify-self: auto` as `normal`.
     // See the resolution in <https://github.com/w3c/csswg-drafts/issues/11462>.
-    let alignment = match style.clone_justify_self().0 {
+    let alignment = match style.get_justify_self().0 {
         AlignFlags::AUTO if has_inline_parent => AlignFlags::NORMAL,
-        AlignFlags::AUTO => containing_block_style.clone_justify_items().computed.0.0,
+        AlignFlags::AUTO => containing_block_style.get_justify_items().computed.0.0,
         alignment => alignment,
     };
     let is_ltr = |style: &ComputedValues| style.writing_mode.line_left_is_inline_start();
@@ -1775,7 +1788,7 @@ fn justify_self_alignment(
 
     // For `justify-self: normal`, fall back to the special 'text-align' values.
     let style = containing_block.style;
-    match style.clone_text_align() {
+    match style.get_text_align() {
         TextAlignKeyword::MozCenter => free_space / 2,
         TextAlignKeyword::MozLeft if !style.writing_mode.line_left_is_inline_start() => free_space,
         TextAlignKeyword::MozRight if style.writing_mode.line_left_is_inline_start() => free_space,
@@ -1902,7 +1915,7 @@ impl<'container> PlacementState<'container> {
         containing_block: &'container ContainingBlock<'container>,
     ) -> PlacementState<'container> {
         let is_inline_block_context =
-            containing_block.style.get_box().clone_display() == Display::InlineBlock;
+            containing_block.style.get_box().get_display() == &Display::InlineBlock;
         PlacementState {
             next_in_flow_margin_collapses_with_parent_start_margin:
                 collapsible_with_parent_start_margin.0,
@@ -2155,7 +2168,7 @@ impl IndependentFormattingContext {
             self.tentative_block_content_size(preferred_aspect_ratio, available_inline_size);
         let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
             SizeConstraint::Definite(content_box_sizes_and_pbm.content_box_sizes.block.resolve(
-                Direction::Block,
+                LogicalAxis::Block,
                 Size::FitContent,
                 Au::zero,
                 available_block_size,
@@ -2177,7 +2190,7 @@ impl IndependentFormattingContext {
         };
 
         let inline_size = content_box_sizes_and_pbm.content_box_sizes.inline.resolve(
-            Direction::Inline,
+            LogicalAxis::Inline,
             Size::FitContent,
             Au::zero,
             Some(available_inline_size),
@@ -2200,7 +2213,7 @@ impl IndependentFormattingContext {
 
         let lazy_block_size = LazySize::new(
             &content_box_sizes_and_pbm.content_box_sizes.block,
-            Direction::Block,
+            LogicalAxis::Block,
             Size::FitContent,
             Au::zero,
             available_block_size,

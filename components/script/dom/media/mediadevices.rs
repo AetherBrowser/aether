@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use script_bindings::reflector::reflect_dom_object_with_cx;
+use script_bindings::reflector::reflect_dom_object;
 use servo_media::ServoMedia;
 use servo_media::streams::MediaStreamType;
 use servo_media::streams::capture::{Constrain, ConstrainRange, MediaTrackConstraintSet};
@@ -40,7 +40,7 @@ impl MediaDevices {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<MediaDevices> {
-        reflect_dom_object_with_cx(Box::new(MediaDevices::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(MediaDevices::new_inherited()), global)
     }
 }
 
@@ -51,7 +51,7 @@ impl MediaDevicesMethods<crate::DomTypeHolder> for MediaDevices {
         cx: &mut CurrentRealm,
         constraints: &MediaStreamConstraints,
     ) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(cx);
+        let p = Promise::new_in_realm(cx);
         let media = ServoMedia::get();
         let stream = MediaStream::new(cx, &self.global());
         if let Some(constraints) = convert_constraints(&constraints.audio) &&
@@ -75,7 +75,7 @@ impl MediaDevicesMethods<crate::DomTypeHolder> for MediaDevices {
     fn EnumerateDevices(&self, cx: &mut JSContext) -> RootedPromise {
         // Step 1.
         let mut realm = CurrentRealm::assert(cx);
-        let p = Promise::new_in_realm_rooted(&mut realm);
+        let p = Promise::new_in_realm(&mut realm);
 
         // Step 2.
         // XXX These steps should be run in parallel.

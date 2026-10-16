@@ -9,7 +9,9 @@
 
 use std::cell::{Ref, RefMut};
 
+use embedder_traits::EditingAction;
 use js::context::JSContext;
+use layout_api::QueryMsg;
 use script_bindings::inheritance::Castable;
 use script_bindings::refcounted::Trusted;
 use servo_base::text::Utf16CodeUnits;
@@ -18,11 +20,14 @@ use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMo
 use crate::dom::bindings::error::{Error, ErrorResult};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
-use crate::dom::event::{EventBubbles, EventCancelable};
+use crate::dom::event::{EventBubbles, EventCancelable, EventFlags};
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::html::form_controls::text_input::{SelectionDirection, SelectionState, TextInput};
-use crate::dom::node::NodeTraits;
-use crate::dom::text_input::{EmbedderClipboardProvider, InputEventType, IsComposing};
+use crate::dom::html::form_controls::text_input::{
+    Lines, SelectionDirection, SelectionState, TextInput,
+};
+use crate::dom::node::focus::FocusTrigger;
+use crate::dom::node::{Node, NodeTraits};
+use crate::dom::text_input::{EmbedderClipboardProvider, InputEventType, IsComposing, KeyReaction};
 use crate::dom::types::InputEvent;
 use crate::dom::{Element, Event};
 
@@ -43,6 +48,7 @@ pub(crate) trait TextControlElement {
     fn value_text(&self) -> DOMString;
     fn read_only_or_disabled(&self) -> bool;
     fn handle_text_content_changed(&self, cx: &mut JSContext);
+    fn handle_key_reaction(&self, cx: &mut JSContext, action: KeyReaction);
 
     fn insert_content(&self, cx: &mut JSContext, text_content: &str) {
         self.text_input_mut().insert(text_content);
@@ -52,6 +58,91 @@ pub(crate) trait TextControlElement {
     fn remove_the_contents_of_the_selection(&self, cx: &mut JSContext) {
         self.text_input_mut().delete_selection();
         self.handle_text_content_changed(cx);
+    }
+
+    fn perform_editing_action(&self, cx: &mut JSContext, action: EditingAction) -> bool {
+        let canceled = self.maybe_fire_beforeinput_event_for_editing_action(cx, &action);
+        if canceled {
+            return false;
+        }
+
+        let key_reaction = self.text_input_mut().perform_editing_action(action);
+        if key_reaction == KeyReaction::Nothing {
+            return false;
+        }
+
+        self.handle_key_reaction(cx, key_reaction);
+        true // TODO: Return true if the action can have any effect.
+    }
+
+    /// Returns true if and only if the editing action should be canceled.
+    fn maybe_fire_beforeinput_event_for_editing_action(
+        &self,
+        cx: &mut JSContext,
+        action: &EditingAction,
+    ) -> bool {
+        let (data, event_type) = match action {
+            EditingAction::InsertText(text) => (Some(text.as_str()), InputEventType::InsertText),
+            EditingAction::InsertCompositionText(text) => {
+                (Some(text.as_str()), InputEventType::InsertCompositionText)
+            },
+            EditingAction::Backspace(_) => (None, InputEventType::DeleteContentBackward),
+            EditingAction::Delete => (None, InputEventType::DeleteContentForward),
+            EditingAction::InsertNewline | EditingAction::InsertParagraph
+                if self.text_input().mode() == Lines::Multiple =>
+            {
+                (None, InputEventType::InsertLineBreak)
+            },
+            _ => return false,
+        };
+        self.fire_beforeinput_event(
+            cx,
+            data,
+            if event_type == InputEventType::InsertCompositionText {
+                IsComposing::Composing
+            } else {
+                IsComposing::NotComposing
+            },
+            event_type,
+        )
+    }
+
+    /// <https://w3c.github.io/uievents/#event-type-beforeinput>
+    /// Returns true if and only if the beforeinput event flags indicate cancelation or the text
+    /// control was hidden in the event listener.
+    fn fire_beforeinput_event(
+        &self,
+        cx: &mut JSContext,
+        data: Option<&str>,
+        is_composing: IsComposing,
+        input_type: InputEventType,
+    ) -> bool {
+        let target = self.as_element().upcast::<EventTarget>();
+        let global = target.global();
+        let window = global.as_window();
+        let event = InputEvent::new(
+            cx,
+            window,
+            None,
+            atom!("beforeinput"),
+            true,
+            input_type.is_beforeinput_cancelable(),
+            Some(window),
+            0,
+            data.map(DOMString::from),
+            is_composing.into(),
+            input_type.as_str().into(),
+        );
+        let event = event.upcast::<Event>();
+        event.set_composed(true);
+        event.fire(cx, target);
+        let flags = event.flags();
+        // We need to check if the event listener hid the text control during execution, so we
+        // do a layout reflow.
+        window.layout_reflow(QueryMsg::StyleQuery);
+        let node = self.as_element().upcast::<Node>();
+        flags.intersects(EventFlags::Canceled) ||
+            !node.is_being_rendered_or_delegates_rendering(None)
     }
 
     /// <https://w3c.github.io/uievents/#event-type-input>
@@ -91,12 +182,19 @@ pub(crate) trait TextControlElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-select>
-    fn dom_select(&self) {
+    fn dom_select(&self, cx: &mut JSContext) {
         // Step 1: If this element is an input element, and either select() does not apply
         // to this element or the corresponding control has no selectable text, return.
         if !self.has_selectable_text() {
             return;
         }
+
+        // See <https://github.com/servo/servo/issues/47753>:
+        // This behavior isn't specified, but all browsers seem to focus an input element
+        // when you perform a programmatic text selection in that element.
+        self.as_element()
+            .upcast::<Node>()
+            .run_the_focusing_steps(cx, None, FocusTrigger::Other);
 
         // Step 2 : Set the selection range with 0 and infinity.
         self.set_range(
@@ -107,7 +205,7 @@ pub(crate) trait TextControlElement {
         );
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionstart
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionstart>
     fn dom_start(&self) -> Option<Utf16CodeUnits> {
         // Step 1
         if !self.selection_api_applies() {
@@ -118,7 +216,7 @@ pub(crate) trait TextControlElement {
         Some(self.start())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionstart
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionstart>
     fn set_dom_start(&self, start: Option<Utf16CodeUnits>) -> ErrorResult {
         // Step 1: If this element is an input element, and selectionStart does not apply
         // to this element, throw an "InvalidStateError" DOMException.
@@ -143,7 +241,7 @@ pub(crate) trait TextControlElement {
         Ok(())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend>
     fn dom_end(&self) -> Option<Utf16CodeUnits> {
         // Step 1: If this element is an input element, and selectionEnd does not apply to
         // this element, return null.
@@ -158,7 +256,7 @@ pub(crate) trait TextControlElement {
         Some(self.end())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectionend>
     fn set_dom_end(&self, end: Option<Utf16CodeUnits>) -> ErrorResult {
         // Step 1: If this element is an input element, and selectionEnd does not apply to
         // this element, throw an "InvalidStateError" DOMException.
@@ -175,7 +273,7 @@ pub(crate) trait TextControlElement {
         Ok(())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectiondirection
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectiondirection>
     fn dom_direction(&self) -> Option<DOMString> {
         // Step 1
         if !self.selection_api_applies() {
@@ -185,7 +283,7 @@ pub(crate) trait TextControlElement {
         Some(DOMString::from(self.direction()))
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectiondirection
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-selectiondirection>
     fn set_dom_direction(&self, direction: Option<DOMString>) -> ErrorResult {
         // Step 1
         if !self.selection_api_applies() {
@@ -204,7 +302,7 @@ pub(crate) trait TextControlElement {
         Ok(())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-setselectionrange
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setselectionrange>
     fn set_dom_range(
         &self,
         start: Utf16CodeUnits,
@@ -228,7 +326,7 @@ pub(crate) trait TextControlElement {
         Ok(())
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext
+    /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn set_dom_range_text(
         &self,
         replacement: DOMString,

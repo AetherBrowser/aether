@@ -10,9 +10,9 @@ use embedder_traits::{
     ConfirmResponse, ConsoleLogLevel, ContextMenuAction, ContextMenuElementInformation,
     ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlResponse, FilePickerRequest,
     FilterPattern, InputEventId, InputEventResult, InputMethodType, LoadStatus, MediaSessionEvent,
-    NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor, ScreenGeometry,
-    SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest, TraversalId,
-    WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
+    NavigationType, NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor,
+    ScreenGeometry, SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest,
+    TraversalId, WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
 };
 use paint_api::rendering_context::RenderingContext;
 use servo_base::generic_channel::{GenericCallback, GenericSender, SendError};
@@ -931,9 +931,6 @@ pub trait WebViewDelegate {
     /// The status text of the currently loaded page in this [`WebView`] has changed. The new
     /// status text can accessed via [`WebView::status_text`].
     fn notify_status_text_changed(&self, _webview: WebView, _status: Option<String>) {}
-    /// This [`WebView`] has either become focused or lost focus. Whether or not the
-    /// [`WebView`] is focused can be accessed via [`WebView::focused`].
-    fn notify_focus_changed(&self, _webview: WebView, _focused: bool) {}
     /// This [`WebView`] has either started to animate or stopped animating. When a
     /// [`WebView`] is animating, it is up to the embedding application ensure that
     /// `Servo::spin_event_loop` is called at regular intervals in order to update the
@@ -954,6 +951,17 @@ pub trait WebViewDelegate {
     /// as a `Vec<Url>` and `_current` denotes the current index in the history. New navigations,
     /// back navigation, and forward navigation modify this index.
     fn notify_history_changed(&self, _webview: WebView, _entries: Vec<Url>, _current: usize) {}
+    /// A navigation of the top-level document of this [`WebView`] was committed, and `url` is
+    /// now its active session history entry. The [`NavigationType`] tells whether this entry
+    /// was added, replaced the previous active entry, or was reached by traversing the session
+    /// history. Navigations inside `<iframe>`s are not reported.
+    fn notify_navigation_committed(
+        &self,
+        _webview: WebView,
+        _url: Url,
+        _navigation_type: NavigationType,
+    ) {
+    }
     /// A history traversal operation is complete.
     fn notify_traversal_complete(&self, _webview: WebView, _traversal_id: TraversalId) {}
     /// Page content has closed this [`WebView`] via `window.close()`. It's the embedder's
@@ -1219,7 +1227,9 @@ mod test {
         let web_resource_request = || WebResourceRequest {
             method: Method::GET,
             headers: HeaderMap::default(),
-            url: Url::parse("https://example.com").expect("Guaranteed by argument"),
+            url: Url::parse("https://example.com")
+                .expect("Guaranteed by argument")
+                .into(),
             destination: content_security_policy::Destination::Document,
             referrer_url: None,
             is_for_main_frame: false,

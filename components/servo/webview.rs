@@ -14,8 +14,9 @@ use dpi::PhysicalSize;
 use embedder_traits::{
     ContextMenuAction, ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlRequest, Image,
     InputEvent, InputEventAndId, InputEventId, JSValue, JavaScriptEvaluationError, LoadStatus,
-    MediaSessionActionType, NewWebViewDetails, ScreenGeometry, ScreenshotCaptureError, Scroll,
-    Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint, WebViewRect,
+    MediaSessionActionType, NavigationType, NewWebViewDetails, ScreenGeometry,
+    ScreenshotCaptureError, Scroll, Theme, TraversalId, UrlRequest, ViewportDetails, WebViewPoint,
+    WebViewRect,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
@@ -179,7 +180,7 @@ impl WebView {
             status_text: None,
             page_title: None,
             favicon: None,
-            focused: false,
+            focused: true,
             animating: false,
             cursor: Cursor::Pointer,
             back_forward_list: Default::default(),
@@ -388,20 +389,9 @@ impl WebView {
         self.delegate().notify_favicon_changed(self);
     }
 
-    /// Whether or not this [`WebView`] currently has the keyboard focus.
-    ///
-    /// The embedder can use [`WebViewDelegate::notify_focus_changed`] to subscribe
-    /// to changes in the  [`WebView`]'s focus state.
+    /// Whether or not this [`WebView`] currently has system focus.
     pub fn focused(&self) -> bool {
         self.inner().focused
-    }
-
-    pub(crate) fn set_focused(self, new_value: bool) {
-        if self.inner().focused == new_value {
-            return;
-        }
-        self.inner_mut().focused = new_value;
-        self.delegate().notify_focus_changed(self, new_value);
     }
 
     /// Get the current [`Cursor`] for this [`WebView`].
@@ -421,18 +411,18 @@ impl WebView {
         self.delegate().notify_cursor_changed(self, new_value);
     }
 
-    /// Notify Servo that this [`WebView`] has gained keyboard focus.
-    pub fn focus(&self) {
-        self.servo()
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::FocusWebView(self.id()));
-    }
-
-    /// Notify Servo that this [`WebView`] has lost keyboard focus.
-    pub fn blur(&self) {
-        self.servo()
-            .constellation_proxy()
-            .send(EmbedderToConstellationMessage::BlurWebView);
+    /// Notify Servo that this [`WebView`] has gained or lost system focus.
+    ///
+    /// All [`WebView`]s start with system focus activated, so embedders are
+    /// expected to explicitly set this to false when the containing view loses
+    /// focus.
+    pub fn set_focused(&self, focused: bool) {
+        let old_focused = std::mem::replace(&mut self.inner_mut().focused, focused);
+        if old_focused != focused {
+            self.servo().constellation_proxy().send(
+                EmbedderToConstellationMessage::SetWebViewHasSystemFocus(self.id(), focused),
+            );
+        }
     }
 
     /// Whether or not this [`WebView`] has animating content, such as a CSS animation or
@@ -778,27 +768,42 @@ impl WebView {
             .request_screenshot(self.id(), rect, Box::new(callback));
     }
 
-    pub(crate) fn set_history(self, new_back_forward_list: Vec<ServoUrl>, new_index: usize) {
-        {
+    pub(crate) fn set_history(
+        self,
+        new_back_forward_list: Vec<ServoUrl>,
+        new_index: usize,
+        navigation_type: Option<NavigationType>,
+        page_title: Option<String>,
+    ) {
+        let page_title_changed = {
             let mut inner_mut = self.inner_mut();
             inner_mut.back_forward_list_index = new_index;
             inner_mut.back_forward_list = new_back_forward_list
                 .into_iter()
                 .map(ServoUrl::into_url)
                 .collect();
-        }
+            let page_title_changed = inner_mut.page_title != page_title;
+            inner_mut.page_title = page_title.clone();
+            page_title_changed
+        };
 
         let back_forward_list = self.inner().back_forward_list.clone();
         let back_forward_list_index = self.inner().back_forward_list_index;
-        self.delegate().notify_url_changed(
-            self.clone(),
-            back_forward_list[back_forward_list_index].clone(),
-        );
+        let url = back_forward_list[back_forward_list_index].clone();
+        self.delegate()
+            .notify_url_changed(self.clone(), url.clone());
         self.delegate().notify_history_changed(
             self.clone(),
             back_forward_list,
             back_forward_list_index,
         );
+        if let Some(navigation_type) = navigation_type {
+            self.delegate()
+                .notify_navigation_committed(self.clone(), url, navigation_type);
+        }
+        if page_title_changed {
+            self.delegate().notify_page_title_changed(self, page_title);
+        }
     }
 
     pub(crate) fn show_embedder_control(
@@ -1006,6 +1011,25 @@ impl WebView {
         );
     }
 
+    /// After a new tree has been grafted, move focus to the graft node so that the grafted tree's
+    /// focused node becomes the focused node for the webview.
+    fn move_accessibility_focus_to_graft_node(&self) {
+        let Some(webview_accesskit_tree_id) = self.inner().accesskit_tree_id else {
+            return;
+        };
+        let graft_node_id = NodeId(1);
+
+        self.delegate().notify_accessibility_tree_update(
+            self.clone(),
+            TreeUpdate {
+                nodes: vec![],
+                tree: None,
+                tree_id: webview_accesskit_tree_id,
+                focus: graft_node_id,
+            },
+        );
+    }
+
     pub(crate) fn process_accessibility_tree_update(&self, tree_update: TreeUpdate, epoch: Epoch) {
         if self
             .inner()
@@ -1023,9 +1047,19 @@ impl WebView {
             .grafted_accesskit_tree_epoch
             .is_none_or(|current| epoch > current)
         {
+            // This three-step process is necessary because we need the graft node to be the focused
+            // node in the WebView's accessibility tree, but we can't make it the focused node until
+            // the graft is completed by sending the initial tree update for the new tree.
             self.notify_document_accessibility_tree_id(tree_update.tree_id);
             self.inner_mut().grafted_accesskit_tree_epoch = Some(epoch);
+
+            self.delegate()
+                .notify_accessibility_tree_update(self.clone(), tree_update);
+
+            self.move_accessibility_focus_to_graft_node();
+            return;
         }
+
         self.delegate()
             .notify_accessibility_tree_update(self.clone(), tree_update);
     }

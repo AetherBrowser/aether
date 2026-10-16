@@ -68,9 +68,10 @@ use crate::dom::medialist::MediaList;
 use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
-    BindContext, MoveContext, Node, NodeTraits, UnbindContext, from_untrusted_node_address,
+    BindContext, MoveContext, Node, NodeDamage, NodeTraits, UnbindContext,
+    from_untrusted_node_address,
 };
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::text::Text;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollRequirement};
 use crate::event_loop::script_thread::ScriptThread;
@@ -170,8 +171,11 @@ impl HTMLElement {
         // a string consisting of only ASCII whitespace, or is a media query list that
         // matches the user's environment according to the definitions given in Media Queries. [MQ]
         self.element
-            .get_attribute_string_value(&local_name!("media"))
-            .is_none_or(|media| MediaList::matches_environment(&self.owner_document(), &media))
+            .get_attribute_string_ref(&local_name!("media"))
+            .is_none_or(|media| {
+                let media = media.as_attr_ref();
+                MediaList::matches_environment(&self.owner_document(), &media.value())
+            })
     }
 
     /// <https://html.spec.whatwg.org/multipage/#editing-host>
@@ -995,7 +999,7 @@ impl HTMLElement {
         let root_element = element.root_element();
         let root_node = root_element.upcast::<Node>();
         root_node
-            .traverse_preorder_non_rooting(no_gc, ShadowIncluding::No)
+            .traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
             .filter_map(UnrootedDom::downcast::<HTMLLabelElement>)
             .filter(|elem| match elem.GetControl(no_gc) {
                 Some(control) => &*control == self,
@@ -1013,7 +1017,7 @@ impl HTMLElement {
         let root_element = element.root_element();
         let root_node = root_element.upcast::<Node>();
         root_node
-            .traverse_preorder_non_rooting(no_gc, ShadowIncluding::No)
+            .traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
             .filter_map(UnrootedDom::downcast::<HTMLLabelElement>)
             .filter(|elem| match elem.GetControl(no_gc) {
                 Some(control) => &*control == self,
@@ -1064,7 +1068,7 @@ impl HTMLElement {
         None
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-summary-element:activation-behaviour
+    /// <https://html.spec.whatwg.org/multipage/#the-summary-element:activation-behaviour>
     pub(crate) fn summary_activation_behavior(&self, cx: &mut js::context::JSContext) {
         debug_assert!(self.as_element().local_name() == &local_name!("summary"));
 
@@ -1301,7 +1305,7 @@ impl VirtualMethods for HTMLElement {
                 self.form_attribute_mutated(cx, mutation);
             },
             // Adding a "disabled" attribute disables an enabled form element.
-            (&local_name!("disabled"), AttributeMutation::Set(..))
+            (&local_name!("disabled"), AttributeMutation::Set(_))
                 if self.is_form_associated_custom_element() && element.enabled_state() =>
             {
                 element.set_disabled_state(true);
@@ -1320,7 +1324,7 @@ impl VirtualMethods for HTMLElement {
             {
                 element.set_disabled_state(false);
                 element.set_enabled_state(true);
-                element.check_ancestors_disabled_state_for_form_control();
+                element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                 if element.enabled_state() {
                     ScriptThread::enqueue_callback_reaction(
                         cx,
@@ -1332,7 +1336,7 @@ impl VirtualMethods for HTMLElement {
             },
             (&local_name!("readonly"), mutation) if self.is_form_associated_custom_element() => {
                 match mutation {
-                    AttributeMutation::Set(..) => {
+                    AttributeMutation::Set(_) => {
                         element.set_read_write_state(true);
                     },
                     AttributeMutation::Removed => {
@@ -1341,13 +1345,19 @@ impl VirtualMethods for HTMLElement {
                 }
             },
             (&local_name!("nonce"), mutation) => match mutation {
-                AttributeMutation::Set(..) => {
+                AttributeMutation::Set(_) => {
                     let nonce = &**attr.value();
                     element.update_nonce_internal_slot(nonce.to_owned(), cx.no_gc());
                 },
                 AttributeMutation::Removed => {
                     element.update_nonce_internal_slot(String::new(), cx.no_gc());
                 },
+            },
+            // containertiming is not in html5ever, so for now we check manually
+            // Layout records these attributes as fragment flags when it builds this element's
+            // boxes, so the boxes have to be rebuilt when they change.
+            (name, _) if &**name == "containertiming" || &**name == "containertimingignore" => {
+                self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
             },
             _ => {},
         }
@@ -1362,7 +1372,7 @@ impl VirtualMethods for HTMLElement {
         // ancestors is a fieldset.
         let element = self.as_element();
         if self.is_form_associated_custom_element() && element.enabled_state() {
-            element.check_ancestors_disabled_state_for_form_control();
+            element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
             if element.disabled_state() {
                 ScriptThread::enqueue_callback_reaction(
                     cx,
@@ -1426,7 +1436,7 @@ impl VirtualMethods for HTMLElement {
         // TODO: This should likely just call reset on form owner.
         if self.is_form_associated_custom_element() && element.disabled_state() {
             element.check_disabled_attribute();
-            element.check_ancestors_disabled_state_for_form_control();
+            element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
             if element.enabled_state() {
                 ScriptThread::enqueue_callback_reaction(
                     cx,

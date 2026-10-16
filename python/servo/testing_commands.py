@@ -215,6 +215,7 @@ class MachCommands(CommandBase):
             "servo-config",
             "servoshell",
             "aether",
+            "aether-history",
             "servo-url",
             "servo-storage",
             "servo-storage-traits",
@@ -226,6 +227,12 @@ class MachCommands(CommandBase):
         if not packages:
             packages = set(os.listdir(path.join(self.context.topdir, "tests", "unit"))) - set([".DS_Store"])
             packages |= set(self_contained_tests)
+
+        # Servoshell is meant as an app library and links in NAPI, which
+        # is not available when running unit-tests.
+        if is_openharmony(self.target) and "servoshell" in packages:
+            print("Skipping servoshell unit tests on OpenHarmony.")
+            packages.remove("servoshell")
 
         in_crate_packages = []
         for crate in self_contained_tests:
@@ -260,12 +267,14 @@ class MachCommands(CommandBase):
 
         if nocapture:
             args += ["--nocapture"]
-        args += ["--no-fail-fast"]
+        if "--no-run" not in args:
+            args += ["--no-fail-fast"]
 
         env = self.build_env()
 
         crown_cargo_command: List[str] = ["cargo"]
         cargo_command: str
+        cargo_subcommand: str | None = None
         if bench:
             cargo_command = "bench"
             if code_coverage:
@@ -285,19 +294,20 @@ class MachCommands(CommandBase):
             crown_cargo_command.extend(["llvm-cov", "nextest"])
             crown_cargo_command.extend(cargo_llvm_cov_options)
             cargo_command = "llvm-cov"
-            args.insert(0, "nextest")
+            cargo_subcommand = "nextest"
             args.extend(cargo_llvm_cov_options)
         elif use_nextest:
             crown_cargo_command.extend(["nextest", "run"])
             cargo_command = "nextest"
-            args.insert(0, "run")
+            cargo_subcommand = "run"
         else:
             crown_cargo_command.extend(["test"])
             cargo_command = "test"
-        result = call(crown_cargo_command, cwd="support/crown")
-        if result != 0:
-            return result
-        result = self.run_cargo_build_like_command(cargo_command, args, env=env, **kwargs)
+        if not self.target.is_cross_build():
+            result = call(crown_cargo_command, cwd="support/crown")
+            if result != 0:
+                return result
+        result = self.run_cargo_build_like_command(cargo_command, args, subcommand=cargo_subcommand, env=env, **kwargs)
         assert isinstance(result, int)
         return result
 
@@ -1018,6 +1028,7 @@ class MachCommands(CommandBase):
             webgpu              WebGPU CTS (linux, production)
             webdriver/wd        WebDriver classic tests (linux)
             vello               Vello canvas WPT subsuite (linux)
+            perf-analysis       Page load benchmarks via perf-analysis-tools (linux, release)
 
           Meta keywords:
             full                Run all jobs (default)

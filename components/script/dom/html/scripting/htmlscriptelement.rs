@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#![cfg_attr(crown, allow(crown::jscontext_first_arg))]
-
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::CStr;
@@ -24,6 +22,7 @@ use net_traits::request::{
 };
 use net_traits::{FetchMetadata, Metadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::{DOMString, TracedDOMString};
 use servo_base::id::WebViewId;
 use servo_url::ServoUrl;
 use style::attr::AttrValue;
@@ -42,7 +41,6 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
-use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::{CspReporting, GlobalCspReporting, InlineCheckType, Violation};
 use crate::dom::document::Document;
 use crate::dom::domtokenlist::DOMTokenList;
@@ -54,23 +52,23 @@ use crate::dom::element::{
 };
 use crate::dom::event::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
-use crate::dom::globalscope::script_execution::{ClassicScript, RethrowErrors};
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{ChildrenMutation, CloneChildrenFlag, Node, NodeTraits, UnbindContext};
 use crate::dom::performance::performanceresourcetiming::InitiatorType;
-use crate::dom::script_execution::ScriptOptions;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::window::Window;
 use crate::event_loop::document_loader::{LoadBlocker, LoadType};
 use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request_with_claim};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
-use crate::modules::import_map::{ImportMap, parse_an_import_map_string, register_import_map};
-use crate::modules::script_module::{
-    ModuleTree, ScriptFetchOptions, fetch_an_external_module_script, fetch_inline_module_script,
-};
 use crate::runtime::script_runtime::IntroductionType;
+use crate::scripting::fetching_options::ScriptFetchOptions;
+use crate::scripting::import_map::{ImportMap, parse_an_import_map_string, register_import_map};
+use crate::scripting::script_execution::{ClassicScript, RethrowErrors, ScriptOptions};
+use crate::scripting::script_module::{
+    ModuleTree, fetch_an_external_module_script, fetch_inline_module_script,
+};
 use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 
 #[dom_struct]
@@ -103,7 +101,7 @@ pub(crate) struct HTMLScriptElement {
     line_number: u64,
 
     /// <https://w3c.github.io/trusted-types/dist/spec/#htmlscriptelement-script-text>
-    script_text: DomRefCell<DOMString>,
+    script_text: DomRefCell<TracedDOMString>,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-script-external>
     from_an_external_file: Cell<bool>,
@@ -116,7 +114,7 @@ pub(crate) struct HTMLScriptElement {
     marked_as_render_blocking: Cell<bool>,
 
     /// <https://html.spec.whatwg.org/multipage/#concept-script-result>
-    result: DomRefCell<Option<ScriptResult>>,
+    result: DomRefCell<Option<Box<ScriptResult>>>,
 }
 
 impl HTMLScriptElement {
@@ -135,7 +133,7 @@ impl HTMLScriptElement {
             parser_document: Dom::from_ref(document),
             preparation_time_document: MutNullableDom::new(None),
             line_number: creator.return_line_number(),
-            script_text: DomRefCell::new(DOMString::new()),
+            script_text: Default::default(),
             from_an_external_file: Cell::new(false),
             blocking: Default::default(),
             marked_as_render_blocking: Default::default(),
@@ -144,7 +142,7 @@ impl HTMLScriptElement {
     }
 
     pub(crate) fn new(
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         local_name: LocalName,
         prefix: Option<Prefix>,
         document: &Document,
@@ -202,6 +200,34 @@ impl HTMLScriptElement {
             ExternalScriptKind::ParsingBlocking => self.parser_document.as_rooted(),
         }
     }
+
+    /// <https://html.spec.whatwg.org/multipage/#steps-to-run-when-the-result-is-ready>
+    fn finish_fetching_a_script(&self, cx: &mut JSContext, script_kind: ExternalScriptKind) {
+        let load = self.result.take().expect("Result must be ready to proceed");
+
+        // Step 2. If el's steps to run when the result is ready are not null, then run them.
+        match script_kind {
+            ExternalScriptKind::Asap => {
+                let document = self.preparation_time_document.get().unwrap();
+                document.asap_script_loaded(cx, self, *load)
+            },
+            ExternalScriptKind::AsapInOrder => {
+                let document = self.preparation_time_document.get().unwrap();
+                document.asap_in_order_script_loaded(cx, self, *load)
+            },
+            ExternalScriptKind::Deferred => {
+                let document = self.parser_document.as_rooted();
+                document.deferred_script_loaded(cx, self, *load);
+            },
+            ExternalScriptKind::ParsingBlocking => {
+                let document = self.parser_document.as_rooted();
+                document.pending_parsing_blocking_script_loaded(self, *load, cx);
+            },
+        }
+
+        // Step 4. Set el's delaying the load event to false.
+        LoadBlocker::terminate(cx, &self.delaying_the_load_event);
+    }
 }
 
 /// Supported script types as defined by
@@ -230,38 +256,6 @@ pub(crate) enum ScriptType {
     Classic,
     Module,
     ImportMap,
-}
-
-/// <https://html.spec.whatwg.org/multipage/#steps-to-run-when-the-result-is-ready>
-fn finish_fetching_a_script(
-    elem: &HTMLScriptElement,
-    script_kind: ExternalScriptKind,
-    cx: &mut JSContext,
-) {
-    let load = elem.result.take().expect("Result must be ready to proceed");
-
-    // Step 2. If el's steps to run when the result is ready are not null, then run them.
-    match script_kind {
-        ExternalScriptKind::Asap => {
-            let document = elem.preparation_time_document.get().unwrap();
-            document.asap_script_loaded(cx, elem, load)
-        },
-        ExternalScriptKind::AsapInOrder => {
-            let document = elem.preparation_time_document.get().unwrap();
-            document.asap_in_order_script_loaded(cx, elem, load)
-        },
-        ExternalScriptKind::Deferred => {
-            let document = elem.parser_document.as_rooted();
-            document.deferred_script_loaded(cx, elem, load);
-        },
-        ExternalScriptKind::ParsingBlocking => {
-            let document = elem.parser_document.as_rooted();
-            document.pending_parsing_blocking_script_loaded(elem, load, cx);
-        },
-    }
-
-    // Step 4. Set el's delaying the load event to false.
-    LoadBlocker::terminate(&elem.delaying_the_load_event, cx);
 }
 
 pub(crate) type ScriptResult = Result<Script, ()>;
@@ -303,16 +297,13 @@ impl FetchResponseListener for ClassicContext {
 
     fn process_response(
         &mut self,
-        _: &mut js::context::JSContext,
+        _: &mut JSContext,
         _: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
-        self.metadata = metadata.ok().map(|meta| {
-            self.response_was_cors_cross_origin = meta.is_cors_cross_origin();
-            match meta {
-                FetchMetadata::Unfiltered(m) => m,
-                FetchMetadata::Filtered { unsafe_, .. } => unsafe_,
-            }
+        self.metadata = metadata.ok().map(|metadata| {
+            self.response_was_cors_cross_origin = metadata.is_cors_cross_origin();
+            metadata.into()
         });
 
         let status = self
@@ -337,12 +328,7 @@ impl FetchResponseListener for ClassicContext {
         };
     }
 
-    fn process_response_chunk(
-        &mut self,
-        _: &mut js::context::JSContext,
-        _: RequestId,
-        chunk: Bytes,
-    ) {
+    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
         if self.status.is_ok() {
             self.data.extend_from_slice(&chunk);
         }
@@ -352,7 +338,7 @@ impl FetchResponseListener for ClassicContext {
     /// step 4-9
     fn process_response_eof(
         mut self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -369,8 +355,8 @@ impl FetchResponseListener for ClassicContext {
                     error, self.url
                 );
                 // Step 6, response is an error.
-                *elem.result.borrow_mut() = Some(Err(()));
-                finish_fetching_a_script(&elem, self.kind, cx);
+                *elem.result.borrow_mut() = Some(Box::new(Err(())));
+                elem.finish_fetching_a_script(cx, self.kind);
                 return;
             },
             _ => {},
@@ -446,14 +432,14 @@ impl FetchResponseListener for ClassicContext {
                 .is_null());
             }
         } else {*/
-        *elem.result.borrow_mut() = Some(Ok(Script::Classic(script)));
-        finish_fetching_a_script(&elem, self.kind, cx);
+        *elem.result.borrow_mut() = Some(Box::new(Ok(Script::Classic(script))));
+        elem.finish_fetching_a_script(cx, self.kind);
         // }
     }
 
     fn process_csp_violations(
         &mut self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
@@ -551,21 +537,22 @@ fn fetch_a_classic_script(
 impl HTMLScriptElement {
     /// <https://w3c.github.io/trusted-types/dist/spec/#setting-slot-values-from-parser>
     pub(crate) fn set_initial_script_text(&self) {
-        *self.script_text.borrow_mut() = self.text();
+        *self.script_text.borrow_mut() = self.text().traced();
     }
 
-    /// <https://w3c.github.io/trusted-types/dist/spec/#abstract-opdef-prepare-the-script-text>
+    /// <https://w3c.github.io/trusted-types/dist/spec/#prepare-script-text>
     fn prepare_the_script_text(&self, cx: &mut JSContext) -> Fallible<()> {
         // Step 1. If script’s script text value is not equal to its child text content,
         // set script’s script text to the result of executing
         // Get Trusted Type compliant string, with the following arguments:
-        if *self.script_text.borrow() != self.text() {
-            *self.script_text.borrow_mut() = TrustedScript::get_trusted_type_compliant_string(
+        if *self.script_text.borrow() != *self.text() {
+            let result = TrustedScript::get_trusted_type_compliant_string(
                 cx,
                 &self.owner_global(),
                 self.Text(),
                 "HTMLScriptElement text",
             )?;
+            *self.script_text.safe_borrow_mut(cx.no_gc()) = result.traced();
         }
 
         Ok(())
@@ -578,7 +565,7 @@ impl HTMLScriptElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#potentially-render-blocking>
-    fn potentially_render_blocking(&self) -> bool {
+    fn potentially_render_blocking(&self, script_type: ScriptType) -> bool {
         // An element is potentially render-blocking if its blocking tokens set contains "render",
         // or if it is implicitly potentially render-blocking, which will be defined at the individual elements.
         // By default, an element is not implicitly potentially render-blocking.
@@ -589,8 +576,7 @@ impl HTMLScriptElement {
         // https://html.spec.whatwg.org/multipage/#script-processing-model:implicitly-potentially-render-blocking
         // > A script element el is implicitly potentially render-blocking if el's type is "classic",
         // > el is parser-inserted, and el does not have an async or defer attribute.
-        self.get_script_type()
-            .is_some_and(|script_type| script_type == ScriptType::Classic) &&
+        script_type == ScriptType::Classic &&
             self.parser_inserted.get() &&
             !element.has_attribute(&local_name!("async")) &&
             !element.has_attribute(&local_name!("defer"))
@@ -643,10 +629,7 @@ impl HTMLScriptElement {
             return;
         }
 
-        let script_type = if let Some(ty) = self.get_script_type() {
-            // Step 9-11.
-            ty
-        } else {
+        let Some(script_type) = self.script_type() else {
             // Step 12. Otherwise, return. (No script is executed, and el's type is left as null.)
             return;
         };
@@ -783,6 +766,8 @@ impl HTMLScriptElement {
         let kind = self.get_script_kind(script_type);
         let delayed_document = self.get_script_active_document(kind);
 
+        let potentially_render_blocking = self.potentially_render_blocking(script_type);
+
         // Step 31. If el has a src content attribute, then:
         // Step 31.2. Let src be the value of el's src attribute.
         if let Some(src) = element.get_attribute_string_value(&local_name!("src")) {
@@ -815,7 +800,7 @@ impl HTMLScriptElement {
             let url = ensure_blob_referenced_by_url_is_kept_alive(global, url);
 
             // Step 31.7. If el is potentially render-blocking, then block rendering on el.
-            if self.potentially_render_blocking() && doc.allows_adding_render_blocking_elements() {
+            if potentially_render_blocking && doc.allows_adding_render_blocking_elements() {
                 self.marked_as_render_blocking.set(true);
                 doc.increment_render_blocking_element_count();
             }
@@ -860,9 +845,9 @@ impl HTMLScriptElement {
                         script_fetch_options,
                         move |cx, module_tree| {
                             let load = module_tree.map(Script::Module).ok_or(());
-                            *script.result.borrow_mut() = Some(load);
+                            *script.result.borrow_mut() = Some(Box::new(load));
 
-                            finish_fetching_a_script(&script, kind, cx);
+                            script.finish_fetching_a_script(cx, kind);
                         },
                     );
                 },
@@ -907,9 +892,7 @@ impl HTMLScriptElement {
                     self.delay_load_event(&delayed_document, base_url.clone());
 
                     // Step 32.2.2.2 If el is potentially render-blocking, then:
-                    if self.potentially_render_blocking() &&
-                        doc.allows_adding_render_blocking_elements()
-                    {
+                    if potentially_render_blocking && doc.allows_adding_render_blocking_elements() {
                         // Step 32.2.2.2.1 Block rendering on el.
                         self.marked_as_render_blocking.set(true);
                         doc.increment_render_blocking_element_count();
@@ -931,7 +914,7 @@ impl HTMLScriptElement {
                         introduction_type,
                         move |_, module_tree| {
                             let load = module_tree.map(Script::Module).ok_or(());
-                            *script.result.borrow_mut() = Some(load);
+                            *script.result.borrow_mut() = Some(Box::new(load));
 
                             let trusted = Trusted::new(&*script);
 
@@ -942,7 +925,8 @@ impl HTMLScriptElement {
                                 .networking_task_source()
                                 .queue(task!(terminate_module_fetch: move |cx| {
                                     // Mark as ready el given result.
-                                    finish_fetching_a_script(&trusted.root(), kind, cx);
+                                    let element = trusted.root();
+                                    element.finish_fetching_a_script(cx, kind);
                                 }));
                         },
                     );
@@ -1068,64 +1052,64 @@ impl HTMLScriptElement {
             .queue_simple_event(self.upcast(), atom!("error"));
     }
 
-    // <https://html.spec.whatwg.org/multipage/#prepare-a-script> Step 7.
-    pub(crate) fn get_script_type(&self) -> Option<ScriptType> {
+    /// <https://html.spec.whatwg.org/multipage/#prepare-a-script> Steps 8-12.
+    fn script_type(&self) -> Option<ScriptType> {
         let element = self.upcast::<Element>();
 
-        let type_attr = element.get_attribute_string_value(&local_name!("type"));
-        let language_attr = element.get_attribute_string_value(&local_name!("language"));
+        let type_attr = element.get_attribute_string_ref(&local_name!("type"));
+        let language_attr = element.get_attribute_string_ref(&local_name!("language"));
 
         match (type_attr, language_attr) {
-            (Some(ty), _) if ty.is_empty() => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
-            (None, Some(lang)) if lang.is_empty() => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
-            (None, None) => {
-                debug!("script type empty, inferring js");
-                Some(ScriptType::Classic)
-            },
+            // Step 8. If any of the following are true:
+            // el has a type attribute whose value is the empty string;
+            // el has no type attribute but it has a language attribute and that attribute's value
+            // is the empty string; or el has neither a type attribute nor a language attribute,
+            // then let the script block's type string for this script element be "text/javascript".
+            (Some(type_attribute), _) if type_attribute.is_empty() => Some(ScriptType::Classic),
+            (None, Some(lang)) if lang.is_empty() => Some(ScriptType::Classic),
+            (None, None) => Some(ScriptType::Classic),
+            // Otherwise, el has a non-empty language attribute; let the script block's type string
+            // be the concatenation of "text/" and the value of el's language attribute.
             (None, Some(lang)) => {
-                debug!("script language={}", lang);
-                let language = format!("text/{}", lang);
+                let language_value = lang.as_attr_ref().value();
+                let script_block_type_string = format!("text/{}", language_value.as_ref());
 
-                if SCRIPT_JS_MIMES
+                // Step 9. If the script block's type string is a JavaScript MIME type essence match,
+                // or el has a type attribute whose value with leading and trailing ASCII whitespace
+                // stripped is a JavaScript MIME type essence match, then set el's type to "classic".
+                let is_a_javascript_mime = SCRIPT_JS_MIMES
                     .iter()
-                    .any(|mime| language.eq_ignore_ascii_case(mime))
-                {
-                    Some(ScriptType::Classic)
-                } else {
-                    None
-                }
-            },
-            (Some(ty), _) => {
-                debug!("script type={}", ty);
+                    .any(|mime| script_block_type_string.eq_ignore_ascii_case(mime));
 
-                if ty
-                    .trim_matches(HTML_SPACE_CHARACTERS)
-                    .eq_ignore_ascii_case("module")
-                {
+                is_a_javascript_mime.then_some(ScriptType::Classic)
+            },
+            // Otherwise, if el has a type attribute, then let the script block's type string be the
+            // value of that attribute.
+            (Some(ty), _) => {
+                // Step 10. Otherwise, if the script block's type string is an ASCII case-insensitive
+                // match for the string "module", then set el's type to "module".
+                if ty.eq_ignore_ascii_case("module") {
                     return Some(ScriptType::Module);
                 }
 
-                if ty
-                    .trim_matches(HTML_SPACE_CHARACTERS)
-                    .eq_ignore_ascii_case("importmap")
-                {
+                // Step 11. Otherwise, if the script block's type string is an ASCII case-insensitive
+                // match for the string "importmap", then set el's type to "importmap".
+                if ty.eq_ignore_ascii_case("importmap") {
                     return Some(ScriptType::ImportMap);
                 }
 
-                if SCRIPT_JS_MIMES.iter().any(|mime| {
-                    ty.trim_matches(HTML_SPACE_CHARACTERS)
+                let type_attr_value = ty.as_attr_ref().value();
+
+                // Step 9. If the script block's type string is a JavaScript MIME type essence match,
+                // or el has a type attribute whose value with leading and trailing ASCII whitespace
+                // stripped is a JavaScript MIME type essence match, then set el's type to "classic".
+                let is_a_javascript_mime = SCRIPT_JS_MIMES.iter().any(|mime| {
+                    type_attr_value
+                        .trim_matches(HTML_SPACE_CHARACTERS)
                         .eq_ignore_ascii_case(mime)
-                }) {
-                    Some(ScriptType::Classic)
-                } else {
-                    None
-                }
+                });
+
+                is_a_javascript_mime.then_some(ScriptType::Classic)
             },
         }
     }
@@ -1155,7 +1139,7 @@ impl VirtualMethods for HTMLScriptElement {
 
     fn attribute_mutated(
         &self,
-        cx: &mut js::context::JSContext,
+        cx: &mut JSContext,
         attr: AttrRef<'_>,
         mutation: AttributeMutation,
     ) {
@@ -1163,7 +1147,7 @@ impl VirtualMethods for HTMLScriptElement {
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
         if *attr.local_name() == local_name!("src") {
-            if let AttributeMutation::Set(..) = mutation &&
+            if let AttributeMutation::Set(_) = mutation &&
                 !self.parser_inserted.get() &&
                 self.upcast::<Node>().is_connected()
             {
@@ -1227,7 +1211,7 @@ impl VirtualMethods for HTMLScriptElement {
         }
     }
 
-    fn unbind_from_tree(&self, cx: &mut js::context::JSContext, context: &UnbindContext) {
+    fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
         self.super_type().unwrap().unbind_from_tree(cx, context);
 
         if self.marked_as_render_blocking.replace(false) {
@@ -1353,7 +1337,7 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
             input,
             "HTMLScriptElement innerText",
         )?;
-        *self.script_text.borrow_mut() = value.clone();
+        *self.script_text.safe_borrow_mut(cx.no_gc()) = value.clone().traced();
         // Step 3: Run set the inner text steps with this and value.
         self.upcast::<HTMLElement>().set_inner_text(cx, value);
         Ok(())
@@ -1375,7 +1359,7 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
             "HTMLScriptElement text",
         )?;
         // Step 2: Set this's script text value to the given value.
-        *self.script_text.borrow_mut() = value.clone();
+        *self.script_text.safe_borrow_mut(cx.no_gc()) = value.clone().traced();
         // Step 3: String replace all with the given value within this.
         Node::string_replace_all(cx, value, self.upcast::<Node>());
         Ok(())
@@ -1404,7 +1388,7 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
             "HTMLScriptElement textContent",
         )?;
         // Step 2: Set this's script text value to value.
-        *self.script_text.borrow_mut() = value.clone();
+        *self.script_text.safe_borrow_mut(cx.no_gc()) = value.clone().traced();
         // Step 3: Run set text content with this and value.
         self.upcast::<Node>()
             .set_text_content_for_element(cx, Some(value));

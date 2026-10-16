@@ -14,6 +14,7 @@ mod structured_data;
 use std::collections::VecDeque;
 use std::fmt;
 
+use accesskit::ActionRequest;
 use embedder_traits::user_contents::{
     UserContentManagerId, UserScript, UserScriptId, UserStyleSheet, UserStyleSheetId,
 };
@@ -29,8 +30,11 @@ use paint_api::display_list::PaintTimingInfo;
 use profile_traits::mem::MemoryReportResult;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericCallback;
-use servo_base::id::{LCPCandidateID, MessagePortId, PipelineId, ScriptEventLoopId, WebViewId};
+use servo_base::id::{
+    ContainerTimingID, LCPCandidateID, MessagePortId, PipelineId, ScriptEventLoopId, WebViewId,
+};
 use servo_config::prefs::PrefValue;
 use servo_url::{ImmutableOrigin, ServoUrl};
 pub use structured_data::*;
@@ -71,11 +75,10 @@ pub enum EmbedderToConstellationMessage {
     NewWebView(ServoUrl, NewWebViewDetails),
     /// Close a top level browsing context.
     CloseWebView(WebViewId),
-    /// Make a webview focused. [EmbedderMsg::WebViewFocused] will be sent with
-    /// the result of this operation.
-    FocusWebView(WebViewId),
-    /// Make none of the webviews focused.
-    BlurWebView,
+    /// Set whether a WebView has system focus. This corresponds to the [HTML
+    /// specification's] concept of "system focus" and is distinct from the browsing
+    /// context or element that has focus within the WebView.
+    SetWebViewHasSystemFocus(WebViewId, bool),
     /// Forward an input event to an appropriate ScriptTask.
     ForwardInputEvent(WebViewId, InputEventAndId, Option<PaintHitTestResult>),
     /// Request that the given pipeline refresh the cursor by doing a hit test at the most
@@ -115,9 +118,14 @@ pub enum EmbedderToConstellationMessage {
     UpdatePinchZoomInfos(PipelineId, PinchZoomInfos),
     /// Activate or deactivate accessibility features for the given `WebView`.
     SetAccessibilityActive(WebViewId, bool),
+    /// Forward an incoming [`accesskit::ActionRequest`] to the correct pipeline.
+    ForwardAccessibilityAction(ActionRequest),
     /// Clears the session history for the `WebView` with the given `WebViewId`, leaving
     /// the `WebView` with only the current URL in its session history.
     ClearSessionHistory(WebViewId),
+    /// Inform the `Constellation` that the embedder has changed the network
+    /// online state.
+    SetNetworkOnlineState(bool),
 }
 
 pub enum UserContentManagerAction {
@@ -135,6 +143,10 @@ pub enum PaintMetricEvent {
     FirstPaint(PaintTimingInfo, bool /* first_reflow */),
     FirstContentfulPaint(PaintTimingInfo, bool /* first_reflow */),
     LargestContentfulPaint(PaintTimingInfo, LCPCandidateID),
+    /// The Container Timing updates presented in a single composited frame. Script holds
+    /// the records these IDs refer to; all paint contributes is the frame's paint time.
+    /// <https://wicg.github.io/container-timing/>
+    ContainerTiming(CrossProcessInstant, Vec<ContainerTimingID>),
 }
 
 impl fmt::Debug for EmbedderToConstellationMessage {

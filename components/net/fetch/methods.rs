@@ -10,8 +10,6 @@ use base64::Engine as _;
 use base64::engine::general_purpose;
 use bytes::Bytes;
 use content_security_policy as csp;
-use crossbeam_channel::Sender;
-use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::resources::{self, Resource};
 use headers::{AccessControlExposeHeaders, ContentType, HeaderMapExt};
 use http::header::{self, HeaderMap, HeaderName, RANGE};
@@ -23,7 +21,7 @@ use mime::{self, Mime};
 use net_traits::fetch::headers::{determine_nosniff, extract_mime_type_as_mime};
 use net_traits::filemanager_thread::{FileTokenCheck, RelativePos};
 use net_traits::http_status::HttpStatus;
-use net_traits::policy_container::{PolicyContainer, RequestPolicyContainer};
+use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     BodyChunkRequest, BodyChunkResponse, CredentialsMode, Destination, Initiator,
     InsecureRequestsPolicy, InternalRequest, Origin, ParserMetadata, RedirectMode, Referrer,
@@ -101,7 +99,8 @@ pub type SharedInflightKeepAliveRecords =
 pub struct FetchContext {
     pub state: Arc<HttpState>,
     pub user_agent: String,
-    pub devtools_chan: Option<Sender<DevtoolsControlMsg>>,
+    #[cfg(feature = "devtools")]
+    pub devtools_chan: Option<crossbeam_channel::Sender<devtools_traits::DevtoolsControlMsg>>,
     pub filemanager: FileManager,
     pub file_token: FileTokenCheck,
     pub request_interceptor: Arc<TokioMutex<RequestInterceptor>>,
@@ -432,16 +431,17 @@ pub async fn main_fetch(
     }
 
     // The request should have a valid policy_container associated with it.
-    let policy_container = match &request.policy_container {
-        RequestPolicyContainer::Client => unreachable!(),
-        RequestPolicyContainer::PolicyContainer(container) => container.to_owned(),
-    };
-
     // Step 4. Run report Content Security Policy violations for request.
     let csp_request = convert_request_to_csp_request(request);
     if let Some(csp_request) = csp_request.as_ref() {
         // Step 2.2.
-        let violations = report_violations_for_request_by_csp(csp_request, &policy_container);
+        let violations = report_violations_for_request_by_csp(
+            csp_request,
+            request
+                .policy_container
+                .policy_container()
+                .expect("Always has a valid policycontainer"),
+        );
 
         if !violations.is_empty() {
             target.process_csp_violations(request, violations);
@@ -485,8 +485,14 @@ pub async fn main_fetch(
         // Step 7. If should request be blocked due to a bad port, should fetching request be blocked
         // as mixed content, or should request be blocked by Content Security Policy returns blocked,
         // then set response to a network error.
-        let (check_result, violations) =
-            should_request_be_blocked_by_csp(csp_request, &policy_container);
+
+        let (check_result, violations) = should_request_be_blocked_by_csp(
+            csp_request,
+            request
+                .policy_container
+                .policy_container()
+                .expect("Always has a valid policy container"),
+        );
 
         if !violations.is_empty() {
             target.process_csp_violations(request, violations);
@@ -507,7 +513,27 @@ pub async fn main_fetch(
     // Step 8: If request’s referrer policy is the empty string, then set request’s referrer policy
     // to request’s policy container’s referrer policy.
     if request.referrer_policy == ReferrerPolicy::EmptyString {
-        request.referrer_policy = policy_container.get_referrer_policy();
+        request.referrer_policy = request
+            .policy_container
+            .policy_container()
+            .expect("Always has a valid policycontainer")
+            .get_referrer_policy();
+    }
+
+    // `servo:` pages have an opaque origin. Script passes their document URL as
+    // the referrer so protocol handlers can recognize `servo:settings`. Record
+    // it, then drop the referrer so no `Referer` header is sent.
+    if request.source_document_url.is_none() {
+        let servo_document = match &request.referrer {
+            Referrer::Client(url) | Referrer::ReferrerUrl(url) if url.scheme() == "servo" => {
+                Some(url.clone())
+            },
+            _ => None,
+        };
+        if let Some(url) = servo_document {
+            request.source_document_url = Some(url);
+            request.referrer = Referrer::NoReferrer;
+        }
     }
 
     // Step 9, If request’s referrer is not "no-referrer", then set request’s referrer to the result
@@ -712,8 +738,14 @@ pub async fn main_fetch(
         let should_replace_with_mixed_content = !response_is_network_error &&
             should_response_be_blocked_as_mixed_content(request, &response, &context.protocols);
         let should_replace_with_csp_error = csp_request.is_some_and(|csp_request| {
-            let (check_result, violations) =
-                should_response_be_blocked_by_csp(&csp_request, &response, &policy_container);
+            let (check_result, violations) = should_response_be_blocked_by_csp(
+                &csp_request,
+                &response,
+                request
+                    .policy_container
+                    .policy_container()
+                    .expect("Always has a valid policy container"),
+            );
             if !violations.is_empty() {
                 target.process_csp_violations(request, violations);
             }
@@ -728,7 +760,7 @@ pub async fn main_fetch(
 
         // Step 15. Let internalResponse be response, if response is a network error;
         // otherwise response’s internal response.
-        let response_type = response.response_type.clone(); // Needed later after the mutable borrow
+        let response_is_opaque = response.response_type == ResponseType::Opaque;
         let internal_response = if let Some(error_response) = network_error_response.as_mut() {
             error_response
         } else {
@@ -785,7 +817,7 @@ pub async fn main_fetch(
         // Also checking if internal response is a network error to prevent crash from attemtping to
         // read status of a network error if we blocked the request above.
         let internal_response = if !internal_response.is_network_error() &&
-            response_type == ResponseType::Opaque &&
+            response_is_opaque &&
             internal_response.status.is_a_range_status() &&
             internal_response.range_requested &&
             !request.headers.contains_key(RANGE)
@@ -900,13 +932,17 @@ async fn wait_for_response(
     context: &FetchContext,
 ) {
     if let Some(ref mut ch) = *done_chan {
+        #[cfg(feature = "devtools")]
         let mut devtools_body = context.devtools_chan.as_ref().map(|_| Vec::new());
+        #[cfg(not(feature = "devtools"))]
+        let devtools_body = None;
         loop {
             match ch.1.recv().await {
                 Some(Data::ContentLength(length)) => {
                     target.process_response_length_hint(request, length);
                 },
                 Some(Data::Payload(bytes)) => {
+                    #[cfg(feature = "devtools")]
                     if let Some(body) = devtools_body.as_mut() {
                         body.extend(&bytes);
                     }
@@ -941,6 +977,7 @@ async fn wait_for_response(
                 // obtained synchronously via scheme_fetch for data/file/about/etc
                 // We should still send the body across as a chunk
                 target.process_response_chunk(request, Bytes::copy_from_slice(vec));
+                #[cfg(feature = "devtools")]
                 if context.devtools_chan.is_some() {
                     // Now that we've replayed the entire cached body,
                     // notify the DevTools server with the full Response.

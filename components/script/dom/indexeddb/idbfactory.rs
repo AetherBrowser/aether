@@ -10,7 +10,7 @@ use js::rust::HandleValue;
 use profile_traits::generic_callback::GenericCallback;
 use script_bindings::cell::DomRefCell;
 use script_bindings::inheritance::Castable;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel::GenericSend;
 use servo_url::origin::ImmutableOrigin;
 use storage_traits::client_storage::{StorageIdentifier, StorageProxyMap, StorageType};
@@ -198,7 +198,7 @@ impl IDBFactory {
     }
 
     pub fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<IDBFactory> {
-        reflect_dom_object_with_cx(Box::new(IDBFactory::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(IDBFactory::new_inherited()), global)
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -644,14 +644,14 @@ impl IDBFactoryMethods<crate::DomTypeHolder> for IDBFactory {
         let storage_key = match global.obtain_storage_key() {
             Some(storage_key) => storage_key,
             None => {
-                let p = Promise::new_rooted(cx, &global);
+                let p = Promise::new(cx, &global);
                 p.reject_error(cx, Error::Security(None));
                 return p;
             },
         };
 
         // Step 3: Let p be a new promise.
-        let p = Promise::new_rooted(cx, &global);
+        let p = Promise::new(cx, &global);
 
         // Note: the option is required to pass the promise to a task from within the generic callback,
         // see #41356

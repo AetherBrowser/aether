@@ -14,6 +14,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
     outputs:
       artifact_ids:
         value: ${{ jobs.build-openharmony.outputs.artifact_ids }}
@@ -33,11 +38,17 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   CARGO_INCREMENTAL: 0
+  AETHER_RELEASE_TAG: ${{ inputs.release-tag }}
   BENCHER_PROJECT: ${{ vars.BENCHER_PROJECT || 'servo' }}
   HITRACE_BENCH_VERSION: 0.11.1
   PYTHONUNBUFFERED: 1
@@ -77,10 +88,10 @@ jobs:
         id: setup_sdk
         uses: openharmony-rs/setup-ohos-sdk@v1.0.0
         with:
-          version: "6.0.0.1" # api 20 in openharmony
+          version: "6.1" # api 23 in openharmony
           fixup-path: true
       - name: Install node for hvigor
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Install hvigor modules

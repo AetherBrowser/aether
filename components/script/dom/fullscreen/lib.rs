@@ -26,7 +26,7 @@ use crate::dom::event::eventtarget::EventTarget;
 use crate::dom::node::NodeTraits;
 use crate::dom::node::node::Node;
 use crate::dom::promise::Promise;
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::types::HTMLDialogElement;
 use crate::messaging::{CommonScriptMsg, MainThreadScriptMsg};
 use crate::runtime::script_runtime::ScriptThreadEventCategory;
@@ -46,7 +46,7 @@ impl Document {
 
         // Step 2
         // > Let promise be a new promise.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
 
         // Step 3
         // > If pendingDoc is not fully active, then reject promise with a TypeError exception and return promise.
@@ -158,7 +158,7 @@ impl Document {
         // Step 1
         // > Let promise be a new promise
         let mut realm = CurrentRealm::assert(cx);
-        let promise = Promise::new_in_realm_rooted(&mut realm);
+        let promise = Promise::new_in_realm(&mut realm);
 
         // Step 2
         // > If doc is not fully active or doc’s fullscreen element is null, then reject promise with a TypeError exception and return promise.

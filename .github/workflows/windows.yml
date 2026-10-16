@@ -35,6 +35,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
     outputs:
       artifact_ids:
         value: ${{ jobs.build.outputs.release_artifact_ids }}
@@ -67,12 +72,18 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   CARGO_TARGET_DIR: C:\\a\\aether\\aether\\target
   RUSTUP_WINDOWS_PATH_ADD_BIN: 1
+  AETHER_RELEASE_TAG: ${{ inputs.release-tag }}
 
 jobs:
   # Runs the underlying job (“workload”) on a self-hosted runner if available,
