@@ -47,10 +47,10 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[
     "dom_storage_manager_api_enabled",
     "dom_webgl2_enabled",
     "dom_webgpu_enabled",
+    "layout_css_columns_enabled",
+    "layout_css_container_queries_enabled",
     "layout_css_ellipse_corners_enabled",
-    "layout_columns_enabled",
-    "layout_container_queries_enabled",
-    "layout_variable_fonts_enabled",
+    "layout_css_font_variations_enabled",
 ];
 
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
@@ -114,6 +114,9 @@ pub(crate) struct ServoShellPreferences {
     /// Log also to a file
     #[cfg(target_env = "ohos")]
     pub log_to_file: bool,
+    /// Enable memory output if tracing is enabled.
+    #[allow(unused)]
+    pub memory_output: bool,
 }
 
 impl Default for ServoShellPreferences {
@@ -141,6 +144,7 @@ impl Default for ServoShellPreferences {
             #[cfg(target_env = "ohos")]
             log_to_file: false,
             experimental_preferences_enabled: false,
+            memory_output: false,
         }
     }
 }
@@ -413,7 +417,7 @@ struct CmdArgs {
     ///  A comma-separated string of debug options. Pass help to show available options.
     #[bpaf(
         short('Z'),
-        argument("layout_grid_enabled=true,dom_async_clipboard_enabled"),
+        argument("style-tree,flow-tree"),
         long,
         map(map_debug_options),
         fallback(vec![])
@@ -479,6 +483,10 @@ struct CmdArgs {
     /// Also log to a file (/data/app/el2/100/base/org.servo.servo/cache/servo.log).
     #[bpaf(long)]
     log_to_file: bool,
+
+    /// Should we output memory stats after a page load. Only useful if tracing is enabled
+    #[bpaf(long)]
+    memory_output: bool,
 
     /// Run in multiprocess mode.
     #[bpaf(short('M'), long)]
@@ -593,6 +601,7 @@ fn update_preferences_from_command_line_arguments(
     preferences: &mut Preferences,
     cmd_args: &CmdArgs,
 ) {
+    #[cfg(feature = "devtools")]
     if let Some(listen_address) = &cmd_args.devtools {
         preferences.devtools_server_enabled = true;
         preferences.devtools_server_listen_address = listen_address.clone();
@@ -714,6 +723,11 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
             default_window_size.min(screen_size_override)
         });
 
+    #[cfg(not(all(feature = "tracing", feature = "tracing-hitrace")))]
+    if cmd_args.memory_output {
+        log::error!("Memory reporting only works with tracing and tracing-hitrace enabled.");
+    }
+
     // Argument-parsing tests must not depend on a search.json or home.json on this machine.
     let search_engines = if cfg!(test) {
         SearchEngines::builtin()
@@ -751,6 +765,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         }),
         #[cfg(target_env = "ohos")]
         log_to_file: cmd_args.log_to_file,
+        memory_output: cmd_args.memory_output,
     };
 
     let Ok(debug_options) = parse_diagnostics_logging(cmd_args.debug) else {
@@ -883,7 +898,7 @@ fn test_invalid_prefs_from_command_line_panics() {
 #[test]
 fn test_create_prefs_map() {
     let json_str = "{
-        \"layout.writing-mode.enabled\": true,
+        \"layout.css.writing-mode.enabled\": true,
         \"network.mime.sniff\": false,
         \"shell.homepage\": \"https://servo.org\"
     }";
