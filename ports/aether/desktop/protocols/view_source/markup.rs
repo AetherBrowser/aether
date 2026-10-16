@@ -269,10 +269,7 @@ fn push_raw_text<'a>(
             bytes[index..index + end_tag_prefix.len()].eq_ignore_ascii_case(end_tag_prefix)
         {
             let after_name = index + end_tag_prefix.len();
-            let tag_end = match bytes[after_name..]
-                .iter()
-                .position(|&byte| byte == b'>')
-            {
+            let tag_end = match bytes[after_name..].iter().position(|&byte| byte == b'>') {
                 Some(offset) => after_name + offset + 1,
                 None => break,
             };
@@ -300,11 +297,7 @@ fn push_raw_text<'a>(
 }
 
 /// A quoted or unquoted attribute value, quotes included.
-fn read_attribute_value<'a>(
-    source: &'a str,
-    start: usize,
-    tokens: &mut Vec<Token<'a>>,
-) -> usize {
+fn read_attribute_value<'a>(source: &'a str, start: usize, tokens: &mut Vec<Token<'a>>) -> usize {
     let end = match source.as_bytes().get(start) {
         Some(&quote) if quote == b'"' || quote == b'\'' => source[start + 1..]
             .find(quote as char)

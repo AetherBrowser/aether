@@ -135,7 +135,10 @@ mod tests {
     #[test]
     fn markup_is_escaped_and_coloured() {
         let lines = lines("<p class=\"a\">x &amp; y</p>", true);
-        assert!(lines.contains("<span class=\"tag\">&lt;p</span>"), "{lines}");
+        assert!(
+            lines.contains("<span class=\"tag\">&lt;p</span>"),
+            "{lines}"
+        );
         assert!(
             lines.contains("<span class=\"attribute-name\">class</span>"),
             "{lines}"

@@ -20,7 +20,7 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody, fetch,
 };
 
-use crate::window::{VIEWABLE_SOURCE_SCHEMES, VIEW_SOURCE_SCHEME};
+use crate::window::{VIEW_SOURCE_SCHEME, VIEWABLE_SOURCE_SCHEMES};
 
 #[derive(Default)]
 pub struct ViewSourceProtocolHandler {}
@@ -92,7 +92,10 @@ fn viewed_url(url: &ServoUrl) -> Option<ServoUrl> {
 /// chosen like Firefox: BOM, then `Content-Type` charset, then a `<meta charset>` in
 /// the first 1024 bytes, then UTF-8.
 fn decoded(source: &[u8], viewed_type: Option<&Mime>) -> String {
-    encoding_for(source, viewed_type).decode(source).0.into_owned()
+    encoding_for(source, viewed_type)
+        .decode(source)
+        .0
+        .into_owned()
 }
 
 fn encoding_for(source: &[u8], viewed_type: Option<&Mime>) -> &'static Encoding {
@@ -160,7 +163,10 @@ fn attribute_value<'a>(tag: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
             pos = after_name;
             continue;
         }
-        return Some(quoted_or_token_value(tag, skip_ascii_whitespace(tag, equals + 1)));
+        return Some(quoted_or_token_value(
+            tag,
+            skip_ascii_whitespace(tag, equals + 1),
+        ));
     }
     None
 }
@@ -200,9 +206,7 @@ fn quoted_or_token_value(bytes: &[u8], start: usize) -> &[u8] {
         _ => {
             let end = bytes[start..]
                 .iter()
-                .position(|&byte| {
-                    byte.is_ascii_whitespace() || matches!(byte, b';' | b'>' | b'/')
-                })
+                .position(|&byte| byte.is_ascii_whitespace() || matches!(byte, b';' | b'>' | b'/'))
                 .map_or(bytes.len(), |offset| start + offset);
             &bytes[start..end]
         },
@@ -221,7 +225,9 @@ fn is_attr_name_byte(byte: u8) -> bool {
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Whether colouring the source as markup makes sense for this content type.
@@ -252,7 +258,10 @@ mod tests {
             "view-source:",
         ] {
             let parsed = ServoUrl::parse(url).expect("should parse");
-            assert!(viewed_url(&parsed).is_none(), "{url} should not be viewable");
+            assert!(
+                viewed_url(&parsed).is_none(),
+                "{url} should not be viewable"
+            );
         }
     }
 
@@ -270,7 +279,10 @@ mod tests {
     fn source_is_decoded_with_a_meta_charset() {
         let mut bytes = b"<!DOCTYPE html><meta charset=iso-8859-1><title>".to_vec();
         bytes.extend_from_slice(&[b'c', b'a', b'f', 0xe9]);
-        assert_eq!(decoded(&bytes, None), "<!DOCTYPE html><meta charset=iso-8859-1><title>café");
+        assert_eq!(
+            decoded(&bytes, None),
+            "<!DOCTYPE html><meta charset=iso-8859-1><title>café"
+        );
     }
 
     #[test]
@@ -302,7 +314,10 @@ mod tests {
         }
         for content_type in ["text/css", "application/json", "text/plain"] {
             let mime = content_type.parse::<Mime>().expect("should parse");
-            assert!(!is_markup(&mime), "{content_type} should not be highlighted");
+            assert!(
+                !is_markup(&mime),
+                "{content_type} should not be highlighted"
+            );
         }
     }
 }

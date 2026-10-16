@@ -357,7 +357,10 @@ fn test_view_source_url_wraps_the_page_url() {
     let page = Url::parse("https://example.com/index.html").expect("page URL should parse");
     let source = crate::window::view_source_url(&page).expect("source URL should parse");
     assert_eq!(source.scheme(), crate::window::VIEW_SOURCE_SCHEME);
-    assert_eq!(source.as_str(), "view-source:https://example.com/index.html");
+    assert_eq!(
+        source.as_str(),
+        "view-source:https://example.com/index.html"
+    );
 }
 
 #[test]
@@ -370,7 +373,10 @@ fn test_view_source_url_does_not_stack() {
 fn test_view_source_url_refuses_unviewable_schemes() {
     for url in ["servo:newtab", "servo:history", "about:blank"] {
         let url = Url::parse(url).expect("URL should parse");
-        assert!(!crate::window::can_view_source(&url), "{url} should not be viewable");
+        assert!(
+            !crate::window::can_view_source(&url),
+            "{url} should not be viewable"
+        );
         assert!(crate::window::view_source_url(&url).is_none());
     }
 }
