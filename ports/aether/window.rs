@@ -23,11 +23,14 @@ use crate::history::{ActiveEntry, HistoryUpdate, history_update};
 use crate::parser::location_bar_input_to_url;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
 
-/// The start page loaded by the Home button and by new tabs/windows.
-pub(crate) const NEW_TAB_URL: &str = "servo:newtab";
-
+/// Page opened by a new tab. A blank page when `browser.newtabpage.enabled` is false.
 pub(crate) fn new_tab_url() -> Url {
-    Url::parse(NEW_TAB_URL).expect("Should always be able to parse 'servo:newtab' as URL")
+    crate::home::new_tab_url()
+}
+
+/// Page opened by a new window and the Home button.
+pub(crate) fn new_window_url() -> Url {
+    crate::home::new_window_url()
 }
 
 /// The history page opened from the application menu.
@@ -424,7 +427,7 @@ impl ServoShellWindow {
                     self.set_needs_update();
                     if let Some(active_webview) = self.active_webview() {
                         // `load` pushes a history entry so Back can return to the previous page.
-                        active_webview.load(new_tab_url());
+                        active_webview.load(new_window_url());
                     }
                 },
                 UserInterfaceCommand::NewWebView(creation_request) => {
@@ -441,7 +444,7 @@ impl ServoShellWindow {
                     };
                     let url = match &creation_request {
                         TopLevelWebViewCreationRequest::WithUrl(url) => url.clone(),
-                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => new_tab_url(),
+                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => new_window_url(),
                     };
                     let platform_window = create_platform_window(url);
                     state.open_window(platform_window, creation_request);

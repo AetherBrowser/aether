@@ -521,6 +521,22 @@ pub async fn main_fetch(
             .get_referrer_policy();
     }
 
+    // `servo:` pages have an opaque origin. Script passes their document URL as
+    // the referrer so protocol handlers can recognize `servo:settings`. Record
+    // it, then drop the referrer so no `Referer` header is sent.
+    if request.source_document_url.is_none() {
+        let servo_document = match &request.referrer {
+            Referrer::Client(url) | Referrer::ReferrerUrl(url) if url.scheme() == "servo" => {
+                Some(url.clone())
+            },
+            _ => None,
+        };
+        if let Some(url) = servo_document {
+            request.source_document_url = Some(url);
+            request.referrer = Referrer::NoReferrer;
+        }
+    }
+
     // Step 9, If request’s referrer is not "no-referrer", then set request’s referrer to the result
     // of invoking determine request’s referrer.
     let referrer_url = match mem::replace(&mut request.referrer, Referrer::NoReferrer) {

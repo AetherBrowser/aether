@@ -61,8 +61,8 @@ use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
 use crate::desktop::menu::{AppMenu, AppMenuAction};
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
-    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url, processes_url,
-    settings_url,
+    ServoShellWindow, TopLevelWebViewCreationRequest, history_url, new_tab_url, new_window_url,
+    processes_url, settings_url,
 };
 
 /// The user interface of a headed servoshell. Currently this is implemented via
@@ -764,7 +764,7 @@ impl Gui {
                         },
                         Some(AppMenuAction::NewWindow) => {
                             window.queue_user_interface_command(UserInterfaceCommand::NewWindow(
-                                TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
+                                TopLevelWebViewCreationRequest::WithUrl(new_window_url()),
                             ));
                         },
                         Some(AppMenuAction::History) => {
@@ -1111,7 +1111,7 @@ mod tests {
             close_button_rect: egui::Rect::NOTHING,
         };
 
-        ctx.run_ui(screen_input(vec![]), |ui| {
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             let content = ui.available_rect_before_wrap();
             dock = Gui::show_devtools_dock(ui, &mut icons);
             page = ui.available_rect_before_wrap();
@@ -1137,13 +1137,13 @@ mod tests {
         let mut icons = ToolbarIconCache::default();
         let mut close_button_rect = egui::Rect::NOTHING;
 
-        ctx.run_ui(screen_input(vec![]), |ui| {
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             close_button_rect = Gui::show_devtools_dock(ui, &mut icons).close_button_rect;
         });
         assert!(close_button_rect.is_positive());
 
         let mut close_clicked = false;
-        ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
+        let _ = ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
             close_clicked = Gui::show_devtools_dock(ui, &mut icons).close_clicked;
         });
         assert!(close_clicked);
