@@ -520,6 +520,9 @@ pub struct RequestBuilder {
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
     pub is_internal_request: InternalRequest,
+    /// The embedder or WebDriver started this navigation.
+    /// A document load leaves this unset, including one whose origin is opaque.
+    pub embedder_initiated: bool,
 }
 
 impl RequestBuilder {
@@ -563,6 +566,7 @@ impl RequestBuilder {
             response_tainting: ResponseTainting::Basic,
             is_internal_request: Default::default(),
             crash: None,
+            embedder_initiated: false,
         }
     }
 
@@ -729,6 +733,11 @@ impl RequestBuilder {
         self
     }
 
+    pub fn embedder_initiated(mut self, embedder_initiated: bool) -> RequestBuilder {
+        self.embedder_initiated = embedder_initiated;
+        self
+    }
+
     pub fn build(self) -> Request {
         let mut request = Request::new(
             self.id,
@@ -775,6 +784,7 @@ impl RequestBuilder {
         request.client = self.client;
         request.policy_container = self.policy_container;
         request.is_internal_request = self.is_internal_request;
+        request.embedder_initiated = self.embedder_initiated;
         request
     }
 
@@ -870,6 +880,9 @@ pub struct Request {
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
     pub is_internal_request: InternalRequest,
+    /// The embedder or WebDriver started this navigation.
+    /// A document load leaves this unset, including one whose origin is opaque.
+    pub embedder_initiated: bool,
 }
 
 impl Request {
@@ -919,6 +932,7 @@ impl Request {
             policy_container: RequestPolicyContainer::Client,
             is_internal_request: Default::default(),
             crash: None,
+            embedder_initiated: false,
         }
     }
 

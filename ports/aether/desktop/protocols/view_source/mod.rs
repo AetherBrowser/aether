@@ -16,8 +16,8 @@ use headers::{ContentType, HeaderMapExt};
 use mime::Mime;
 use servo::ServoUrl;
 use servo::protocol_handler::{
-    DiscardFetch, DoneChannel, FetchContext, HttpStatus, NetworkError, ProtocolHandler, Request,
-    ResourceFetchTiming, Response, ResponseBody, fetch,
+    DiscardFetch, DoneChannel, FetchContext, HttpStatus, NetworkError, Origin, ProtocolHandler,
+    Request, ResourceFetchTiming, Response, ResponseBody, fetch,
 };
 
 use crate::window::{VIEW_SOURCE_SCHEME, VIEWABLE_SOURCE_SCHEMES};
@@ -38,6 +38,20 @@ impl ProtocolHandler for ViewSourceProtocolHandler {
                 NetworkError::ResourceLoadError("Cannot view the source of this URL".to_owned()),
             )));
         };
+        // `file:` and `data:` are fetched below with only the URL changed, and the
+        // file handler opens the path with no origin check. A page can navigate
+        // here. Those targets stay limited to the browser UI, a reload of a source
+        // view the UI already opened, and a `file:` page viewing another `file:` URL.
+        if !may_fetch_viewed_scheme(
+            viewed_url.scheme(),
+            request.embedder_initiated,
+            request.reload_navigation,
+            request_has_file_origin(request),
+        ) {
+            return Box::pin(std::future::ready(Response::network_error(
+                NetworkError::ResourceLoadError("Cannot view the source of this URL".to_owned()),
+            )));
+        }
 
         let timing_type = request.timing_type();
         let mut viewed_request = request.clone();
@@ -76,6 +90,38 @@ impl ProtocolHandler for ViewSourceProtocolHandler {
             response.status = HttpStatus::default();
             response
         })
+    }
+}
+
+/// Whether the inner URL may be fetched.
+///
+/// `http` and `https` are reachable from a page already. `file:` reads the local
+/// disk, and `data:` is not a local file but is still not a web navigation. The
+/// address bar and the View Source menu set [`Request::embedder_initiated`]. A
+/// reload of that page sets `reload_navigation` and keeps the same URL. A `file:`
+/// document may view another `file:` URL, which matches the file handler.
+fn may_fetch_viewed_scheme(
+    scheme: &str,
+    embedder_initiated: bool,
+    reload_navigation: bool,
+    file_origin: bool,
+) -> bool {
+    match scheme {
+        "http" | "https" => true,
+        "file" => embedder_initiated || reload_navigation || file_origin,
+        "data" => embedder_initiated || reload_navigation,
+        _ => false,
+    }
+}
+
+fn request_has_file_origin(request: &Request) -> bool {
+    origin_is_file(&request.origin)
+}
+
+fn origin_is_file(origin: &Origin) -> bool {
+    match origin {
+        Origin::Origin(origin) => origin.is_file_origin(),
+        Origin::Client => false,
     }
 }
 
@@ -248,6 +294,37 @@ mod tests {
             viewed_url(&url).map(|url| url.to_string()),
             Some("https://example.com/a?b=c".to_owned())
         );
+    }
+
+    #[test]
+    fn web_content_cannot_view_file_or_data_source() {
+        assert!(may_fetch_viewed_scheme("https", false, false, false));
+        assert!(may_fetch_viewed_scheme("http", false, false, false));
+        assert!(!may_fetch_viewed_scheme("file", false, false, false));
+        assert!(!may_fetch_viewed_scheme("data", false, false, false));
+    }
+
+    #[test]
+    fn browser_ui_and_file_pages_can_view_local_source() {
+        assert!(may_fetch_viewed_scheme("file", true, false, false));
+        assert!(may_fetch_viewed_scheme("data", true, false, false));
+        assert!(may_fetch_viewed_scheme("file", false, true, false));
+        assert!(may_fetch_viewed_scheme("data", false, true, false));
+        assert!(may_fetch_viewed_scheme("file", false, false, true));
+        assert!(!may_fetch_viewed_scheme("data", false, false, true));
+    }
+
+    #[test]
+    fn file_urls_are_the_local_origin() {
+        let file = ServoUrl::parse("file:///home/axel/").expect("should parse");
+        assert!(origin_is_file(&Origin::Origin(file.origin())));
+
+        let page = ServoUrl::parse("https://example.com/").expect("should parse");
+        assert!(!origin_is_file(&Origin::Origin(page.origin())));
+
+        let data = ServoUrl::parse("data:text/plain,hi").expect("should parse");
+        assert!(!origin_is_file(&Origin::Origin(data.origin())));
+        assert!(!origin_is_file(&Origin::Client));
     }
 
     #[test]

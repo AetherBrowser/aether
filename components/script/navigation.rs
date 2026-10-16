@@ -260,7 +260,11 @@ impl InProgressLoad {
         .redirect_mode(RedirectMode::Manual)
         .crash(self.load_data.crash.clone())
         .client(request_client)
-        .url_list(self.url_list.clone());
+        .url_list(self.url_list.clone())
+        // An address-bar load, the View Source menu, and WebDriver use
+        // `LoadOrigin::Constellation` or `LoadOrigin::WebDriver`. A document
+        // navigation is `LoadOrigin::Script`, opaque origin included.
+        .embedder_initiated(!matches!(self.load_data.load_origin, LoadOrigin::Script(_)));
 
         request_builder.reload_navigation = self.load_data.reload_navigation;
         request_builder.history_navigation = self.load_data.history_navigation;
