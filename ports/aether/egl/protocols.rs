@@ -73,7 +73,9 @@ impl ProtocolHandler for ResourceProtocolHandler {
     ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
         let url = request.current_url();
         match url.path().trim_start_matches('/') {
-            "newtab.css" => bytes_response(request, NEWTAB_CSS.as_bytes(), "text/css; charset=utf-8"),
+            "newtab.css" => {
+                bytes_response(request, NEWTAB_CSS.as_bytes(), "text/css; charset=utf-8")
+            },
             "servo-color-positive-no-container.svg" => {
                 bytes_response(request, LOGO_LIGHT, "image/svg+xml")
             },
