@@ -36,7 +36,7 @@ from servo.platform.build_target import is_android
 
 from python.servo.command_base import BuildType
 
-ANDROID_APP_NAME = "org.servo.servoshell"
+ANDROID_APP_NAME = "org.aether.aether"
 
 
 def read_file(filename: str, if_exists: bool = False) -> str | None:

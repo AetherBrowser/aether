@@ -9,10 +9,10 @@ android {
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
-    namespace = "org.servo.servoshell"
+    namespace = "org.aether.aether"
 
     defaultConfig {
-        applicationId = "org.servo.servoshell"
+        applicationId = "org.aether.aether"
         minSdk = libs.versions.android.sdk.min.get().toInt()
         targetSdk = 34
         versionCode = generatedVersionCode
@@ -106,7 +106,7 @@ project.afterEvaluate {
         val arch = matcher.group(1)
         val debug = variant.name.contains("Debug")
         val finalFolder = getTargetDir(debug, arch)
-        val finalFile = File(finalFolder, "servoapp.apk")
+        val finalFile = File(finalFolder, "aetherapp.apk")
         variant.outputs.forEach { output ->
             val copyAndRenameAPKTask =
                 project.task<Copy>("copyAndRename${variant.name.capitalize()}APK") {

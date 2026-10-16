@@ -1,4 +1,4 @@
-package org.servo.servoshell
+package org.aether.aether
 
 import android.content.Context
 import android.util.Log
@@ -7,7 +7,7 @@ import java.io.FileWriter
 import java.io.IOException
 import org.json.JSONArray
 import org.json.JSONException
-import org.servo.servoshell.HistoryEntry.Companion.fromJSON
+import org.aether.aether.HistoryEntry.Companion.fromJSON
 
 /** Keeps a history of visited websites in an app-scoped JSON file. */
 class HistoryManager(context: Context) {

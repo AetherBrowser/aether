@@ -145,7 +145,7 @@ jobs:
         id: upload-apk
         with:
           name: ${{ inputs.profile }}-binary-android-${{ matrix.target }}
-          path: target/${{ matrix.target }}/${{ inputs.profile }}/servoapp.apk
+          path: target/${{ matrix.target }}/${{ inputs.profile }}/aetherapp.apk
           if-no-files-found: error
       - name: Upload AAR artifact
         uses: actions/upload-artifact@v7
@@ -172,7 +172,7 @@ jobs:
     with:
       target: android-${{ matrix.target }}
       profile: ${{ inputs.profile }}
-      compressed-file-path: ${{ inputs.profile }}-binary-android-${{ matrix.target }}/servoapp.apk
+      compressed-file-path: ${{ inputs.profile }}-binary-android-${{ matrix.target }}/aetherapp.apk
       binary-path: lib/${{ matrix.target == 'aarch64-linux-android' && 'arm64-v8a' || matrix.target == 'armv7-linux-androideabi' && 'armeabi-v7a' || matrix.target == 'x86_64-linux-android' && 'x86_64'}}/libservoshell.so
       file-size: true
       speedometer: false
