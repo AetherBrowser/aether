@@ -5,7 +5,7 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::realm::CurrentRealm;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel::GenericCallback;
 
 use crate::dom::RootedPromise;
@@ -37,7 +37,7 @@ impl StorageManager {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope) -> DomRoot<StorageManager> {
-        reflect_dom_object_with_cx(Box::new(StorageManager::new_inherited()), global, cx)
+        reflect_dom_object(cx, Box::new(StorageManager::new_inherited()), global)
     }
 
     fn origin_cannot_obtain_local_storage_shelf(&self) -> bool {
@@ -122,7 +122,7 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-persisted>
     fn Persisted(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 
@@ -167,7 +167,7 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-persist>
     fn Persist(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 
@@ -223,7 +223,7 @@ impl StorageManagerMethods<crate::DomTypeHolder> for StorageManager {
     /// <https://storage.spec.whatwg.org/#dom-storagemanager-estimate>
     fn Estimate(&self, cx: &mut CurrentRealm) -> RootedPromise {
         // Step 1. Let promise be a new promise.
-        let promise = Promise::new_in_realm_rooted(cx);
+        let promise = Promise::new_in_realm(cx);
         // Step 2. Let global be this’s relevant global object.
         let global = self.global();
 

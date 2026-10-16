@@ -13,6 +13,8 @@ use rustc_hash::FxHashMap;
 use script_bindings::cell::DomRefCell;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::reflector::{Reflector, reflect_dom_object};
+use script_bindings::serializable::Serializable;
+use script_bindings::structuredclone::StructuredData;
 use servo_base::id::{ImageBitmapId, ImageBitmapIndex};
 use servo_constellation_traits::SerializableImageBitmap;
 
@@ -22,8 +24,6 @@ use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
 };
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::serializable::Serializable;
-use crate::dom::bindings::structuredclone::StructuredData;
 use crate::dom::bindings::transferable::Transferable;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::{Promise, RootedPromise};
@@ -274,7 +274,7 @@ impl ImageBitmap {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-createimagebitmap>
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn create_image_bitmap(
         global_scope: &GlobalScope,
         image: ImageBitmapSource,
@@ -285,7 +285,7 @@ impl ImageBitmap {
         options: &ImageBitmapOptions,
         realm: &mut CurrentRealm,
     ) -> RootedPromise {
-        let p = Promise::new_in_realm_rooted(realm);
+        let p = Promise::new_in_realm(realm);
 
         // Step 1. If either sw or sh is given and is 0, then return a promise rejected with a RangeError.
         if sw.is_some_and(|w| w == 0) {
@@ -602,7 +602,7 @@ impl ImageBitmap {
     }
 }
 
-impl Serializable for ImageBitmap {
+impl Serializable<crate::DomTypeHolder> for ImageBitmap {
     type Index = ImageBitmapIndex;
     type Data = SerializableImageBitmap;
 
@@ -684,7 +684,7 @@ impl Transferable for ImageBitmap {
         // Step 2. Set dataHolder.[[BitmapData]] to value's bitmap data.
         // Step 3. Unset value's bitmap data.
         let transferred = SerializableImageBitmap {
-            bitmap_data: bitmap_data.to_shared(),
+            bitmap_data: bitmap_data.into_shared(),
         };
 
         Ok((ImageBitmapId::new(), transferred))

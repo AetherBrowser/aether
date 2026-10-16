@@ -27,7 +27,7 @@ use servo_url::ServoUrl;
 use crate::conversions::Convert;
 use crate::dom::RootedPromise;
 use crate::dom::abortsignal::AbortSignal;
-use crate::dom::bindings::codegen::Bindings::HeadersBinding::{HeadersInit, HeadersMethods};
+use crate::dom::bindings::codegen::Bindings::HeadersBinding::HeadersMethods;
 use crate::dom::bindings::codegen::Bindings::RequestBinding::{
     ReferrerPolicy, RequestCache, RequestCredentials, RequestDestination, RequestDuplex,
     RequestInfo, RequestInit, RequestMethods, RequestMode, RequestRedirect,
@@ -36,7 +36,6 @@ use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{ByteString, DOMString, USVString};
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::headers::{Guard, Headers};
 use crate::dom::stream::readablestream::ReadableStream;
@@ -164,12 +163,12 @@ impl Request {
         // TODO: `environment settings object` is not implemented in Servo yet.
 
         // Step 10. If init["window"] exists and is non-null, then throw a TypeError.
-        if !init.window.handle().is_null_or_undefined() {
+        if !init.window.get().is_null_or_undefined() {
             return Err(Error::Type(c"Window is present and is not null".to_owned()));
         }
 
         // Step 11. If init["window"] exists, then set traversableForUserPrompts to "no-traversable".
-        if !init.window.handle().is_undefined() {
+        if !init.window.get().is_undefined() {
             traversable_for_user_prompts = TraversableForUserPrompts::NoTraversable;
         }
 
@@ -177,7 +176,7 @@ impl Request {
         let mut request: NetTraitsRequest;
         request = net_request_from_global(global, temporary_request.current_url());
         request.method = temporary_request.method;
-        request.headers = temporary_request.headers.clone();
+        request.headers = temporary_request.headers;
         request.unsafe_request = true;
         request.traversable_for_user_prompts = traversable_for_user_prompts;
         // TODO: `entry settings object` is not implemented in Servo yet.
@@ -207,7 +206,7 @@ impl Request {
             init.redirect.is_some() ||
             init.referrer.is_some() ||
             init.referrerPolicy.is_some() ||
-            !init.window.handle().is_undefined()
+            !init.window.get().is_undefined()
         {
             // Step 13.1. If request’s mode is "navigate", then set it to "same-origin".
             if request.mode == NetTraitsRequestMode::Navigate {
@@ -378,26 +377,10 @@ impl Request {
         // Step 33. If init is not empty, then:
         //
         // but spec says this should only be when non-empty init?
-        let headers_copy = init
-            .headers
-            .as_ref()
-            .map(|possible_header| match possible_header {
-                HeadersInit::ByteStringSequenceSequence(init_sequence) => {
-                    HeadersInit::ByteStringSequenceSequence(init_sequence.clone())
-                },
-                HeadersInit::ByteStringByteStringRecord(init_map) => {
-                    HeadersInit::ByteStringByteStringRecord(init_map.clone())
-                },
-            });
 
         // Step 33.3
         // We cannot empty `r.Headers().header_list` because
-        // we would undo the Step 25 above.  One alternative is to set
-        // `headers_copy` as a deep copy of `r.Headers()`. However,
-        // `r.Headers()` is a `DomRoot<T>`, and therefore it is difficult
-        // to obtain a mutable reference to `r.Headers()`. Without the
-        // mutable reference, we cannot mutate `r.Headers()` to be the
-        // deep copied headers in Step 25.
+        // we would undo the Step 25 above.
 
         // Step 32. If this’s request’s mode is "no-cors", then:
         if request.request.borrow().mode == NetTraitsRequestMode::NoCors {
@@ -413,7 +396,7 @@ impl Request {
             request.Headers(cx).set_guard(Guard::RequestNoCors);
         }
 
-        match headers_copy {
+        match init.headers.as_ref() {
             None => {
                 // Step 33.4. If headers is a Headers object, then for each header of its header list, append header to this’s headers.
                 //
@@ -428,7 +411,7 @@ impl Request {
                 }
             },
             // Step 33.5. Otherwise, fill this’s headers with headers.
-            Some(headers_copy) => request.Headers(cx).fill(Some(headers_copy))?,
+            Some(headers) => request.Headers(cx).fill(Some(headers))?,
         }
 
         // Step 33.5 depending on how we got here
@@ -477,13 +460,13 @@ impl Request {
                 // Step 37.4. If type is non-null and this’s headers’s header list
                 // does not contain `Content-Type`, then append (`Content-Type`, type) to this’s headers.
                 let content_type_header_name = b"Content-Type";
-                if !request
-                    .Headers(cx)
+                let headers = request.Headers(cx);
+                if !headers
                     .Has(ByteString::new(content_type_header_name.to_vec()))
                     .unwrap()
                 {
-                    let content_type_header_value = contents.as_bytes();
-                    request.Headers(cx).Append(
+                    let content_type_header_value = contents.as_bytes(cx.no_gc());
+                    headers.Append(
                         ByteString::new(content_type_header_name.to_vec()),
                         ByteString::new(content_type_header_value.to_vec()),
                     )?;
@@ -634,9 +617,9 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
         global: &GlobalScope,
         proto: Option<HandleObject>,
         input: RequestInfo,
-        init: RootedTraceableBox<RequestInit>,
+        init: &RequestInit,
     ) -> Fallible<DomRoot<Request>> {
-        Self::constructor(cx, global, proto, input, &init)
+        Self::constructor(cx, global, proto, input, init)
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-method>
@@ -686,20 +669,17 @@ impl RequestMethods<crate::DomTypeHolder> for Request {
 
     /// <https://fetch.spec.whatwg.org/#dom-request-credentials>
     fn Credentials(&self) -> RequestCredentials {
-        let r = self.request.borrow().clone();
-        r.credentials_mode.convert()
+        self.request.borrow().credentials_mode.convert()
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-cache>
     fn Cache(&self) -> RequestCache {
-        let r = self.request.borrow().clone();
-        r.cache_mode.convert()
+        self.request.borrow().cache_mode.convert()
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-redirect>
     fn Redirect(&self) -> RequestRedirect {
-        let r = self.request.borrow().clone();
-        r.redirect_mode.convert()
+        self.request.borrow().redirect_mode.convert()
     }
 
     /// <https://fetch.spec.whatwg.org/#dom-request-integrity>

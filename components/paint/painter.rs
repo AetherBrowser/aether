@@ -51,9 +51,10 @@ use webrender_api::units::{
 use webrender_api::{
     self, BuiltDisplayList, BuiltDisplayListDescriptor, ColorF, DirtyRect, DisplayListPayload,
     DocumentId, DynamicProperties, Epoch as WebRenderEpoch, ExternalScrollId, FontInstanceFlags,
-    FontInstanceKey, FontInstanceOptions, FontKey, FontVariation, ImageData, ImageKey,
-    NativeFontHandle, PipelineId as WebRenderPipelineId, PropertyBinding, ReferenceFrameKind,
-    RenderReasons, SampledScrollOffset, SpaceAndClipInfo, SpatialId, TransformStyle,
+    FontInstanceKey, FontInstanceOptions, FontInstancePlatformOptions, FontKey, FontVariation,
+    ImageData, ImageKey, NativeFontHandle, PipelineId as WebRenderPipelineId, PropertyBinding,
+    ReferenceFrameKind, RenderReasons, SampledScrollOffset, SpaceAndClipInfo, SpatialId,
+    TransformStyle,
 };
 use wr_malloc_size_of::MallocSizeOfOps;
 
@@ -567,6 +568,26 @@ impl Painter {
                         ),
                     ));
                 }
+
+                let pending_container_timing = &mut pipeline.container_timing_candidates;
+                while let Some((epoch, ids)) = pending_container_timing.pop_front() {
+                    if epoch > current_epoch {
+                        pending_container_timing.push_front((epoch, ids));
+                        break;
+                    }
+                    #[cfg(feature = "tracing")]
+                    tracing::info!(
+                        name: "ContainerTiming",
+                        servo_profiling = true,
+                        paint_time = ?paint_time,
+                        count = ids.len(),
+                        pipeline_id = ?pipeline_id,
+                    );
+                    paint_metric_events.push((
+                        *pipeline_id,
+                        PaintMetricEvent::ContainerTiming(paint_time, ids),
+                    ));
+                }
             }
         }
 
@@ -1037,6 +1058,13 @@ impl Painter {
             ));
         }
 
+        let container_timing_candidates = display_list_info.container_timing_candidates;
+        if !container_timing_candidates.is_empty() {
+            details
+                .container_timing_candidates
+                .push_back((epoch, container_timing_candidates));
+        }
+
         details.animations.handle_new_display_list(
             display_list_info.caret_property_binding,
             &self.web_content_animator,
@@ -1189,9 +1217,10 @@ impl Painter {
         font_key: FontKey,
         size: f32,
         flags: FontInstanceFlags,
+        platform_options: FontInstancePlatformOptions,
         variations: Vec<FontVariation>,
     ) {
-        let variations = if pref!(layout_variable_fonts_enabled) {
+        let variations = if pref!(layout_css_font_variations_enabled) {
             variations
         } else {
             vec![]
@@ -1208,7 +1237,7 @@ impl Painter {
             font_key,
             size,
             Some(font_instance_options),
-            None,
+            Some(platform_options),
             variations,
         );
 
@@ -1264,10 +1293,16 @@ impl Painter {
     }
 
     pub(crate) fn remove_webview(&mut self, webview_id: WebViewId) {
-        if self.webview_renderers.remove(&webview_id).is_none() {
+        let Some(webview_renderer) = self.webview_renderers.remove(&webview_id) else {
             warn!("Tried removing unknown WebView: {webview_id:?}");
             return;
         };
+
+        let mut transaction = Transaction::new();
+        for pipeline_id in webview_renderer.pipelines.keys() {
+            transaction.remove_pipeline(pipeline_id.into());
+        }
+        self.send_transaction(transaction);
 
         self.send_root_pipeline_display_list();
     }
@@ -1455,12 +1490,7 @@ impl Painter {
             warn!("Handled input event for unknown webview: {webview_id}");
             return;
         };
-        webview_renderer.notify_input_event_handled(
-            &self.webrender_api,
-            &self.needs_repaint,
-            input_event_id,
-            result,
-        );
+        webview_renderer.notify_input_event_handled(&self.needs_repaint, input_event_id, result);
     }
 
     pub(crate) fn refresh_cursor(&self) {

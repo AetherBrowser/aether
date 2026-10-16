@@ -964,7 +964,7 @@ fn set_default_config_dir<'local>(
         .l()?;
     let path = JString::cast_local(env, path)?.try_to_string(env)?;
 
-    let config_dir = PathBuf::from(path).join("servo");
+    let config_dir = PathBuf::from(path).join("aether");
     if let Err(error) = std::fs::create_dir_all(&config_dir) {
         error!("Failed to create config directory at {config_dir:?}: {error:?}");
     }

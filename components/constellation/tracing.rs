@@ -61,8 +61,7 @@ mod from_embedder {
                 Self::LogEntry(..) => target!("LogEntry"),
                 Self::NewWebView(..) => target!("NewWebView"),
                 Self::CloseWebView(..) => target!("CloseWebView"),
-                Self::FocusWebView(..) => target!("FocusWebView"),
-                Self::BlurWebView => target!("BlurWebView"),
+                Self::SetWebViewHasSystemFocus(..) => target!("SetWebViewHasSystemFocus"),
                 Self::ForwardInputEvent(_webview_id, event, ..) => event.log_target(),
                 Self::RefreshCursor(..) => target!("RefreshCursor"),
                 Self::ExitFullScreen(_) => target!("ExitFullScreen"),
@@ -82,7 +81,9 @@ mod from_embedder {
                 Self::UserContentManagerAction(..) => target!("UserContentManagerAction"),
                 Self::UpdatePinchZoomInfos(..) => target!("UpdatePinchZoomInfos"),
                 Self::SetAccessibilityActive(..) => target!("SetAccessibilityActive"),
+                Self::ForwardAccessibilityAction(..) => target!("ForwardAccessibilityAction"),
                 Self::ClearSessionHistory(..) => target!("ClearHistory"),
+                Self::SetNetworkOnlineState(..) => target!("SetNetworkOnlineState"),
             }
         }
     }
@@ -166,6 +167,7 @@ mod from_script {
                 Self::GetDocumentOriginDetails(..) => {
                     target!("GetDocumentOriginDetails")
                 },
+                Self::GetChildBrowsingContextCount(..) => target!("GetChildBrowsingContextCount"),
                 Self::GetChildBrowsingContextId(..) => target!("GetChildBrowsingContextId"),
                 Self::LoadComplete => target!("LoadComplete"),
                 Self::LoadUrl(..) => target!("LoadUrl"),

@@ -24,11 +24,12 @@ use net_traits::{FetchMetadata, NetworkError, ResourceFetchTiming};
 use regex::Regex;
 #[cfg(feature = "gamepad")]
 use script_bindings::cell::DomRefCell;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use servo_base::generic_channel;
 use servo_config::pref;
 use servo_url::ServoUrl;
 
+use crate::ScriptThread;
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorMethods;
 #[cfg(feature = "gamepad")]
 use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::PermissionName;
@@ -173,7 +174,7 @@ impl Navigator {
     }
 
     pub(crate) fn new(cx: &mut JSContext, window: &Window) -> DomRoot<Navigator> {
-        reflect_dom_object_with_cx(Box::new(Navigator::new_inherited()), window, cx)
+        reflect_dom_object(cx, Box::new(Navigator::new_inherited()), window)
     }
 
     #[cfg(feature = "webxr")]
@@ -372,14 +373,14 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
         navigatorinfo::Language()
     }
 
-    // https://html.spec.whatwg.org/multipage/#dom-navigator-languages
+    /// <https://html.spec.whatwg.org/multipage/#dom-navigator-languages>
     fn Languages(&self, cx: &mut js::context::JSContext, retval: MutableHandleValue) {
         to_frozen_array(cx, &[self.Language()], retval)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-online>
     fn OnLine(&self) -> bool {
-        true
+        ScriptThread::online()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-navigator-plugins>
@@ -573,7 +574,9 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
                 cors_mode = RequestMode::CorsMode;
                 // If contentType value is a CORS-safelisted request-header value for the Content-Type header,
                 // set corsMode to "no-cors".
-                if is_cors_safelisted_request_content_type(content_type.as_bytes().deref()) {
+                if is_cors_safelisted_request_content_type(
+                    content_type.as_bytes(cx.no_gc()).deref(),
+                ) {
                     cors_mode = RequestMode::NoCors;
                 }
                 // Append a Content-Type header with value contentType to headerList.

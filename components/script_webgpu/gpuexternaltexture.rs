@@ -110,7 +110,7 @@ where
             device_id: self.device_id.0,
             queue_id: self.queue_id.0,
             texture_id: self.texture_id.0,
-            snapshot: snapshot.to_shared(),
+            snapshot: snapshot.into_shared(),
         }) {
             warn!("Failed to send UpdatePlanarTexture ({error})");
         }
@@ -204,6 +204,7 @@ where
         planar_texture: Option<Rc<PlanarTexture<D>>>,
     ) -> DomRoot<GPUExternalTexture<D>> {
         reflect_dom_object_with_wrap::<D, _, _>(
+            cx,
             Box::new(GPUExternalTexture::new_inherited(
                 channel,
                 external_texture,
@@ -211,7 +212,6 @@ where
                 planar_texture,
             )),
             global,
-            cx,
             GPUExternalTextureWrap::<D>,
         )
     }

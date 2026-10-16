@@ -5,7 +5,6 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use devtools_traits::WorkerId;
 use embedder_traits::{AnimationState, FocusSequenceNumber};
 use layout_api::ScriptThreadFactory;
 use log::{debug, error, warn};
@@ -15,7 +14,7 @@ use script_traits::{
     DiscardBrowsingContext, DocumentActivity, NewPipelineInfo, ScriptThreadMessage,
 };
 use servo_base::generic_channel::SendError;
-use servo_base::id::{BrowsingContextId, HistoryStateId, PipelineId, WebViewId};
+use servo_base::id::{BrowsingContextId, HistoryStateId, PipelineId, WebViewId, WorkerId};
 use servo_constellation_traits::{LoadData, ServiceWorkerManagerFactory};
 use servo_url::ServoUrl;
 
@@ -88,6 +87,10 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
+    pub(crate) fn page_title(&self) -> Option<String> {
+        (!self.title.is_empty()).then(|| self.title.clone())
+    }
+
     /// Possibly starts a script thread, in a new process if requested.
     pub(crate) fn spawn<STF: ScriptThreadFactory, SWF: ServiceWorkerManagerFactory>(
         new_pipeline_info: NewPipelineInfo,
@@ -105,7 +108,7 @@ impl Pipeline {
         Ok(Self::new_already_spawned(
             new_pipeline_info.new_pipeline_id,
             new_pipeline_info.browsing_context_id,
-            new_pipeline_info.webview_id,
+            new_pipeline_info.webview_state.id,
             new_pipeline_info.opener,
             event_loop,
             constellation.paint_proxy.clone(),

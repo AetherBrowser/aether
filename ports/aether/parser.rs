@@ -27,6 +27,7 @@ pub fn get_default_url(
 ) -> ServoUrl {
     // If the url is not provided, we fallback to the homepage in prefs,
     // or a blank page in case the homepage is not set either.
+    let url_opt = url_opt.map(str::trim).filter(|url| !url.is_empty());
     let mut new_url = None;
     let cmdline_url = url_opt.map(|s| s.to_string()).and_then(|url_string| {
         parse_url_or_filename(cwd.as_ref(), &url_string)
@@ -55,7 +56,10 @@ pub fn get_default_url(
     )]
     if new_url.is_none() {
         if let Some(url_opt) = url_opt {
-            new_url = location_bar_input_to_url(url_opt, &preferences.searchpage);
+            new_url = location_bar_input_to_url(
+                url_opt,
+                &preferences.search_engines.default_engine().url,
+            );
         }
     }
 

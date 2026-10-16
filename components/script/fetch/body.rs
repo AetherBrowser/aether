@@ -626,7 +626,7 @@ impl Extractable for DOMString {
         global: &GlobalScope,
         _keep_alive: bool,
     ) -> Fallible<ExtractedBody> {
-        let bytes = self.as_bytes().to_owned();
+        let bytes = self.as_bytes(cx.no_gc()).to_owned();
         let total_bytes = bytes.len();
         let content_type = Some(DOMString::from_static("text/plain;charset=UTF-8"));
         let stream = stream_from_body_init_bytes(cx, global, bytes)?;
@@ -723,7 +723,7 @@ pub(crate) fn consume_body<T: BodyMixin + DomObject>(
 
     // Let promise be a new promise.
     // Note: re-ordered so we can return the promise below.
-    let promise = Promise::new_in_realm_rooted(cx);
+    let promise = Promise::new_in_realm(cx);
 
     // If object is unusable, then return a promise rejected with a TypeError.
     if object.is_unusable() {

@@ -25,6 +25,7 @@ use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
 use crate::desktop::tracing::trace_winit_event;
+use crate::history::open_history;
 use crate::parser::get_default_url;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
@@ -80,6 +81,15 @@ impl App {
 
     /// Initialize Application once event loop start running.
     pub fn init(&mut self, active_event_loop: Option<&ActiveEventLoop>) {
+        crate::search::install_search_engines(
+            self.opts.config_dir.clone(),
+            self.servoshell_preferences.search_engines.clone(),
+        );
+        crate::home::install_home_settings(
+            self.opts.config_dir.clone(),
+            self.servoshell_preferences.home_settings.clone(),
+        );
+
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
             "urlinfo",
@@ -129,6 +139,7 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
+            open_history(&self.opts),
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()
@@ -186,7 +197,7 @@ impl App {
 
 fn publish_open_tabs(state: &RunningAppState) {
     let mut tabs = Vec::new();
-    for window in state.windows().values() {
+    for window in state.windows().iter() {
         for (webview_id, webview) in window.webviews() {
             let url = webview.url().map(|url| url.to_string()).unwrap_or_default();
             let title = webview

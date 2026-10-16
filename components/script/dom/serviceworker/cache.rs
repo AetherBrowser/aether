@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_cx};
+use script_bindings::reflector::{Reflector, reflect_dom_object};
 use script_bindings::root::DomRoot;
 use servo_base::generic_channel::{GenericCallback, GenericSend};
 use servo_url::ServoUrl;
@@ -52,7 +52,7 @@ impl Cache {
     }
 
     pub(crate) fn new(cx: &mut JSContext, global: &GlobalScope, name: DOMString) -> DomRoot<Cache> {
-        reflect_dom_object_with_cx(Box::new(Cache::new_inherited(name)), global, cx)
+        reflect_dom_object(cx, Box::new(Cache::new_inherited(name)), global)
     }
 
     /// Setup the callback to the backend service, if this hasn't been done already.
@@ -179,7 +179,7 @@ impl CacheMethods<crate::DomTypeHolder> for Cache {
 
         // Step 4: Let promise be a new promise.
         // Note: step re-ordered to make it available in Step 2.
-        let promise = Promise::new_rooted(cx, &global);
+        let promise = Promise::new(cx, &global);
 
         // Step 2: If the optional argument request is not omitted, then:
         if let Some(request) = request {
