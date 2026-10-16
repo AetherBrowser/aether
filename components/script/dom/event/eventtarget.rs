@@ -12,7 +12,6 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use deny_public_fields::DenyPublicFields;
-use devtools_traits::EventListenerInfo;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{JS_GetFunctionObject, SupportUnscopables};
@@ -513,7 +512,7 @@ impl EventTarget {
     pub(crate) fn remove_all_listeners(&self, cx: &JSContext) {
         // Take the whole map out first, so the listener-removed notifications
         // below run without holding a borrow on `handlers`.
-        rooted!(&in(cx) let handlers = self.handlers.borrow_mut().take());
+        rooted!(&in(cx) let handlers = self.handlers.safe_borrow_mut(cx.no_gc()).take());
         let Some(ref handlers) = *handlers else {
             return;
         };
@@ -941,7 +940,7 @@ impl EventTarget {
             signal.add(&AbortAlgorithm::DomEventListener(
                 RemovableDomEventListener {
                     event_target: Dom::from_ref(self),
-                    ty: ty.clone(),
+                    ty: ty.clone().traced(),
                     listener: listener.as_ref().map(|listener| listener.to_traced()),
                     options: options.parent.clone(),
                 },
@@ -1111,7 +1110,10 @@ impl EventTarget {
         CONTENT_EVENT_HANDLER_NAMES.contains(&name)
     }
 
-    pub(crate) fn summarize_event_listeners_for_devtools(&self) -> Vec<EventListenerInfo> {
+    #[cfg(feature = "devtools")]
+    pub(crate) fn summarize_event_listeners_for_devtools(
+        &self,
+    ) -> Vec<devtools_traits::EventListenerInfo> {
         let handlers = self.handlers.borrow();
         let Some(handlers) = handlers.as_ref() else {
             return Vec::new();
@@ -1120,7 +1122,7 @@ impl EventTarget {
         for (event_type, event_listeners) in &handlers.0 {
             for event_listener in event_listeners.iter() {
                 let event_listener_entry = event_listener.borrow();
-                listener_infos.push(EventListenerInfo {
+                listener_infos.push(devtools_traits::EventListenerInfo {
                     event_type: event_type.to_string(),
                     capturing: event_listener_entry.phase() == ListenerPhase::Capturing,
                 });

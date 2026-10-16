@@ -15,6 +15,7 @@ use std::fmt;
 use accesskit::ActionRequest;
 use bitflags::bitflags;
 use crossbeam_channel::RecvTimeoutError;
+#[cfg(feature = "devtools")]
 use devtools_traits::ScriptToDevtoolsControlMsg;
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
@@ -35,7 +36,9 @@ use profile_traits::mem;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
-use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSender};
+#[cfg(feature = "devtools")]
+use servo_base::generic_channel::GenericCallback;
+use servo_base::generic_channel::{GenericReceiver, GenericSender};
 use servo_base::id::{
     BrowsingContextId, HistoryStateId, LCPCandidateID, PipelineId, PipelineNamespaceId,
     PipelineNamespaceRequest, ScriptEventLoopId, WebViewId,
@@ -283,6 +286,7 @@ pub enum ScriptThreadMessage {
         Option<String>,
     ),
     /// Report an error from a CSS parser for the given pipeline
+    #[cfg(feature = "devtools")]
     ReportCSSError(PipelineId, String, u32, u32, String),
     /// Reload the given page.
     Reload(PipelineId),
@@ -339,6 +343,9 @@ pub enum ScriptThreadMessage {
     ForwardAccessibilityAction(PipelineId, ActionRequest),
     /// Force a garbage collection in this script thread.
     TriggerGarbageCollection,
+    /// Inform the `ScriptThread` that the embedder has indicated that the network has gone
+    /// online or offline.
+    SetNetworkOnlineState(bool),
 }
 
 impl fmt::Debug for ScriptThreadMessage {
@@ -480,6 +487,7 @@ pub struct InitialScriptState {
     /// A channel to the memory profiler thread.
     pub memory_profiler_sender: mem::ProfilerChan,
     /// A channel to the developer tools, if applicable.
+    #[cfg(feature = "devtools")]
     pub devtools_server_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
     /// The ID of the pipeline namespace for this script thread.
     pub pipeline_namespace_id: PipelineNamespaceId,
@@ -496,6 +504,8 @@ pub struct InitialScriptState {
     pub privileged_urls: Vec<ServoUrl>,
     /// A copy of constellation's `UserContentManagerId` to `UserContents` map.
     pub user_contents_for_manager_id: FxHashMap<UserContentManagerId, UserContents>,
+    /// Whether or not the embedder has indicated that networking is online.
+    pub online: bool,
 }
 
 /// Errors from executing a paint worklet

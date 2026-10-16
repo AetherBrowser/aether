@@ -2,15 +2,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::sync::LazyLock;
-
 use app_units::Au;
 use cssparser::Parser;
 use js::context::NoGC;
-use regex::Regex;
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::is_valid_floating_point_number_string;
 use script_bindings::inheritance::Castable;
 use script_bindings::str::USVString;
 use smallvec::{SmallVec, smallvec};
@@ -139,15 +137,23 @@ impl SourceSet {
     /// <https://html.spec.whatwg.org/multipage/#update-the-source-set>
     pub fn update_source_set(&mut self, no_gc: &NoGC, el: &Element) {
         // Step 1. Set el's source set to an empty source set.
-        // Step 2. Let elements be « el ».
-        // Step 3. If el is an img element whose parent node is a picture element, then replace the
-        // contents of elements with el's parent node's child elements, retaining relative order.
-        // Step 4. Let img be el if el is an img element, otherwise null.
+        // Step 3. Let img be null.
+        // Step 4.1. Set img to el.
         let img = el.downcast::<HTMLImageElement>();
+        // Step 4. If el is an img element:
+        if let Some(image) = img {
+            // Step 4.2. Set el's dimension attribute source to el.
+            image.set_dimension_attribute_source(no_gc, Some(el));
+        }
         let parent = el.upcast::<Node>().GetParentElement();
+        // Step 2. Let elements be « el ».
         let elements = match parent.as_ref() {
             Some(p) => {
+                // Step 4.3. If el's parent node is a picture element:
                 if p.is::<HTMLPictureElement>() {
+                    debug_assert!(img.is_some());
+                    // Step 4.3.1. Replace the contents of elements with el's parent
+                    // node's child elements, retaining relative order.
                     p.upcast::<Node>()
                         .children_unrooted(no_gc)
                         .filter_map(UnrootedDom::downcast::<Element>)
@@ -261,16 +267,13 @@ impl SourceSet {
                 continue;
             }
 
-            // Step 5.9. If child has width or height attributes, set el's dimension attribute
-            // source to child. Otherwise, set el's dimension attribute source to el.
-            if let Some(image) = img {
-                if child.has_attribute(&local_name!("width")) ||
-                    child.has_attribute(&local_name!("height"))
-                {
-                    image.set_dimension_attribute_source(Some(child));
-                } else {
-                    image.set_dimension_attribute_source(Some(el));
-                }
+            // Step 5.9. If child has width or height attributes,
+            // set el's dimension attribute source to child.
+            if let Some(image) = img &&
+                (child.has_attribute(&local_name!("width")) ||
+                    child.has_attribute(&local_name!("height")))
+            {
+                image.set_dimension_attribute_source(no_gc, Some(child));
             }
 
             let mut source_set = SourceSet {
@@ -430,15 +433,6 @@ pub(crate) fn collect_sequence_characters(
 /// TODO(#39315): Use the validation rule from Stylo
 fn is_valid_non_negative_integer_string(s: &str) -> bool {
     s.chars().all(|c| c.is_ascii_digit())
-}
-
-/// <https://html.spec.whatwg.org/multipage/#valid-floating-point-number>
-/// TODO(#39315): Use the validation rule from Stylo
-fn is_valid_floating_point_number_string(s: &str) -> bool {
-    static RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^-?(?:\d+\.\d+|\d+|\.\d+)(?:(e|E)(\+|\-)?\d+)?$").unwrap());
-
-    RE.is_match(s)
 }
 
 /// Parse an `srcset` attribute:

@@ -23,7 +23,7 @@ use style::attr::AttrValue;
 use style::computed_values::object_fit::T as ObjectFit;
 use style::context::TreeCountingCaches;
 use style::dom::DummyElementContext;
-use style::logical_geometry::{Direction, WritingMode};
+use style::logical_geometry::{LogicalAxis, WritingMode};
 use style::properties::{ComputedValues, StyleBuilder};
 use style::rule_cache::RuleCacheConditions;
 use style::rule_tree::RuleCascadeFlags;
@@ -149,7 +149,7 @@ pub(crate) struct ImageInfo {
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct VideoInfo {
     pub image_key: Option<ImageKey>,
-    pub poster_url: Option<ServoUrl>,
+    pub poster_or_src_url: Option<ServoUrl>,
 }
 
 #[derive(Debug, MallocSizeOf)]
@@ -439,7 +439,7 @@ impl ReplacedContents {
     #[inline]
     fn content_size(
         &self,
-        axis: Direction,
+        axis: LogicalAxis,
         preferred_aspect_ratio: Option<AspectRatio>,
         get_size_in_opposite_axis: &dyn Fn() -> SizeConstraint,
         get_fallback_size: &dyn Fn() -> Au,
@@ -569,7 +569,7 @@ impl ReplacedContents {
                     clip,
                     image_key: video_info.image_key,
                     showing_broken_image_icon: false,
-                    url: video_info.poster_url.clone(),
+                    url: video_info.poster_or_src_url.clone(),
                     load_time: None,
                     natural_width: self.natural_size.width,
                     natural_height: self.natural_size.height,
@@ -769,7 +769,7 @@ impl ReplacedContents {
         let writing_mode = base.style.writing_mode;
         let inline_size = containing_block_for_children.size.inline;
         let content_block_size = self.content_size(
-            Direction::Block,
+            LogicalAxis::Block,
             preferred_aspect_ratio,
             &|| SizeConstraint::Definite(inline_size),
             &|| self.fallback_block_size(writing_mode),
@@ -812,7 +812,7 @@ impl ComputeInlineContentSizes for ReplacedContents {
         constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
         let inline_content_size = self.content_size(
-            Direction::Inline,
+            LogicalAxis::Inline,
             constraint_space.preferred_aspect_ratio,
             &|| constraint_space.block_size,
             &|| self.fallback_inline_size(constraint_space.style.writing_mode),

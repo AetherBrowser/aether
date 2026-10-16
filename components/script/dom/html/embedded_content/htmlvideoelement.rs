@@ -254,7 +254,7 @@ impl HTMLVideoElement {
         let image_cache = window.image_cache();
         let cache_result = image_cache.get_cached_image_status(
             poster_url.url(),
-            window.origin().immutable().clone(),
+            window.origin().immutable(),
             None,
         );
 
@@ -616,12 +616,16 @@ impl LayoutDom<'_, HTMLVideoElement> {
         HTMLMediaData {
             current_frame,
             metadata,
-            poster_url: unsafe {
-                video
-                    .poster_url
-                    .borrow_for_layout()
-                    .clone()
-                    .map(|url| url.url())
+            poster_or_src_url: if video.htmlmediaelement.show_poster() {
+                unsafe {
+                    video
+                        .poster_url
+                        .borrow_for_layout()
+                        .clone()
+                        .map(|url| url.url())
+                }
+            } else {
+                unsafe { video.htmlmediaelement.current_src_url() }
             },
         }
     }

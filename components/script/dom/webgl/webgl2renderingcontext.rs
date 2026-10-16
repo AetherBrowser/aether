@@ -67,8 +67,8 @@ use crate::dom::webgl::webglprogram::WebGLProgram;
 use crate::dom::webgl::webglquery::WebGLQuery;
 use crate::dom::webgl::webglrenderbuffer::{WebGLRenderbuffer, renderbuffer_format};
 use crate::dom::webgl::webglrenderingcontext::{
-    Operation, TexPixels, TexSource, VertexAttrib, WebGLRenderingContext, uniform_get,
-    uniform_typed,
+    Operation, TexPixels, TexSource, VertexAttrib, WebGLRenderingContext, bytes_per_pixel,
+    uniform_get, uniform_typed,
 };
 use crate::dom::webgl::webglsampler::{WebGLSampler, WebGLSamplerValue};
 use crate::dom::webgl::webglshader::WebGLShader;
@@ -855,24 +855,20 @@ impl WebGL2RenderingContext {
         true
     }
 
-    fn vertex_attrib_i(&self, cx: &mut JSContext, index: u32, x: i32, y: i32, z: i32, w: i32) {
+    fn vertex_attrib_i(&self, index: u32, x: i32, y: i32, z: i32, w: i32) {
         if index >= self.base.limits().max_vertex_attribs {
             return self.base.webgl_error(InvalidValue);
         }
         self.base.current_vertex_attribs()[index as usize] = VertexAttrib::Int(x, y, z, w);
-        self.current_vao(cx)
-            .set_vertex_attrib_type(index, constants::INT);
         self.base
             .send_command(WebGLCommand::VertexAttribI(index, x, y, z, w));
     }
 
-    fn vertex_attrib_u(&self, cx: &mut JSContext, index: u32, x: u32, y: u32, z: u32, w: u32) {
+    fn vertex_attrib_u(&self, index: u32, x: u32, y: u32, z: u32, w: u32) {
         if index >= self.base.limits().max_vertex_attribs {
             return self.base.webgl_error(InvalidValue);
         }
         self.base.current_vertex_attribs()[index as usize] = VertexAttrib::Uint(x, y, z, w);
-        self.current_vao(cx)
-            .set_vertex_attrib_type(index, constants::UNSIGNED_INT);
         self.base
             .send_command(WebGLCommand::VertexAttribU(index, x, y, z, w));
     }
@@ -1072,6 +1068,22 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
                 rval.set(DoubleValue(
                     self.base.limits().max_client_wait_timeout_webgl.as_nanos() as f64,
                 ));
+                return;
+            },
+            constants::UNPACK_ROW_LENGTH |
+            constants::UNPACK_IMAGE_HEIGHT |
+            constants::UNPACK_SKIP_PIXELS |
+            constants::UNPACK_SKIP_ROWS |
+            constants::UNPACK_SKIP_IMAGES => {
+                let layout = self.base.texture_unpack_layout();
+                let value = match parameter {
+                    constants::UNPACK_ROW_LENGTH => layout.row_length,
+                    constants::UNPACK_IMAGE_HEIGHT => layout.image_height,
+                    constants::UNPACK_SKIP_PIXELS => layout.skip_pixels,
+                    constants::UNPACK_SKIP_ROWS => layout.skip_rows,
+                    _ => layout.skip_images,
+                };
+                rval.set(Int32Value(value as i32));
                 return;
             },
             constants::MAX_SERVER_WAIT_TIMEOUT => {
@@ -2224,6 +2236,22 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             constants::PACK_ROW_LENGTH => self.texture_pack_row_length.set(param_value as _),
             constants::PACK_SKIP_PIXELS => self.texture_pack_skip_pixels.set(param_value as _),
             constants::PACK_SKIP_ROWS => self.texture_pack_skip_rows.set(param_value as _),
+            constants::UNPACK_ROW_LENGTH |
+            constants::UNPACK_IMAGE_HEIGHT |
+            constants::UNPACK_SKIP_PIXELS |
+            constants::UNPACK_SKIP_ROWS |
+            constants::UNPACK_SKIP_IMAGES => {
+                let mut layout = self.base.texture_unpack_layout();
+                let value = param_value as u32;
+                match param_name {
+                    constants::UNPACK_ROW_LENGTH => layout.row_length = value,
+                    constants::UNPACK_IMAGE_HEIGHT => layout.image_height = value,
+                    constants::UNPACK_SKIP_PIXELS => layout.skip_pixels = value,
+                    constants::UNPACK_SKIP_ROWS => layout.skip_rows = value,
+                    _ => layout.skip_images = value,
+                }
+                self.base.set_texture_unpack_layout(layout);
+            },
             _ => self.base.PixelStorei(param_name, param_value),
         }
     }
@@ -3055,12 +3083,12 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.8>
-    fn VertexAttribI4i(&self, cx: &mut JSContext, index: u32, x: i32, y: i32, z: i32, w: i32) {
-        self.vertex_attrib_i(cx, index, x, y, z, w)
+    fn VertexAttribI4i(&self, _cx: &mut JSContext, index: u32, x: i32, y: i32, z: i32, w: i32) {
+        self.vertex_attrib_i(index, x, y, z, w)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.8>
-    fn VertexAttribI4iv(&self, cx: &mut JSContext, index: u32, v: Int32ArrayOrLongSequence) {
+    fn VertexAttribI4iv(&self, _cx: &mut JSContext, index: u32, v: Int32ArrayOrLongSequence) {
         let values = match v {
             Int32ArrayOrLongSequence::Int32Array(v) => v.to_vec().unwrap_or_default(),
             Int32ArrayOrLongSequence::LongSequence(v) => v,
@@ -3068,18 +3096,18 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         if values.len() < 4 {
             return self.base.webgl_error(InvalidValue);
         }
-        self.vertex_attrib_i(cx, index, values[0], values[1], values[2], values[3]);
+        self.vertex_attrib_i(index, values[0], values[1], values[2], values[3]);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.8>
-    fn VertexAttribI4ui(&self, cx: &mut JSContext, index: u32, x: u32, y: u32, z: u32, w: u32) {
-        self.vertex_attrib_u(cx, index, x, y, z, w)
+    fn VertexAttribI4ui(&self, _cx: &mut JSContext, index: u32, x: u32, y: u32, z: u32, w: u32) {
+        self.vertex_attrib_u(index, x, y, z, w)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/2.0/#4.7.8>
     fn VertexAttribI4uiv(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         index: u32,
         v: Uint32ArrayOrUnsignedLongSequence,
     ) {
@@ -3090,7 +3118,7 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         if values.len() < 4 {
             return self.base.webgl_error(InvalidValue);
         }
-        self.vertex_attrib_u(cx, index, values[0], values[1], values[2], values[3]);
+        self.vertex_attrib_u(index, values[0], values[1], values[2], values[3]);
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
@@ -3209,8 +3237,6 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             return Ok(());
         };
 
-        // TODO: If pixel store parameter constraints are not met, generates an INVALID_OPERATION error.
-
         let unpacking_alignment = self.base.texture_unpacking_alignment();
         let element_size = data_type.element_size();
         let components_per_element = data_type.components_per_element();
@@ -3238,7 +3264,17 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         // If srcData is null, a buffer of sufficient size initialized to 0 is passed.
         let buff = match *src_data {
             Some(ref data) => {
-                GenericSharedMemory::from_bytes(data.as_slice_safe(no_gc).unwrap_or(&[]))
+                let block = match self.base.unpack_block(
+                    data.as_slice_safe(no_gc).unwrap_or(&[]),
+                    width,
+                    height,
+                    Some(depth),
+                    bytes_per_pixel(format, data_type),
+                ) {
+                    Ok(block) => block,
+                    Err(()) => return Ok(()),
+                };
+                GenericSharedMemory::from_bytes(&block)
             },
             None => GenericSharedMemory::from_byte(0, expected_byte_len as usize),
         };
@@ -3368,6 +3404,15 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             return Ok(());
         }
 
+        // TODO: Apply the unpack layout to pixel unpack buffer uploads.
+        let mut layout = self.base.texture_unpack_layout();
+        layout.image_height = 0;
+        layout.skip_images = 0;
+        if layout != Default::default() {
+            self.base.webgl_error(InvalidOperation);
+            return Ok(());
+        }
+
         let unpacking_alignment = self.base.texture_unpacking_alignment();
 
         let validator = TexImage2DValidator::new(
@@ -3447,8 +3492,8 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         let TexImage2DValidatorResult {
             texture,
             target,
-            width: _,
-            height: _,
+            width,
+            height,
             level,
             border,
             internal_format,
@@ -3462,6 +3507,13 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         let pixels = match self.base.get_image_pixels(no_gc, source)? {
             Some(pixels) => pixels,
             None => return Ok(()),
+        };
+        // <https://registry.khronos.org/webgl/specs/latest/2.0/#DOM_UPLOAD_UNPACK_PARAMS>
+        let layout = self.base.texture_unpack_layout();
+        let origin = Point2D::new(layout.skip_pixels, layout.skip_rows);
+        let Some(pixels) = pixels.sub_rect(origin, Size2D::new(width, height)) else {
+            self.base.webgl_error(InvalidOperation);
+            return Ok(());
         };
 
         self.base.tex_image_2d(
@@ -3544,7 +3596,17 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
         }
 
         let src_data_slice = src_data.as_slice_safe(no_gc).unwrap_or(&[]);
-        let buff = GenericSharedMemory::from_bytes(&src_data_slice[src_byte_offset..]);
+        let block = match self.base.unpack_block(
+            &src_data_slice[src_byte_offset..],
+            width,
+            height,
+            None,
+            bytes_per_pixel(format, data_type),
+        ) {
+            Ok(block) => block,
+            Err(()) => return Ok(()),
+        };
+        let buff = GenericSharedMemory::from_bytes(&block);
 
         let expected_byte_length = match self.base.validate_tex_image_2d_data(
             width,

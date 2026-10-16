@@ -17,13 +17,13 @@ use std::time::{Duration, Instant};
 
 use content_security_policy::CspList;
 use crossbeam_channel::Sender;
+#[cfg(feature = "devtools")]
 use devtools_traits::{PageError, ScriptToDevtoolsControlMsg, get_time_stamp};
 use dom_struct::dom_struct;
 use embedder_traits::{
     ConsoleLogLevel, EmbedderMsg, JavaScriptEvaluationError, ScriptToEmbedderChan,
 };
 use fonts::FontContext;
-use indexmap::IndexSet;
 use js::context::{JSContext, NoGC};
 use js::jsapi::{GetNonCCWObjectGlobal, HandleObject, Heap, JSObject};
 use js::jsval::UndefinedValue;
@@ -48,9 +48,10 @@ use profile_traits::{
     generic_callback as profile_generic_callback, generic_channel as profile_generic_channel,
     mem as profile_mem, time as profile_time,
 };
-use rustc_hash::{FxBuildHasher, FxHashMap};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::callback::{OwnerWindow, RootedCallback, TracedCallback};
 use script_bindings::cell::{DomRefCell, RefMut};
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::interfaces::GlobalScopeHelpers;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
@@ -133,7 +134,9 @@ use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::dom::stream::writablestream::CrossRealmTransformWritable;
 use crate::dom::transformstream::CrossRealmTransform;
-use crate::dom::types::{AbortSignal, DebuggerGlobalScope, MessageEvent};
+#[cfg(feature = "devtools")]
+use crate::dom::types::DebuggerGlobalScope;
+use crate::dom::types::{AbortSignal, MessageEvent};
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::gpudevice::GPUDevice;
 #[cfg(feature = "webgpu")]
@@ -197,10 +200,11 @@ pub(crate) struct GlobalScope {
     worker_map: DomRefCell<HashMapTracedValues<ServiceWorkerId, Dom<ServiceWorker>, FxBuildHasher>>,
 
     /// Timers (milliseconds) used by the Console API.
-    console_timers: DomRefCell<HashMap<DOMString, Instant>>,
+    console_timers: DomRefCell<HashMap<TracedDOMString, Instant>>,
 
     /// For providing instructions to an optional devtools server.
     #[no_trace]
+    #[cfg(feature = "devtools")]
     devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
 
     /// For sending messages to the memory profiler.
@@ -251,7 +255,7 @@ pub(crate) struct GlobalScope {
 
     /// Dependent AbortSignals that must be kept alive per
     /// <https://dom.spec.whatwg.org/#abort-signal-garbage-collection?
-    abort_signal_dependents: DomRefCell<IndexSet<Dom<AbortSignal>>>,
+    abort_signal_dependents: DomRefCell<FxHashSet<Dom<AbortSignal>>>,
 
     /// Storage for watching rejected promises waiting for some client to
     /// consume their rejection.
@@ -293,12 +297,12 @@ pub(crate) struct GlobalScope {
     frozen_supported_performance_entry_types: CachedFrozenArray,
 
     /// The stack of active group labels for the Console APIs.
-    console_group_stack: DomRefCell<Vec<DOMString>>,
+    console_group_stack: DomRefCell<Vec<TracedDOMString>>,
 
     /// The count map for the Console APIs.
     ///
     /// <https://console.spec.whatwg.org/#count>
-    console_count_map: DomRefCell<HashMap<DOMString, usize>>,
+    console_count_map: DomRefCell<HashMap<TracedDOMString, usize>>,
 
     /// Is considered in a secure context
     inherited_secure_context: Option<bool>,
@@ -380,7 +384,9 @@ impl GlobalScope {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_inherited(
-        devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
+        #[cfg(feature = "devtools")] devtools_chan: Option<
+            GenericCallback<ScriptToDevtoolsControlMsg>,
+        >,
         mem_profiler_chan: profile_mem::ProfilerChan,
         time_profiler_chan: profile_time::ProfilerChan,
         script_to_constellation_sender: ScriptToConstellationSender,
@@ -404,6 +410,7 @@ impl GlobalScope {
             indexeddb: Default::default(),
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             console_timers: DomRefCell::new(Default::default()),
+            #[cfg(feature = "devtools")]
             devtools_chan,
             mem_profiler_chan,
             time_profiler_chan,
@@ -1330,16 +1337,18 @@ impl GlobalScope {
         }
 
         if let BroadcastChannelState::Managed(router_id, channels) = &mut *current_state {
-            let entry = channels.entry(dom_channel.Name()).or_insert_with(|| {
-                let _ = self.script_to_constellation_chan().send(
-                    ScriptToConstellationMessage::NewBroadcastChannelNameInRouter(
-                        *router_id,
-                        String::from(dom_channel.Name()),
-                        self.origin().immutable().clone(),
-                    ),
-                );
-                VecDeque::new()
-            });
+            let entry = channels
+                .entry(dom_channel.Name().traced())
+                .or_insert_with(|| {
+                    let _ = self.script_to_constellation_chan().send(
+                        ScriptToConstellationMessage::NewBroadcastChannelNameInRouter(
+                            *router_id,
+                            String::from(dom_channel.Name()),
+                            self.origin().immutable().clone(),
+                        ),
+                    );
+                    VecDeque::new()
+                });
             entry.push_back(Dom::from_ref(dom_channel));
         } else {
             panic!("track_broadcast_channel should have first switched the state to managed.");
@@ -2059,7 +2068,7 @@ impl GlobalScope {
         if timers.len() >= 10000 {
             return Err(());
         }
-        match timers.entry(label) {
+        match timers.entry(label.traced()) {
             Entry::Vacant(entry) => {
                 entry.insert(Instant::now());
                 Ok(())
@@ -2093,6 +2102,7 @@ impl GlobalScope {
 
     /// Get an `&IpcSender<ScriptToDevtoolsControlMsg>` to send messages
     /// to the devtools thread when available.
+    #[cfg(feature = "devtools")]
     pub(crate) fn devtools_chan(&self) -> Option<&GenericCallback<ScriptToDevtoolsControlMsg>> {
         self.devtools_chan.as_ref()
     }
@@ -2130,13 +2140,15 @@ impl GlobalScope {
             worker.pipeline_id()
         } else if let Some(window) = self.downcast::<Window>() {
             window.pipeline_id()
-        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
-            debugger.pipeline_id()
         } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
             worklet.pipeline_id()
         } else if let Some(dissimilar) = self.downcast::<DissimilarOriginWindow>() {
             dissimilar.pipeline_id()
         } else {
+            #[cfg(feature = "devtools")]
+            if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
+                return debugger.pipeline_id();
+            }
             unreachable!("Unsupported global type for pipeline id")
         }
     }
@@ -2179,9 +2191,11 @@ impl GlobalScope {
             worklet.origin()
         } else if let Some(dissimilar_window) = self.downcast::<DissimilarOriginWindow>() {
             dissimilar_window.origin()
-        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
-            debugger.origin()
         } else {
+            #[cfg(feature = "devtools")]
+            if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
+                return debugger.origin();
+            }
             unreachable!("Unexpected origin check against global")
         }
     }
@@ -2298,6 +2312,7 @@ impl GlobalScope {
             // https://drafts.css-houdini.org/worklets/#script-settings-for-worklets
             return worklet.base_url();
         }
+        #[cfg(feature = "devtools")]
         if let Some(_debugger_global) = self.downcast::<DebuggerGlobalScope>() {
             return self.creation_url();
         }
@@ -2316,7 +2331,11 @@ impl GlobalScope {
             // TODO: is this the right URL to return?
             return worklet.base_url();
         }
-        if self.is::<DebuggerGlobalScope>() || self.is::<DissimilarOriginWindow>() {
+        if self.is::<DissimilarOriginWindow>() {
+            return self.creation_url();
+        }
+        #[cfg(feature = "devtools")]
+        if self.downcast::<DebuggerGlobalScope>().is_some() {
             return self.creation_url();
         }
         unreachable!();
@@ -2495,6 +2514,7 @@ impl GlobalScope {
                 dedicated.forward_error_to_worker_object(error_info);
             } else if self.is::<Window>() {
                 // Step 7.3. Otherwise, the user agent may report exception to a developer console.
+                #[cfg(feature = "devtools")]
                 if let Some(ref chan) = self.devtools_chan {
                     let _ = chan.send(ScriptToDevtoolsControlMsg::ReportPageError(
                         self.pipeline_id(),
@@ -2883,6 +2903,13 @@ impl GlobalScope {
         None
     }
 
+    pub(crate) fn online(&self) -> bool {
+        if let Some(worker_global_scope) = self.downcast::<WorkerGlobalScope>() {
+            return worker_global_scope.online();
+        }
+        ScriptThread::online()
+    }
+
     #[cfg(feature = "webgpu")]
     pub(crate) fn wgpu_id_hub(&self) -> Arc<IdentityHub> {
         self.gpu_id_hub.clone()
@@ -2953,7 +2980,7 @@ impl GlobalScope {
     }
 
     pub(crate) fn push_console_group(&self, group: DOMString) {
-        self.console_group_stack.borrow_mut().push(group);
+        self.console_group_stack.borrow_mut().push(group.traced());
     }
 
     pub(crate) fn pop_console_group(&self) {
@@ -2964,7 +2991,7 @@ impl GlobalScope {
         *self
             .console_count_map
             .borrow_mut()
-            .entry(label.clone())
+            .entry(label.clone().traced())
             .and_modify(|e| *e += 1)
             .or_insert(1)
     }
@@ -3163,6 +3190,14 @@ impl GlobalScope {
 
         // Step 5. Return timerKey.
         timer_key
+    }
+
+    pub(crate) fn set_network_online_state_on_dedicated_workers(&self, online: bool) {
+        for worker in &*self.list_auto_close_worker.borrow() {
+            _ = worker
+                .control_sender
+                .send(DedicatedWorkerControlMsg::SetNetworkOnlineState(online));
+        }
     }
 }
 

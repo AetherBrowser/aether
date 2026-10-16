@@ -487,6 +487,17 @@ pub(crate) trait SpecificInputType {
         _context: &UnbindContext,
     ) {
     }
+
+    fn form_owner_changed(&self, _cx: &mut JSContext, _input: &HTMLInputElement) {}
+
+    fn update_checkedness(
+        &self,
+        _cx: &mut JSContext,
+        _input: &HTMLInputElement,
+        _checked: bool,
+        _previously_checked: bool,
+    ) {
+    }
 }
 
 pub(crate) trait SpecificInputActivationType {

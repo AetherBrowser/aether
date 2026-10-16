@@ -4,7 +4,7 @@
 
 #![cfg_attr(crown, allow(crown::jscontext_first_arg))]
 
-use std::cell::{OnceCell, RefCell, RefMut};
+use std::cell::{Cell, OnceCell, RefCell, RefMut};
 use std::collections::HashSet;
 use std::default::Default;
 use std::rc::Rc;
@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use content_security_policy::CspList;
-use devtools_traits::{DevtoolScriptControlMsg, WorkerId};
+#[cfg(feature = "devtools")]
+use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
 use fonts::FontContext;
@@ -40,11 +41,12 @@ use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::{GenericSend, GenericSender, RoutedReceiver};
-use servo_base::id::{PipelineId, PipelineNamespace};
+use servo_base::id::{PipelineId, PipelineNamespace, WorkerId};
 #[cfg(feature = "webgl")]
 use servo_canvas_traits::webgl::WebGLChan;
 use servo_constellation_traits::WorkerGlobalScopeInit;
 use servo_url::{MutableOrigin, ServoUrl};
+use style::Atom;
 use timers::TimerScheduler;
 use uuid::Uuid;
 
@@ -73,6 +75,7 @@ use crate::dom::bindings::utils::define_all_exposed_interfaces;
 #[cfg(feature = "webcrypto")]
 use crate::dom::crypto::Crypto;
 use crate::dom::csp::{GlobalCspReporting, Violation, parse_csp_list_from_metadata};
+#[cfg(feature = "devtools")]
 use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::DedicatedWorkerGlobalScope;
 use crate::dom::globalscope::GlobalScope;
@@ -87,7 +90,7 @@ use crate::dom::serviceworker::cachestorage::CacheStorage;
 use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::trustedtypes::trustedscripturl::TrustedScriptURL;
 use crate::dom::trustedtypes::trustedtypepolicyfactory::TrustedTypePolicyFactory;
-use crate::dom::types::ImageBitmap;
+use crate::dom::types::{EventTarget, ImageBitmap};
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::window::{base64_atob, base64_btoa};
@@ -110,10 +113,20 @@ use crate::scripting::script_module::{ModuleRequest, ModuleStatus};
 use crate::tasks::task::TaskCanceller;
 use crate::tasks::task_manager::TaskManager;
 
+#[cfg(feature = "devtools")]
+pub(crate) type WorkerDevtoolsControlMsg = DevtoolScriptControlMsg;
+#[cfg(not(feature = "devtools"))]
+pub(crate) type WorkerDevtoolsControlMsg = ();
+
+#[cfg(feature = "devtools")]
+pub(crate) type WorkerDebuggerGlobalScope = DebuggerGlobalScope;
+#[cfg(not(feature = "devtools"))]
+pub(crate) type WorkerDebuggerGlobalScope = ();
+
 /// <https://html.spec.whatwg.org/multipage/#animation-frames>
 pub(crate) fn prepare_workerscope_init(
     global: &GlobalScope,
-    devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
+    #[cfg(feature = "devtools")] devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     worker_id: Option<WorkerId>,
     #[cfg(feature = "webgl")] webgl_chan: Option<WebGLChan>,
 ) -> WorkerGlobalScopeInit {
@@ -133,8 +146,10 @@ pub(crate) fn prepare_workerscope_init(
         resource_threads: global.resource_threads().clone(),
         storage_threads: global.storage_threads().clone(),
         mem_profiler_chan: global.mem_profiler_chan().clone(),
+        #[cfg(feature = "devtools")]
         to_devtools_sender: global.devtools_chan().cloned(),
         time_profiler_chan: global.time_profiler_chan().clone(),
+        #[cfg(feature = "devtools")]
         from_devtools_sender: devtools_sender,
         script_to_constellation_chan: global.script_to_constellation_chan().sender,
         script_to_embedder_chan: global.script_to_embedder_chan().clone(),
@@ -146,6 +161,7 @@ pub(crate) fn prepare_workerscope_init(
         unminify_js: global.unminify_js(),
         #[cfg(feature = "webgl")]
         webgl_chan,
+        online: global.online(),
     }
 }
 
@@ -324,11 +340,13 @@ pub(crate) struct WorkerGlobalScope {
     #[no_trace]
     /// A `Sender` for sending messages to devtools. This is unused but is stored here to
     /// keep the channel alive.
+    #[cfg(feature = "devtools")]
     _devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
 
     #[ignore_malloc_size_of = "Defined in base"]
     #[no_trace]
     /// A `Receiver` for receiving messages from devtools.
+    #[cfg(feature = "devtools")]
     devtools_receiver: Option<RoutedReceiver<DevtoolScriptControlMsg>>,
 
     #[no_trace]
@@ -387,6 +405,9 @@ pub(crate) struct WorkerGlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
     #[ignore_malloc_size_of = "mozjs"]
     module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
+
+    /// Whether the network is considered to be online as reported by the embedder.
+    online: Cell<bool>,
 }
 
 impl WorkerGlobalScope {
@@ -397,7 +418,7 @@ impl WorkerGlobalScope {
         worker_type: WorkerType,
         worker_url: ServoUrl,
         runtime: Runtime,
-        devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
+        devtools_receiver: Option<RoutedReceiver<WorkerDevtoolsControlMsg>>,
         closing: Arc<AtomicBool>,
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         insecure_requests_policy: InsecureRequestsPolicy,
@@ -407,13 +428,12 @@ impl WorkerGlobalScope {
         // Install a pipeline-namespace in the current thread.
         PipelineNamespace::auto_install();
 
-        let devtools_receiver = match init.from_devtools_sender {
-            Some(..) => Some(devtools_receiver),
-            None => None,
-        };
+        #[cfg(feature = "devtools")]
+        let devtools_receiver = init.from_devtools_sender.as_ref().and(devtools_receiver);
 
         Self {
             globalscope: GlobalScope::new_inherited(
+                #[cfg(feature = "devtools")]
                 init.to_devtools_sender,
                 init.mem_profiler_chan,
                 init.time_profiler_chan,
@@ -441,7 +461,9 @@ impl WorkerGlobalScope {
             #[cfg(feature = "webcrypto")]
             crypto: Default::default(),
             policy_container: Default::default(),
+            #[cfg(feature = "devtools")]
             devtools_receiver,
+            #[cfg(feature = "devtools")]
             _devtools_sender: init.from_devtools_sender,
             navigation_start: CrossProcessInstant::now(),
             performance: Default::default(),
@@ -462,7 +484,12 @@ impl WorkerGlobalScope {
             origin: MutableOrigin::new(init.origin),
             font_context,
             module_map: Default::default(),
+            online: init.online.into(),
         }
+    }
+
+    pub(crate) fn online(&self) -> bool {
+        self.online.get()
     }
 
     pub(crate) fn module_map(
@@ -515,6 +542,7 @@ impl WorkerGlobalScope {
             .prepare_for_new_child()
     }
 
+    #[cfg(feature = "devtools")]
     pub(crate) fn devtools_receiver(&self) -> Option<&RoutedReceiver<DevtoolScriptControlMsg>> {
         self.devtools_receiver.as_ref()
     }
@@ -744,6 +772,22 @@ impl WorkerGlobalScope {
 
     pub(crate) fn origin(&self) -> MutableOrigin {
         self.origin.clone()
+    }
+
+    /// Set the network online state of this worker, returning `true` if anything changed
+    /// and `false` otherwise.
+    pub(crate) fn set_network_online_state(&self, online: bool) -> bool {
+        let previously_online = self.online.replace(online);
+        if previously_online == online {
+            return false;
+        }
+
+        let event_name = Atom::from(if online { "online" } else { "offline" });
+        self.globalscope
+            .task_manager()
+            .networking_task_source()
+            .queue_simple_event(self.globalscope.upcast::<EventTarget>(), event_name);
+        true
     }
 }
 
@@ -1167,12 +1211,19 @@ impl WorkerGlobalScope {
             factory.abort_pending_upgrades_and_close_databases();
         }
     }
+}
 
+#[cfg(feature = "devtools")]
+impl WorkerGlobalScope {
     pub(crate) fn init_debugger_global(
         &self,
-        debugger_global: &DebuggerGlobalScope,
+        debugger_global: Option<&DebuggerGlobalScope>,
         cx: &mut JSContext,
     ) {
+        let Some(debugger_global) = debugger_global else {
+            return;
+        };
+
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
 

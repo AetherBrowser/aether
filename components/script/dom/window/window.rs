@@ -22,7 +22,6 @@ use content_security_policy::Violation;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::{Sender, unbounded};
 use cssparser::SourceLocation;
-use devtools_traits::{ScriptToDevtoolsControlMsg, TimelineMarker, TimelineMarkerType};
 use dom_struct::dom_struct;
 use embedder_traits::user_contents::UserScript;
 use embedder_traits::{
@@ -39,12 +38,11 @@ use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
 use js::jsapi::{
-    GCReason, GetObjectRealmOrNull, Heap, JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE,
-    SetRealmPrincipals,
+    GCReason, GetObjectRealmOrNull, Heap, JSContext as RawJSContext, JSObject, SetRealmPrincipals,
 };
 use js::jsval::{NullValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
-use js::rust::wrappers2::{JS_DefineProperty, JS_GC};
+use js::rust::wrappers2::JS_GC;
 use js::rust::{
     CustomAutoRooterGuard, HandleObject, HandleValue, MutableHandleObject, MutableHandleValue,
 };
@@ -54,7 +52,7 @@ use layout_api::{
     PendingImageState, PendingRasterizationImage, PhysicalSides, QueryMsg, ReflowGoal,
     ReflowPhasesRun, ReflowRequest, ReflowRequestAccessibility, ReflowRequestRestyle,
     ReflowStatistics, RestyleReason, ScrollContainerQueryFlags, ScrollContainerResponse,
-    TrustedNodeAddress, combine_id_with_fragment_type,
+    SegmentGranularity, TrustedNodeAddress, combine_id_with_fragment_type,
 };
 use malloc_size_of::MallocSizeOf;
 use media::WindowGLContext;
@@ -73,6 +71,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::dom::UnrootedDom;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
+use script_bindings::js::{JS_DefineProperty, PropertyFlags};
 use script_bindings::like::Setlike;
 use script_bindings::principals::ServoJSPrincipals;
 use script_bindings::reflector::DomObject;
@@ -83,7 +82,7 @@ use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::{self, GenericCallback, GenericSender};
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
-use servo_base::text::Utf32CodeUnits;
+use servo_base::text::{Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
 #[cfg(feature = "bluetooth")]
 use servo_bluetooth_traits::BluetoothRequest;
 #[cfg(feature = "webgl")]
@@ -329,9 +328,12 @@ pub(crate) struct Window {
     /// For sending timeline markers. Will be ignored if
     /// no devtools server
     #[no_trace]
-    devtools_markers: DomRefCell<FxHashSet<TimelineMarkerType>>,
+    #[cfg(feature = "devtools")]
+    devtools_markers: DomRefCell<FxHashSet<devtools_traits::TimelineMarkerType>>,
     #[no_trace]
-    devtools_marker_sender: DomRefCell<Option<GenericSender<Option<TimelineMarker>>>>,
+    #[cfg(feature = "devtools")]
+    devtools_marker_sender:
+        DomRefCell<Option<GenericSender<Option<devtools_traits::TimelineMarker>>>>,
 
     /// Most recent unhandled resize event, if any.
     #[no_trace]
@@ -1432,7 +1434,6 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         Ok(())
     }
 
-    #[expect(unsafe_code)]
     /// <https://html.spec.whatwg.org/multipage/#dom-opener>
     fn SetOpener(&self, cx: &mut JSContext, value: HandleValue) -> ErrorResult {
         // Step 1.
@@ -1445,9 +1446,13 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
         // Step 2.
         let obj = self.reflector().get_jsobject();
-        let result = unsafe {
-            JS_DefineProperty(cx, obj, c"opener".as_ptr(), value, JSPROP_ENUMERATE as u32)
-        };
+        let result = JS_DefineProperty(
+            cx,
+            obj,
+            c"opener",
+            value,
+            PropertyFlags::ENUMERABLE | PropertyFlags::WRITABLE | PropertyFlags::CONFIGURABLE,
+        );
 
         if result { Ok(()) } else { Err(Error::JSFailed) }
     }
@@ -2691,8 +2696,10 @@ impl Window {
         }
 
         debug!("script: performing reflow for goal {reflow_goal:?}");
-        let marker = if self.need_emit_timeline_marker(TimelineMarkerType::Reflow) {
-            Some(TimelineMarker::start("Reflow".to_owned()))
+        #[cfg(feature = "devtools")]
+        let marker = if self.need_emit_timeline_marker(devtools_traits::TimelineMarkerType::Reflow)
+        {
+            Some(devtools_traits::TimelineMarker::start("Reflow".to_owned()))
         } else {
             None
         };
@@ -2796,6 +2803,7 @@ impl Window {
         self.handle_accessibility_actions(reflow_result.pending_accessibility_actions, cx);
 
         debug!("script: layout complete");
+        #[cfg(feature = "devtools")]
         if let Some(marker) = marker {
             self.emit_timeline_marker(marker.end());
         }
@@ -3274,13 +3282,39 @@ impl Window {
         node: &Node,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(DomRoot<Node>, Utf32CodeUnits)> {
-        self.layout_reflow(QueryMsg::TextIndexQuery);
+        self.layout_reflow(QueryMsg::TextIndexOrSegmentQuery);
         let result = self
             .layout
             .borrow()
             .query_text_index(node.to_trusted_node_address(), point_in_viewport)?;
         let node = unsafe { from_untrusted_node_address(result.0.into()) };
         Some((node, result.1))
+    }
+
+    /// For the given `CharacterData` node and UTF-32 text offset in that node, find
+    /// the text segment with the given granularity within its containing inline
+    /// formatting context. This returns `None` when the node isn't a `CharacterData`
+    /// or the segment otherwise cannot be found.
+    #[expect(unsafe_code)]
+    pub(crate) fn query_text_segment(
+        &self,
+        node: &Node,
+        offset: Utf32CodeUnitsOrNodeOffset,
+        granularity: SegmentGranularity,
+    ) -> Option<(RootedSelectionBoundary, RootedSelectionBoundary)> {
+        self.layout_reflow(QueryMsg::TextIndexOrSegmentQuery);
+        let ((start_node, start_offset), (end_node, end_offset)) = self
+            .layout()
+            .query_text_segment(node.to_trusted_node_address(), offset, granularity)?;
+        let start = RootedSelectionBoundary::new_with_utf32_offset(
+            unsafe { from_untrusted_node_address(start_node.into()) },
+            start_offset,
+        );
+        let end = RootedSelectionBoundary::new_with_utf32_offset(
+            unsafe { from_untrusted_node_address(end_node.into()) },
+            end_offset,
+        );
+        Some((start, end))
     }
 
     pub(crate) fn elements_from_point_query(
@@ -3544,37 +3578,6 @@ impl Window {
         // activating this document due to a navigation.
         self.Document().title_changed();
     }
-
-    pub(crate) fn need_emit_timeline_marker(&self, timeline_type: TimelineMarkerType) -> bool {
-        let markers = self.devtools_markers.borrow();
-        markers.contains(&timeline_type)
-    }
-
-    pub(crate) fn emit_timeline_marker(&self, marker: TimelineMarker) {
-        let sender = self.devtools_marker_sender.borrow();
-        let sender = sender.as_ref().expect("There is no marker sender");
-        sender.send(Some(marker)).unwrap();
-    }
-
-    pub(crate) fn set_devtools_timeline_markers(
-        &self,
-        markers: Vec<TimelineMarkerType>,
-        reply: GenericSender<Option<TimelineMarker>>,
-    ) {
-        *self.devtools_marker_sender.borrow_mut() = Some(reply);
-        self.devtools_markers.borrow_mut().extend(markers);
-    }
-
-    pub(crate) fn drop_devtools_timeline_markers(&self, markers: Vec<TimelineMarkerType>) {
-        let mut devtools_markers = self.devtools_markers.borrow_mut();
-        for marker in markers {
-            devtools_markers.remove(&marker);
-        }
-        if devtools_markers.is_empty() {
-            *self.devtools_marker_sender.borrow_mut() = None;
-        }
-    }
-
     pub(crate) fn set_webdriver_load_status_sender(
         &self,
         sender: Option<GenericSender<WebDriverLoadStatus>>,
@@ -4006,7 +4009,9 @@ impl Window {
         #[cfg(feature = "bluetooth")] bluetooth_thread: GenericSender<BluetoothRequest>,
         mem_profiler_chan: MemProfilerChan,
         time_profiler_chan: TimeProfilerChan,
-        devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
+        #[cfg(feature = "devtools")] devtools_chan: Option<
+            GenericCallback<devtools_traits::ScriptToDevtoolsControlMsg>,
+        >,
         script_to_constellation_sender: ScriptToConstellationSender,
         embedder_chan: ScriptToEmbedderChan,
         control_chan: GenericSender<ScriptThreadMessage>,
@@ -4037,6 +4042,7 @@ impl Window {
         let win = Box::new(Self {
             webview_state,
             globalscope: GlobalScope::new_inherited(
+                #[cfg(feature = "devtools")]
                 devtools_chan,
                 mem_profiler_chan,
                 time_profiler_chan,
@@ -4081,7 +4087,9 @@ impl Window {
             viewport_details: Cell::new(viewport_details),
             layout_blocker: Cell::new(LayoutBlocker::WaitingForParse),
             current_state: Cell::new(WindowState::Alive),
+            #[cfg(feature = "devtools")]
             devtools_marker_sender: Default::default(),
+            #[cfg(feature = "devtools")]
             devtools_markers: Default::default(),
             webdriver_load_status_sender: Default::default(),
             error_reporter,
@@ -4174,7 +4182,7 @@ impl Window {
         self.navigation_start.set(navigation_start);
 
         // Step 6. Set settings object's creation URL to creationURL, settings object's top-level
-        //   creation URL to topLevelCreationURL, and settings object's top-level origin to topLevelOrigin.
+        // creation URL to topLevelCreationURL, and settings object's top-level origin to topLevelOrigin.
         let global = self.upcast::<GlobalScope>();
         global.set_creation_url(creation_url);
         global.set_top_level_creation_url(top_level_creation_url);
@@ -4183,6 +4191,44 @@ impl Window {
     }
 }
 
+#[cfg(feature = "devtools")]
+impl Window {
+    pub(crate) fn need_emit_timeline_marker(
+        &self,
+        timeline_type: devtools_traits::TimelineMarkerType,
+    ) -> bool {
+        let markers = self.devtools_markers.borrow();
+        markers.contains(&timeline_type)
+    }
+
+    pub(crate) fn emit_timeline_marker(&self, marker: devtools_traits::TimelineMarker) {
+        let sender = self.devtools_marker_sender.borrow();
+        let sender = sender.as_ref().expect("There is no marker sender");
+        sender.send(Some(marker)).unwrap();
+    }
+
+    pub(crate) fn set_devtools_timeline_markers(
+        &self,
+        markers: Vec<devtools_traits::TimelineMarkerType>,
+        reply: GenericSender<Option<devtools_traits::TimelineMarker>>,
+    ) {
+        *self.devtools_marker_sender.borrow_mut() = Some(reply);
+        self.devtools_markers.borrow_mut().extend(markers);
+    }
+
+    pub(crate) fn drop_devtools_timeline_markers(
+        &self,
+        markers: Vec<devtools_traits::TimelineMarkerType>,
+    ) {
+        let mut devtools_markers = self.devtools_markers.borrow_mut();
+        for marker in markers {
+            devtools_markers.remove(&marker);
+        }
+        if devtools_markers.is_empty() {
+            *self.devtools_marker_sender.borrow_mut() = None;
+        }
+    }
+}
 /// An instance of a value associated with a particular snapshot of layout. This stored
 /// value can only be read as long as the associated layout marker that is considered
 /// valid. It will automatically become unavailable when the next layout operation is
@@ -4298,6 +4344,7 @@ impl ParseErrorReporter for CSSErrorReporter {
         }
 
         // TODO: report a real filename
+        #[cfg(feature = "devtools")]
         let _ = self.script_chan.send(ScriptThreadMessage::ReportCSSError(
             self.pipelineid,
             url.0.to_string(),

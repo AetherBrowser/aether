@@ -16,6 +16,7 @@ use bitflags::bitflags;
 use embedder_traits::{
     EmbedderMsg, ScriptToEmbedderChan, Theme, UntrustedNodeAddress, ViewportDetails,
 };
+use encoding_rs::ISO_8859_8;
 use euclid::{Point2D, Rect, Scale, Size2D};
 use fonts::{FontContext, FontContextWebFontMethods};
 use fonts_traits::{StylesheetWebFontLoadFinishedCallback, WebFontSetDifference};
@@ -26,7 +27,8 @@ use layout_api::{
     LayoutConfig, LayoutDamage, LayoutElement, LayoutFactory, LayoutNode, NodeRenderingType,
     OffsetParentResponse, PhysicalSides, QueryMsg, ReflowGoal, ReflowPhasesRun, ReflowRequest,
     ReflowRequestAccessibility, ReflowRequestRestyle, ReflowResult, ReflowStatistics,
-    ScrollContainerQueryFlags, ScrollContainerResponse, TrustedNodeAddress, with_layout_state,
+    ScrollContainerQueryFlags, ScrollContainerResponse, SegmentGranularity, TrustedNodeAddress,
+    with_layout_state,
 };
 use log::{debug, warn};
 use malloc_size_of::{MallocConditionalSizeOf, MallocSizeOf, MallocSizeOfOps};
@@ -47,7 +49,7 @@ use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter, ScriptThr
 use servo_arc::Arc as ServoArc;
 use servo_base::Epoch;
 use servo_base::id::{PipelineId, WebViewId};
-use servo_base::text::Utf32CodeUnits;
+use servo_base::text::{Utf32CodeUnits, Utf32CodeUnitsOrNodeOffset};
 use servo_config::opts::{self, DiagnosticsLogging, DiagnosticsLoggingOption};
 use servo_config::pref;
 use servo_url::ServoUrl;
@@ -96,6 +98,7 @@ use crate::query::{
     process_resolved_font_style_query, process_resolved_style_request,
     process_scroll_container_query,
 };
+use crate::selection::PositionInInlineFormattingContext;
 use crate::traversal::{RecalcStyle, compute_damage_and_rebuild_box_tree};
 use crate::{BoxTree, FragmentTree};
 
@@ -121,6 +124,9 @@ static PRESENTATIONAL_HINTS_CSS: &[u8] = include_bytes!("./stylesheets/presentat
 
 /// A CSS file to style the quirks mode.
 static QUIRKS_MODE_CSS: &[u8] = include_bytes!("./stylesheets/quirks-mode.css");
+
+/// A CSS file to style documents that use the ISO-8859-8 encoding.
+static ISO_8859_8_CSS: &[u8] = include_bytes!("./stylesheets/iso-8859-8.css");
 
 /// Information needed by layout.
 pub struct LayoutThread {
@@ -605,6 +611,23 @@ impl Layout for LayoutThread {
                 stacking_context_tree,
                 point_in_viewport,
             )
+        })
+    }
+
+    #[servo_tracing::instrument(skip_all)]
+    fn query_text_segment(
+        &self,
+        node: TrustedNodeAddress,
+        offset: Utf32CodeUnitsOrNodeOffset,
+        granularity: SegmentGranularity,
+    ) -> Option<(
+        (OpaqueNode, Utf32CodeUnitsOrNodeOffset),
+        (OpaqueNode, Utf32CodeUnitsOrNodeOffset),
+    )> {
+        with_layout_state(|| {
+            let node = unsafe { ServoLayoutNode::new(&node) };
+            PositionInInlineFormattingContext::from_dom_position_in_text_node(&node, offset)?
+                .segment(granularity)
         })
     }
 
@@ -1183,6 +1206,13 @@ impl LayoutThread {
                     ua_stylesheets.html_mode_stylesheet.clone(),
                     guards.ua_or_user,
                 );
+
+                if document.encoding() == ISO_8859_8 {
+                    self.stylist.append_stylesheet(
+                        ua_stylesheets.iso_8859_8_stylesheet.clone(),
+                        guards.ua_or_user,
+                    );
+                }
             }
 
             for user_stylesheet in self.user_stylesheets.iter() {
@@ -1821,10 +1851,14 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
                 let quirks_mode_stylesheet =
                     parse_ua_stylesheet(shared_lock, "quirks-mode.css", QUIRKS_MODE_CSS);
 
+                let iso_8859_8_stylesheet =
+                    parse_ua_stylesheet(shared_lock, "iso-8859-8.css", ISO_8859_8_CSS);
+
                 Rc::new(UserAgentStylesheets {
                     user_agent_stylesheets,
                     html_mode_stylesheet,
                     quirks_mode_stylesheet,
+                    iso_8859_8_stylesheet,
                 })
             })
             .clone()
@@ -1839,6 +1873,8 @@ pub struct UserAgentStylesheets {
     pub html_mode_stylesheet: DocumentStyleSheet,
     /// The quirks mode stylesheet.
     pub quirks_mode_stylesheet: DocumentStyleSheet,
+    /// The user agent stylesheet for documents that use the ISO-8859-8 encoding.
+    pub iso_8859_8_stylesheet: DocumentStyleSheet,
 }
 
 struct RegisteredPainterImpl {
@@ -2072,7 +2108,7 @@ impl ReflowPhases {
                 QueryMsg::FlushForUpdateTheRenderingQuery |
                 QueryMsg::OffsetParentQuery |
                 QueryMsg::ScrollingAreaOrOffsetQuery |
-                QueryMsg::TextIndexQuery => Self::StackingContextTreeConstruction,
+                QueryMsg::TextIndexOrSegmentQuery => Self::StackingContextTreeConstruction,
                 QueryMsg::ClientRectQuery |
                 QueryMsg::CurrentCSSZoomQuery |
                 QueryMsg::EffectiveOverflow |

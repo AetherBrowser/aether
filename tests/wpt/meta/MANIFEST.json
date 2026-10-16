@@ -12588,6 +12588,13 @@
             null,
             {}
            ]
+          ],
+          "track-element-track-showing-without-cues.html": [
+           "0ffdc185d67d754af8300ce3127c39b16888fbd2",
+           [
+            null,
+            {}
+           ]
           ]
          }
         }
@@ -319010,6 +319017,19 @@
       ],
       "hanging-whitespace-004.html": [
        "66b76acc2393a842499bde2f02794f63e287eb88",
+       [
+        null,
+        [
+         [
+          "/css/reference/ref-filled-green-100px-square.xht",
+          "=="
+         ]
+        ],
+        {}
+       ]
+      ],
+      "hanging-whitespace-005.html": [
+       "6a211d291c3b20676208f224495fed1708073ba0",
        [
         null,
         [
@@ -1259478,7 +1259498,7 @@
       ]
      ],
      "vary.any.js": [
-      "2cfd226af811739637a173dedd9f5d5c81ffb661",
+      "bd8bd0854c299ce459bfd69f6ef3bb64262d4aba",
       [
        "fetch/http-cache/vary.any.html",
        {
@@ -1312236,6 +1312256,13 @@
         {}
        ]
       ],
+      "unicode-bidi-ua-rules-iso-8859-8.html": [
+       "ad9bbb5bbd0d1925e0e4a74b15d85fa5bce8741a",
+       [
+        null,
+        {}
+       ]
+      ],
       "unicode-bidi-ua-rules.html": [
        "00f4c9631736b1395d02cf1e19264c52c34aee97",
        [
@@ -1322487,6 +1322514,13 @@
          }
         ]
        ],
+       "radio-form-owner.html": [
+        "1310ffc0b78d9e0c282490e5874b2dfb11876e88",
+        [
+         null,
+         {}
+        ]
+       ],
        "radio-groupname-case.html": [
         "3c54aca3e76bafe4c409ed33b7833dc982fea693",
         [
@@ -1332222,6 +1332256,15 @@
         [
          null,
          {}
+        ]
+       ],
+       "checked-after-clone.html": [
+        "44ab2f89c57cf8dede2d2a450b0ddafd7290858a",
+        [
+         null,
+         {
+          "testdriver": true
+         }
         ]
        ],
        "checked-indeterminate.window.js": [
@@ -1360814,6 +1360857,13 @@
      ],
      "first-paint-only.html": [
       "5c676f6b4752d91a9e849d795a64a01db903473a",
+      [
+       null,
+       {}
+      ]
+     ],
+     "iframe-in-invisible-ancestor.html": [
+      "76e168f54cbec73e08d5d4935451324b99e2858c",
       [
        null,
        {}
@@ -1444092,6 +1444142,13 @@
     ],
     "uniformMatrixNfv.html": [
      "f75cbcb99724219224c63d0dc595b1c001298500",
+     [
+      null,
+      {}
+     ]
+    ],
+    "vertexAttrib-keeps-array-type.html": [
+     "17ddcdf6ce953e2bc97d9728b912eee8d46c174a",
      [
       null,
       {}
