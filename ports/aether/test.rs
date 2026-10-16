@@ -423,11 +423,14 @@ fn settings_page_has_a_search_section() {
 #[test]
 fn new_tab_page_follows_home_content_preferences() {
     let html = include_str!("../../resources/resource_protocol/newtab.html");
+    let css = include_str!("../../resources/resource_protocol/newtab.css");
     assert!(html.contains("id=\"home-logo\""));
     assert!(html.contains("id=\"home-search\""));
     assert!(html.contains("servo:home"));
     assert!(html.contains("showLogo"));
     assert!(html.contains("showSearch"));
+    // `form { display: flex }` would otherwise keep a hidden search bar visible.
+    assert!(css.contains("form[hidden]"));
 }
 
 #[test]
