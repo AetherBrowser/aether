@@ -80,9 +80,7 @@ class SettingsActivity : ComponentActivity() {
                         },
                         navigationIcon = {
                             IconButton(
-                                onClick = {
-                                    if (section == null) finish() else section = null
-                                }
+                                onClick = { if (section == null) finish() else section = null }
                             ) {
                                 Icon(
                                     painterResource(R.drawable.arrow_back),

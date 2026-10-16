@@ -34,9 +34,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSearchBarState
@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                             )
                         }
                     }
-                },
+                }
             ) { innerPadding ->
                 Servo(
                     softKeyboardVisible = softKeyboardVisible,
@@ -394,23 +394,16 @@ private fun AppMenu(
                     label = stringResource(R.string.history_back),
                     enabled = canGoBack,
                     onClick = onBack,
-                    leading = {
-                        Icon(painterResource(R.drawable.arrow_back), null)
-                    },
+                    leading = { Icon(painterResource(R.drawable.arrow_back), null) },
                 )
                 AppMenuItem(
                     label = stringResource(R.string.history_forward),
                     enabled = canGoForward,
                     onClick = onForward,
-                    leading = {
-                        Icon(painterResource(R.drawable.arrow_forward), null)
-                    },
+                    leading = { Icon(painterResource(R.drawable.arrow_forward), null) },
                 )
                 AppMenuItem(
-                    label =
-                        stringResource(
-                            if (isRefreshing) R.string.cancel else R.string.refresh
-                        ),
+                    label = stringResource(if (isRefreshing) R.string.cancel else R.string.refresh),
                     onClick = onRefresh,
                     leading = {
                         Icon(
@@ -430,9 +423,7 @@ private fun AppMenu(
                 AppMenuItem(
                     label = stringResource(R.string.settings_experimental_title),
                     onClick = { onExperimentalChange(!experimental) },
-                    trailing = {
-                        Switch(checked = experimental, onCheckedChange = null)
-                    },
+                    trailing = { Switch(checked = experimental, onCheckedChange = null) },
                 )
                 AppMenuItem(
                     label = stringResource(R.string.more_tools),
