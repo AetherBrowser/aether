@@ -37,6 +37,7 @@ pub(crate) enum AppMenuAction {
     History,
     Settings,
     Processes,
+    ViewSource,
     DeveloperTools,
     Exit,
 }
@@ -104,6 +105,7 @@ impl AppMenu {
         &mut self,
         button: &egui::Response,
         icons: &mut ToolbarIconCache,
+        can_view_source: bool,
     ) -> Option<AppMenuAction> {
         let drawn_page = self.page;
         let min_height = self.content_min_height();
@@ -116,7 +118,7 @@ impl AppMenu {
             .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 ui.set_min_size(vec2(APP_MENU_MIN_WIDTH, min_height));
-                let action = self.contents(ui, icons);
+                let action = self.contents(ui, icons, can_view_source);
                 if drawn_page == AppMenuPage::Root {
                     self.root_content_height = ui.min_rect().height();
                 }
@@ -141,6 +143,7 @@ impl AppMenu {
         &mut self,
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
+        can_view_source: bool,
     ) -> Option<AppMenuAction> {
         ui.set_min_width(APP_MENU_MIN_WIDTH);
         ui.spacing_mut().item_spacing.y = 2.0;
@@ -150,7 +153,7 @@ impl AppMenu {
 
         match self.page {
             AppMenuPage::Root => self.root_page(ui, icons),
-            AppMenuPage::MoreTools => self.more_tools_page(ui, icons),
+            AppMenuPage::MoreTools => self.more_tools_page(ui, icons, can_view_source),
         }
     }
 
@@ -159,23 +162,23 @@ impl AppMenu {
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
     ) -> Option<AppMenuAction> {
-        if let Some(action) = Self::action_item(ui, "New Tab", AppMenuAction::NewTab) {
+        if let Some(action) = Self::action_item(ui, "New Tab", AppMenuAction::NewTab, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "New Window", AppMenuAction::NewWindow) {
+        if let Some(action) = Self::action_item(ui, "New Window", AppMenuAction::NewWindow, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "History", AppMenuAction::History) {
+        if let Some(action) = Self::action_item(ui, "History", AppMenuAction::History, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "Settings", AppMenuAction::Settings) {
+        if let Some(action) = Self::action_item(ui, "Settings", AppMenuAction::Settings, true) {
             return Some(action);
         }
         if Self::submenu_item(ui, icons, "More Tools") {
             self.page = AppMenuPage::MoreTools;
         }
         ui.separator();
-        if let Some(action) = Self::action_item(ui, "Exit", AppMenuAction::Exit) {
+        if let Some(action) = Self::action_item(ui, "Exit", AppMenuAction::Exit, true) {
             return Some(action);
         }
 
@@ -186,28 +189,43 @@ impl AppMenu {
         &mut self,
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
+        can_view_source: bool,
     ) -> Option<AppMenuAction> {
         if Self::back_title(ui, icons, "More tools") {
             self.page = AppMenuPage::Root;
             return None;
         }
         if let Some(action) =
-            Self::action_item(ui, "Developer Tools", AppMenuAction::DeveloperTools)
+            Self::action_item(ui, "Developer Tools", AppMenuAction::DeveloperTools, true)
         {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "Processes", AppMenuAction::Processes) {
+        if let Some(action) = Self::action_item(ui, "Processes", AppMenuAction::Processes, true) {
+            return Some(action);
+        }
+        if let Some(action) = Self::action_item(
+            ui,
+            "View Page Source",
+            AppMenuAction::ViewSource,
+            can_view_source,
+        ) {
             return Some(action);
         }
 
         None
     }
 
-    fn action_item(ui: &mut egui::Ui, label: &str, action: AppMenuAction) -> Option<AppMenuAction> {
-        let response = Self::item(ui, label);
+    fn action_item(
+        ui: &mut egui::Ui,
+        label: &str,
+        action: AppMenuAction,
+        enabled: bool,
+    ) -> Option<AppMenuAction> {
+        let response = ui.add_enabled(enabled, Self::item_button(label));
         response.widget_info(|| {
             let mut info = WidgetInfo::new(WidgetType::Button);
             info.label = Some(label.into());
+            info.enabled = enabled;
             info
         });
         if response.clicked() {
@@ -264,8 +282,8 @@ impl AppMenu {
     }
 
     /// A full-width row ready to host a menu action.
-    fn item(ui: &mut egui::Ui, label: &str) -> egui::Response {
-        let button = Button::new(label)
+    fn item_button(label: &str) -> Button<'_> {
+        Button::new(label)
             .corner_radius(CornerRadius::same(APP_MENU_ITEM_CORNER_RADIUS))
             .stroke(Stroke::NONE)
             .wrap_mode(TextWrapMode::Extend)
@@ -273,8 +291,7 @@ impl AppMenu {
                 x: APP_MENU_MIN_WIDTH,
                 y: 0.0,
             })
-            .sense(Sense::click());
-        ui.add(button)
+            .sense(Sense::click())
     }
 }
 
@@ -378,7 +395,7 @@ mod tests {
         let _ = ctx.run_ui(screen_input(vec![]), |ui| {
             let mut menu = AppMenu::default();
             menu.page = AppMenuPage::MoreTools;
-            assert!(menu.more_tools_page(ui, &mut icons).is_none());
+            assert!(menu.more_tools_page(ui, &mut icons, true).is_none());
         });
 
         let mut found = false;
@@ -387,7 +404,7 @@ mod tests {
             let _ = ctx.run_ui(screen_input(click(egui::pos2(40.0, y as f32))), |ui| {
                 let mut menu = AppMenu::default();
                 menu.page = AppMenuPage::MoreTools;
-                action = menu.more_tools_page(ui, &mut icons);
+                action = menu.more_tools_page(ui, &mut icons, true);
             });
             if matches!(action, Some(AppMenuAction::DeveloperTools)) {
                 found = true;
