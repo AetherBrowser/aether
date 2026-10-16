@@ -25,13 +25,6 @@ bench = false
 [lints]
 workspace = true
 
-# Some of these dependencies are only needed for a specific target OS, but
-# since build-scripts can't detect the Cargo target OS at build-time, we
-# must unconditionally add these dependencies. See https://github.com/rust-lang/cargo/issues/4932
-[build-dependencies]
-# macOS only
-cc = { workspace = true }
-
 [target.'cfg(windows)'.build-dependencies]
 winresource = { workspace = true }
 
@@ -46,10 +39,11 @@ ProductName = "Aether"
 default = ["default_without_allocator", "servo-allocator/use-jemalloc"]
 # Feature groups:
 # default features, without a custom allocator.
-default_without_allocator = ["bundled", "default_web_features", "max_log_level", "multiprocess", "js_jit"]
+default_without_allocator = ["bundled", "default_web_features", "default_tooling", "max_log_level", "multiprocess", "js_jit"]
 # Default web features should be kept in sync with the list in servo/Cargo.toml.
 # We also need to enable our own features, since we also have `cfg` gated code here.
 default_web_features = ["servo/default_web_features", "gamepad", "webgpu", "webgl", "webxr"]
+default_tooling = ["servo/default_tooling", "devtools"]
 # Bundle required resources in the binary.
 bundled = ["servo/bundled"]
 
@@ -58,6 +52,7 @@ baked-in-resources = ["servo/baked-in-resources"]
 bundled_freetype = ["servo/bundled_freetype"]
 crown = ["servo/crown"]
 debugmozjs = ["servo/debugmozjs"]
+devtools = ["servo/devtools"]
 gamepad = ["servo/gamepad"]
 jitspew = ["servo/jitspew"]
 js_backtrace = ["servo/js_backtrace"]
@@ -168,6 +163,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+mach2 = { workspace = true }
 objc2-app-kit = { workspace = true, features = [
     "std",
     "NSColorSpace",
