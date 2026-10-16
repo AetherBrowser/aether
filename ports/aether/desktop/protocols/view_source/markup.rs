@@ -134,8 +134,8 @@ fn read_markup<'a>(source: &'a str, start: usize, tokens: &mut Vec<Token<'a>>) -
         let kind = TokenKind::ProcessingInstruction;
         return Some(push_until(source, start, ">", kind, tokens));
     }
-    if bytes[start..].len() >= b"<!doctype".len()
-        && bytes[start..start + b"<!doctype".len()].eq_ignore_ascii_case(b"<!doctype")
+    if bytes[start..].len() >= b"<!doctype".len() &&
+        bytes[start..start + b"<!doctype".len()].eq_ignore_ascii_case(b"<!doctype")
     {
         return Some(push_until(source, start, ">", TokenKind::Doctype, tokens));
     }
@@ -265,8 +265,8 @@ fn push_raw_text<'a>(
     let bytes = source.as_bytes();
     let mut index = start;
     while index < bytes.len() {
-        if bytes[index..].len() >= end_tag_prefix.len()
-            && bytes[index..index + end_tag_prefix.len()].eq_ignore_ascii_case(end_tag_prefix)
+        if bytes[index..].len() >= end_tag_prefix.len() &&
+            bytes[index..index + end_tag_prefix.len()].eq_ignore_ascii_case(end_tag_prefix)
         {
             let after_name = index + end_tag_prefix.len();
             let tag_end = match bytes[after_name..].iter().position(|&byte| byte == b'>') {
