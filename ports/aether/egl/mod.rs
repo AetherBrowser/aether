@@ -6,6 +6,7 @@
 mod android;
 pub(crate) mod app;
 mod host_trait;
+mod protocols;
 mod log;
 #[cfg(target_env = "ohos")]
 mod ohos;
