@@ -35,8 +35,11 @@ pub(crate) enum AppMenuAction {
     NewTab,
     NewWindow,
     History,
+    Settings,
     Processes,
     ViewSource,
+    DeveloperTools,
+    Exit,
 }
 
 /// Which page of the hamburger menu is showing.
@@ -168,8 +171,15 @@ impl AppMenu {
         if let Some(action) = Self::action_item(ui, "History", AppMenuAction::History, true) {
             return Some(action);
         }
+        if let Some(action) = Self::action_item(ui, "Settings", AppMenuAction::Settings, true) {
+            return Some(action);
+        }
         if Self::submenu_item(ui, icons, "More Tools") {
             self.page = AppMenuPage::MoreTools;
+        }
+        ui.separator();
+        if let Some(action) = Self::action_item(ui, "Exit", AppMenuAction::Exit, true) {
+            return Some(action);
         }
 
         None
@@ -185,12 +195,20 @@ impl AppMenu {
             self.page = AppMenuPage::Root;
             return None;
         }
+        if let Some(action) =
+            Self::action_item(ui, "Developer Tools", AppMenuAction::DeveloperTools, true)
+        {
+            return Some(action);
+        }
         if let Some(action) = Self::action_item(ui, "Processes", AppMenuAction::Processes, true) {
             return Some(action);
         }
-        if let Some(action) =
-            Self::action_item(ui, "View Page Source", AppMenuAction::ViewSource, can_view_source)
-        {
+        if let Some(action) = Self::action_item(
+            ui,
+            "View Page Source",
+            AppMenuAction::ViewSource,
+            can_view_source,
+        ) {
             return Some(action);
         }
 
@@ -328,12 +346,71 @@ mod tests {
         menu.open = true;
         menu.rect = egui::Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(110.0, 80.0));
 
+        // egui rects are closed: min and max edges are inside.
         assert!(menu.contains_pointer(Point2D::new(10.0, 20.0)));
         assert!(menu.contains_pointer(Point2D::new(60.0, 40.0)));
+        assert!(menu.contains_pointer(Point2D::new(110.0, 40.0)));
+        assert!(menu.contains_pointer(Point2D::new(60.0, 80.0)));
         assert!(!menu.contains_pointer(Point2D::new(0.0, 0.0)));
-        assert!(!menu.contains_pointer(Point2D::new(110.0, 40.0)));
+        assert!(!menu.contains_pointer(Point2D::new(110.1, 40.0)));
+        assert!(!menu.contains_pointer(Point2D::new(60.0, 80.1)));
 
         menu.open = false;
         assert!(!menu.contains_pointer(Point2D::new(60.0, 40.0)));
+    }
+
+    fn screen_input(events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 300.0),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
+
+    fn click(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]
+    }
+
+    #[test]
+    fn more_tools_developer_tools_row_selects_that_action() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+            let mut menu = AppMenu::default();
+            menu.page = AppMenuPage::MoreTools;
+            assert!(menu.more_tools_page(ui, &mut icons, true).is_none());
+        });
+
+        let mut found = false;
+        for y in (0..160).step_by(8) {
+            let mut action = None;
+            let _ = ctx.run_ui(screen_input(click(egui::pos2(40.0, y as f32))), |ui| {
+                let mut menu = AppMenu::default();
+                menu.page = AppMenuPage::MoreTools;
+                action = menu.more_tools_page(ui, &mut icons, true);
+            });
+            if matches!(action, Some(AppMenuAction::DeveloperTools)) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Developer Tools row should be clickable");
     }
 }

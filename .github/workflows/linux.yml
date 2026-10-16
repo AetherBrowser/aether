@@ -57,6 +57,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
   workflow_dispatch:
     inputs:
@@ -104,6 +109,11 @@ on:
         required: false
         default: false
         type: boolean
+      release-tag:
+        description: "Release tag forwarded to the build. Empty leaves the channel as dev."
+        required: false
+        default: ""
+        type: string
 
 env:
   RUST_BACKTRACE: 1
@@ -134,6 +144,8 @@ jobs:
       bencher: ${{ inputs.bencher }}
       coverage: ${{ inputs.coverage }}
       capi: ${{ inputs.capi }}
+      release-tag: ${{ inputs.release-tag }}
+      perf-analysis: ${{ inputs.bencher && inputs.profile == 'release' }}
 
   wpt-2020:
     if: ${{ inputs.wpt }}
@@ -145,7 +157,7 @@ jobs:
       profile: ${{ inputs.profile }}
       wpt-sync-from-upstream: ${{ inputs.wpt-sync-from-upstream }}
       number-of-wpt-chunks: ${{ inputs.number-of-wpt-chunks }}
-      binary-path: servo/servoshell
+      binary-path: aether/aether
     secrets: inherit
 
   bencher:
@@ -162,11 +174,12 @@ jobs:
       target: "linux"
       profile: ${{ inputs.profile }}
       compressed-file-path: ${{ inputs.profile }}-binary-linux/servo-tech-demo.tar.gz
-      binary-path: servo/servoshell
+      binary-path: aether/aether
       file-size: true
-      # We only evaluate speedometer and dromaeo score in release
-      speedometer: ${{ inputs.profile == 'release' }}
-      dromaeo: ${{ inputs.profile == 'release' }}
+      # We only evaluate Perf analysis, speedometer and dromaeo score in release
+      speedometer: ${{ inputs.profile == 'checked-release' }}
+      dromaeo: ${{ inputs.profile == 'checked-release' }}
+      perf-analysis: ${{ inputs.profile == 'checked-release' }}
     secrets: inherit
 
   # Runs the underlying job (“workload”) on a self-hosted runner if available.

@@ -12,7 +12,6 @@ use std::rc::Rc;
 use std::sync::LazyLock;
 
 use deny_public_fields::DenyPublicFields;
-use devtools_traits::EventListenerInfo;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{JS_GetFunctionObject, SupportUnscopables};
@@ -21,7 +20,7 @@ use js::rust::wrappers2::CompileFunction;
 use js::rust::{CompileOptionsWrapper, HandleObject, transform_u16_to_source_text};
 use libc::c_char;
 use rustc_hash::{FxBuildHasher, FxHashSet};
-use script_bindings::callback::{OwnerWindow, RootedCallback, TracedCallback};
+use script_bindings::callback::{HasCallbackHolder, OwnerWindow, RootedCallback, TracedCallback};
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
 use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
@@ -70,7 +69,7 @@ use crate::dom::indexeddb::idbrequest::IDBRequest;
 use crate::dom::indexeddb::idbtransaction::IDBTransaction;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{Node, NodeTraits};
-use crate::dom::shadowroot::ShadowRoot;
+use crate::dom::shadowroot::shadowroot::ShadowRoot;
 use crate::dom::window::Window;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::realms::enter_auto_realm;
@@ -221,7 +220,7 @@ impl CompiledEventListener {
         unsafe { GlobalScope::from_object(obj) }
     }
 
-    // https://html.spec.whatwg.org/multipage/#the-event-handler-processing-algorithm
+    /// <https://html.spec.whatwg.org/multipage/#the-event-handler-processing-algorithm>
     pub(crate) fn call_or_handle_event(
         &self,
         cx: &mut JSContext,
@@ -513,7 +512,7 @@ impl EventTarget {
     pub(crate) fn remove_all_listeners(&self, cx: &JSContext) {
         // Take the whole map out first, so the listener-removed notifications
         // below run without holding a borrow on `handlers`.
-        rooted!(&in(cx) let handlers = self.handlers.borrow_mut().take());
+        rooted!(&in(cx) let handlers = self.handlers.safe_borrow_mut(cx.no_gc()).take());
         let Some(ref handlers) = *handlers else {
             return;
         };
@@ -778,21 +777,21 @@ impl EventTarget {
         // Step 1.14
         if is_error {
             Some(CommonEventHandler::ErrorEventHandler(unsafe {
-                TracedCallback::from(OnErrorEventHandlerNonNull::new(cx, funobj))
+                OnErrorEventHandlerNonNull::new(cx, funobj).to_traced()
             }))
         } else if ty == &atom!("beforeunload") {
             Some(CommonEventHandler::BeforeUnloadEventHandler(unsafe {
-                TracedCallback::from(OnBeforeUnloadEventHandlerNonNull::new(cx, funobj))
+                OnBeforeUnloadEventHandlerNonNull::new(cx, funobj).to_traced()
             }))
         } else {
             Some(CommonEventHandler::EventHandler(unsafe {
-                TracedCallback::from(EventHandlerNonNull::new(cx, funobj))
+                EventHandlerNonNull::new(cx, funobj).to_traced()
             }))
         }
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn set_event_handler_common<T: CallbackContainer<crate::DomTypeHolder>>(
+    pub(crate) fn set_event_handler_common<T: HasCallbackHolder>(
         &self,
         cx: &mut JSContext,
         ty: &str,
@@ -800,14 +799,14 @@ impl EventTarget {
     ) {
         rooted!(&in(cx) let mut event_listener = listener.map(|listener| {
             InlineEventListener::Compiled(CommonEventHandler::EventHandler(unsafe {
-                TracedCallback::from(EventHandlerNonNull::new(cx, listener.callback()))
+                EventHandlerNonNull::new(cx, listener.callback()).to_traced()
             }))
         }));
         self.set_inline_event_listener(Atom::from(ty), event_listener.as_mut_ref(cx.no_gc()));
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn set_error_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
+    pub(crate) fn set_error_event_handler<T: HasCallbackHolder>(
         &self,
         cx: &mut JSContext,
         ty: &str,
@@ -815,14 +814,14 @@ impl EventTarget {
     ) {
         rooted!(&in(cx) let mut event_listener = listener.map(|listener| {
             InlineEventListener::Compiled(CommonEventHandler::ErrorEventHandler(unsafe {
-                TracedCallback::from(OnErrorEventHandlerNonNull::new(cx, listener.callback()))
+                OnErrorEventHandlerNonNull::new(cx, listener.callback()).to_traced()
             }))
         }));
         self.set_inline_event_listener(Atom::from(ty), event_listener.as_mut_ref(cx.no_gc()));
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn set_beforeunload_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
+    pub(crate) fn set_beforeunload_event_handler<T: HasCallbackHolder>(
         &self,
         cx: &mut JSContext,
         ty: &str,
@@ -830,14 +829,14 @@ impl EventTarget {
     ) {
         rooted!(&in(cx) let mut event_listener = listener.map(|listener| {
             InlineEventListener::Compiled(CommonEventHandler::BeforeUnloadEventHandler(unsafe {
-                TracedCallback::from(OnBeforeUnloadEventHandlerNonNull::new(cx, listener.callback()))
+                OnBeforeUnloadEventHandlerNonNull::new(cx, listener.callback()).to_traced()
             }))
         }));
         self.set_inline_event_listener(Atom::from(ty), event_listener.as_mut_ref(cx.no_gc()));
     }
 
     #[expect(unsafe_code)]
-    pub(crate) fn get_event_handler_common<T: CallbackContainer<crate::DomTypeHolder>>(
+    pub(crate) fn get_event_handler_common<T: CallbackContainer>(
         &self,
         cx: &mut JSContext,
         ty: &str,
@@ -847,10 +846,7 @@ impl EventTarget {
             listener
                 .as_ref(cx.no_gc())
                 .as_ref()
-                .map(|listener| {
-                    CallbackContainer::new(cx, listener.parent().callback_holder().get())
-                })
-                .map(RootedCallback::from)
+                .map(|listener| T::new(cx, listener.parent().callback_holder().get()))
         }
     }
 
@@ -861,7 +857,7 @@ impl EventTarget {
             .is_some_and(|handlers| !handlers.is_empty())
     }
 
-    // https://dom.spec.whatwg.org/#concept-event-fire
+    /// <https://dom.spec.whatwg.org/#concept-event-fire>
     pub(crate) fn fire_event(&self, cx: &mut js::context::JSContext, name: Atom) -> bool {
         self.fire_event_with_params(
             cx,
@@ -872,7 +868,7 @@ impl EventTarget {
         )
     }
 
-    // https://dom.spec.whatwg.org/#concept-event-fire
+    /// <https://dom.spec.whatwg.org/#concept-event-fire>
     pub(crate) fn fire_bubbling_event(&self, cx: &mut js::context::JSContext, name: Atom) -> bool {
         self.fire_event_with_params(
             cx,
@@ -883,7 +879,7 @@ impl EventTarget {
         )
     }
 
-    // https://dom.spec.whatwg.org/#concept-event-fire
+    /// <https://dom.spec.whatwg.org/#concept-event-fire>
     pub(crate) fn fire_cancelable_event(
         &self,
         cx: &mut js::context::JSContext,
@@ -898,7 +894,7 @@ impl EventTarget {
         )
     }
 
-    // https://dom.spec.whatwg.org/#concept-event-fire
+    /// <https://dom.spec.whatwg.org/#concept-event-fire>
     pub(crate) fn fire_bubbling_cancelable_event(
         &self,
         cx: &mut js::context::JSContext,
@@ -944,7 +940,7 @@ impl EventTarget {
             signal.add(&AbortAlgorithm::DomEventListener(
                 RemovableDomEventListener {
                     event_target: Dom::from_ref(self),
-                    ty: ty.clone(),
+                    ty: ty.clone().traced(),
                     listener: listener.as_ref().map(|listener| listener.to_traced()),
                     options: options.parent.clone(),
                 },
@@ -1114,7 +1110,10 @@ impl EventTarget {
         CONTENT_EVENT_HANDLER_NAMES.contains(&name)
     }
 
-    pub(crate) fn summarize_event_listeners_for_devtools(&self) -> Vec<EventListenerInfo> {
+    #[cfg(feature = "devtools")]
+    pub(crate) fn summarize_event_listeners_for_devtools(
+        &self,
+    ) -> Vec<devtools_traits::EventListenerInfo> {
         let handlers = self.handlers.borrow();
         let Some(handlers) = handlers.as_ref() else {
             return Vec::new();
@@ -1123,7 +1122,7 @@ impl EventTarget {
         for (event_type, event_listeners) in &handlers.0 {
             for event_listener in event_listeners.iter() {
                 let event_listener_entry = event_listener.borrow();
-                listener_infos.push(EventListenerInfo {
+                listener_infos.push(devtools_traits::EventListenerInfo {
                     event_type: event_type.to_string(),
                     capturing: event_listener_entry.phase() == ListenerPhase::Capturing,
                 });

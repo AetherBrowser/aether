@@ -5,14 +5,15 @@
 //! Messages send from the ScriptThread to the Constellation.
 
 use std::fmt;
+use std::sync::Arc;
 
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
-use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg, WorkerId};
+#[cfg(feature = "devtools")]
+use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg};
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{
     AnimationState, FocusSequenceNumber, JSValue, JavaScriptEvaluationError,
-    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, Theme, ViewportDetails,
-    WakeLockType,
+    JavaScriptEvaluationId, MediaSessionEvent, ScriptToEmbedderChan, ViewportDetails, WakeLockType,
 };
 use encoding_rs::Encoding;
 use euclid::default::Size2D as UntypedSize2D;
@@ -32,7 +33,7 @@ use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSende
 use servo_base::id::{
     BroadcastChannelRouterId, BrowsingContextId, HistoryStateId, MessagePortId,
     MessagePortRouterId, PipelineId, ScriptEventLoopId, ServiceWorkerId,
-    ServiceWorkerRegistrationId, WebViewId,
+    ServiceWorkerRegistrationId, WebViewId, WorkerId,
 };
 use servo_canvas_traits::canvas::{CanvasId, CanvasMsg};
 #[cfg(feature = "webgl")]
@@ -122,7 +123,7 @@ pub struct LoadData {
     /// The referrer policy.
     pub referrer_policy: ReferrerPolicy,
     /// The policy container.
-    pub policy_container: Option<PolicyContainer>,
+    pub policy_container: Option<Arc<PolicyContainer>>,
 
     /// The source to use instead of a network response for a srcdoc document.
     pub srcdoc: String,
@@ -231,8 +232,10 @@ pub struct ScopeThings {
     /// base resources required to create worker global scopes
     pub init: WorkerGlobalScopeInit,
     /// the port to receive devtools message from
+    #[cfg(feature = "devtools")]
     pub devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
     /// service worker id
+    #[cfg(feature = "devtools")]
     pub worker_id: WorkerId,
     /// the browsing context id of the page that registered the service worker
     pub browsing_context_id: BrowsingContextId,
@@ -280,6 +283,7 @@ pub enum ServiceWorkerMsg {
     },
     /// <https://w3c.github.io/ServiceWorker/#algorithms>
     HandleAlgorithm(ServiceWorkerAlgorithm),
+    SetNetworkOnlineState(bool),
     /// Exit the service worker manager
     Exit,
 }
@@ -504,8 +508,6 @@ pub struct IFrameLoadInfoWithData {
     pub old_pipeline_id: Option<PipelineId>,
     /// The initial viewport size for this iframe.
     pub viewport_details: ViewportDetails,
-    /// The [`Theme`] to use within this iframe.
-    pub embedder_theme: Theme,
 }
 
 /// Resources required by workerglobalscopes
@@ -520,8 +522,10 @@ pub struct WorkerGlobalScopeInit {
     /// Chan to the time profiler
     pub time_profiler_chan: profile_time::ProfilerChan,
     /// To devtools sender
+    #[cfg(feature = "devtools")]
     pub to_devtools_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
     /// From devtools sender
+    #[cfg(feature = "devtools")]
     pub from_devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     /// Messages to send to constellation
     pub script_to_constellation_chan: ScriptToConstellationSender,
@@ -542,6 +546,8 @@ pub struct WorkerGlobalScopeInit {
     /// Handle for communicating messages to the WebGL thread, if available.
     #[cfg(feature = "webgl")]
     pub webgl_chan: Option<WebGLChan>,
+    /// Whether or not Servo is online.
+    pub online: bool,
 }
 
 /// Message delivered to a worker event loop to run animation frame callbacks.
@@ -716,7 +722,10 @@ pub enum ScriptToConstellationMessage {
         PipelineId,
         GenericSender<Option<(BrowsingContextId, Option<PipelineId>)>>,
     ),
-    /// Get the nth child browsing context ID for a given browsing context, sorted in tree order.
+    /// Get the count of child browsing contexts for a given browsing context.
+    GetChildBrowsingContextCount(BrowsingContextId, GenericSender<usize>),
+    /// Get the nth child browsing context ID for a given browsing context, when sorted in
+    /// insertion order.
     GetChildBrowsingContextId(
         BrowsingContextId,
         usize,

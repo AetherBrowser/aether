@@ -46,7 +46,9 @@ use style::values::computed::{
     FontVariantNumeric, FontWeight, FontWidth,
 };
 use unicode_script::Script;
-use webrender_api::{FontInstanceFlags, FontInstanceKey, FontVariation};
+use webrender_api::{
+    FontInstanceFlags, FontInstanceKey, FontInstancePlatformOptions, FontVariation,
+};
 
 use crate::font_feature_values::ResolvedFontVariantAlternates;
 use crate::platform::font::{FontTable, PlatformFont};
@@ -168,8 +170,13 @@ pub trait PlatformFontMethods: Sized {
     fn table_for_tag(&self, _: Tag) -> Option<FontTable>;
     fn typographic_bounds(&self, _: GlyphId) -> Rect<f32>;
 
-    /// Get the necessary [`FontInstanceFlags`]` for this font.
+    /// Get the necessary [`FontInstanceFlags`] for this font.
     fn webrender_font_instance_flags(&self) -> FontInstanceFlags;
+
+    /// Get the necessary [`FontInstancePlatformOptions`] for this font.
+    fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        Default::default()
+    }
 
     /// Return all the variation values that the font was instantiated with.
     fn variations(&self) -> &[FontVariation];
@@ -363,7 +370,7 @@ impl Font {
         let variation_axes = VariationAxes::from_platform_font(&handle);
 
         // Compute and apply the OpenType variations
-        let handle = if servo_config::pref!(layout_variable_fonts_enabled) &&
+        let handle = if servo_config::pref!(layout_css_font_variations_enabled) &&
             variation_axes.contains(VariationAxes::IS_VARIABLE)
         {
             let used_variations = compute_variations(&descriptor, &template, variation_axes);
@@ -401,6 +408,10 @@ impl Font {
 
     pub(crate) fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
         self.handle.webrender_font_instance_flags()
+    }
+
+    pub(crate) fn webrender_font_instance_platform_options(&self) -> FontInstancePlatformOptions {
+        self.handle.webrender_font_instance_platform_options()
     }
 
     pub(crate) fn has_color_bitmap_or_colr_table(&self) -> bool {

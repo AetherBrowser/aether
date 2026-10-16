@@ -3,8 +3,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
+use std::time::SystemTime;
 
 use euclid::Scale;
 use log::warn;
@@ -12,19 +14,23 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, MediaSessionEvent, PermissionRequest, RenderingContext, ScreenGeometry,
-    WebView, WebViewBuilder, WebViewId,
+    InputEventResult, MediaSessionEvent, NavigationType, PermissionRequest, RenderingContext,
+    ScreenGeometry, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
+use crate::history::{ActiveEntry, HistoryUpdate, history_update};
 use crate::parser::location_bar_input_to_url;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand, WebViewCollection};
 
-/// The start page loaded by the Home button and by new tabs/windows.
-pub(crate) const NEW_TAB_URL: &str = "servo:newtab";
-
+/// Page opened by a new tab. A blank page when `browser.newtabpage.enabled` is false.
 pub(crate) fn new_tab_url() -> Url {
-    Url::parse(NEW_TAB_URL).expect("Should always be able to parse 'servo:newtab' as URL")
+    crate::home::new_tab_url()
+}
+
+/// Page opened by a new window and the Home button.
+pub(crate) fn new_window_url() -> Url {
+    crate::home::new_window_url()
 }
 
 /// The history page opened from the application menu.
@@ -32,6 +38,13 @@ pub(crate) const HISTORY_URL: &str = "servo:history";
 
 pub(crate) fn history_url() -> Url {
     Url::parse(HISTORY_URL).expect("Should always be able to parse 'servo:history' as URL")
+}
+
+/// The settings page opened from the application menu.
+pub(crate) const SETTINGS_URL: &str = "servo:settings";
+
+pub(crate) fn settings_url() -> Url {
+    Url::parse(SETTINGS_URL).expect("Should always be able to parse 'servo:settings' as URL")
 }
 
 /// The process list opened from More Tools.
@@ -109,6 +122,9 @@ pub(crate) struct ServoShellWindow {
     pending_favicon_loads: RefCell<Vec<WebViewId>>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
+    /// The active session history entry of each [`WebView`], to update the history when the
+    /// next navigation is committed.
+    active_entries: RefCell<HashMap<WebViewId, ActiveEntry>>,
 }
 
 pub(crate) enum TopLevelWebViewCreationRequest {
@@ -126,6 +142,7 @@ impl ServoShellWindow {
             needs_repaint: Default::default(),
             pending_favicon_loads: Default::default(),
             pending_commands: Default::default(),
+            active_entries: Default::default(),
         }
     }
 
@@ -174,7 +191,6 @@ impl ServoShellWindow {
         }
 
         let webview = webview_builder.build();
-        webview.notify_theme_change(self.platform_window.theme());
         self.add_webview(webview.clone());
 
         // If `self` is not in `state.windows`, our notify_accessibility_tree_update() will panic.
@@ -186,7 +202,7 @@ impl ServoShellWindow {
         webview
     }
 
-    /// Repaint the focused [`WebView`].
+    /// Repaint the active [`WebView`].
     pub(crate) fn repaint_webviews(&self) {
         let Some(webview) = self.active_webview() else {
             return;
@@ -226,11 +242,8 @@ impl ServoShellWindow {
         self.platform_window.clone()
     }
 
-    pub(crate) fn focus(&self) {
-        self.platform_window.focus()
-    }
-
     pub(crate) fn add_webview(&self, webview: WebView) {
+        webview.notify_theme_change(self.platform_window.theme());
         self.webview_collection.borrow_mut().add(webview);
         self.set_needs_update();
         self.set_needs_repaint();
@@ -294,11 +307,29 @@ impl ServoShellWindow {
         if webview_collection.remove(webview_id).is_none() {
             return;
         }
+        self.active_entries.borrow_mut().remove(&webview_id);
         self.platform_window
             .dismiss_embedder_controls_for_webview(webview_id);
 
         self.set_needs_update();
         self.set_needs_repaint();
+    }
+
+    pub(crate) fn navigation_committed(
+        &self,
+        webview_id: WebViewId,
+        url: &Url,
+        navigation_type: NavigationType,
+    ) -> Option<HistoryUpdate> {
+        let mut active_entries = self.active_entries.borrow_mut();
+        let (update, active_entry) = history_update(
+            active_entries.get(&webview_id),
+            url,
+            navigation_type,
+            SystemTime::now(),
+        );
+        active_entries.insert(webview_id, active_entry);
+        update
     }
 
     pub(crate) fn notify_favicon_changed(&self, webview: WebView) {
@@ -373,10 +404,16 @@ impl ServoShellWindow {
             match event {
                 UserInterfaceCommand::Go(location) => {
                     self.set_needs_update();
-                    let Some(url) = location_bar_input_to_url(
-                        &location.clone(),
-                        &state.servoshell_preferences.searchpage,
-                    ) else {
+                    let search_url = crate::search::default_search_url().unwrap_or_else(|| {
+                        state
+                            .servoshell_preferences
+                            .search_engines
+                            .default_engine()
+                            .url
+                            .clone()
+                    });
+                    let Some(url) = location_bar_input_to_url(&location.clone(), &search_url)
+                    else {
                         warn!("failed to parse location");
                         break;
                     };
@@ -401,7 +438,7 @@ impl ServoShellWindow {
                     }
                 },
                 UserInterfaceCommand::ReloadAll => {
-                    for window in state.windows().values() {
+                    for window in state.windows().iter() {
                         window.set_needs_update();
                         for (_, webview) in window.webviews() {
                             webview.reload();
@@ -412,7 +449,7 @@ impl ServoShellWindow {
                     self.set_needs_update();
                     if let Some(active_webview) = self.active_webview() {
                         // `load` pushes a history entry so Back can return to the previous page.
-                        active_webview.load(new_tab_url());
+                        active_webview.load(new_window_url());
                     }
                 },
                 UserInterfaceCommand::NewWebView(creation_request) => {
@@ -429,7 +466,7 @@ impl ServoShellWindow {
                     };
                     let url = match &creation_request {
                         TopLevelWebViewCreationRequest::WithUrl(url) => url.clone(),
-                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => new_tab_url(),
+                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => new_window_url(),
                     };
                     let platform_window = create_platform_window(url);
                     state.open_window(platform_window, creation_request);
@@ -443,6 +480,12 @@ impl ServoShellWindow {
 /// be used in a servoshell execution. This currently includes headed (winit) and headless
 /// windows.
 pub(crate) trait PlatformWindow {
+    /// Whether or not the platform manages focus. This is used to decide whether
+    /// servoshell should focus another window when one closes.
+    fn platform_manages_focus(&self) -> bool {
+        false
+    }
+
     fn id(&self) -> ServoShellWindowId;
     fn screen_geometry(&self) -> ScreenGeometry;
     #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
@@ -482,7 +525,6 @@ pub(crate) trait PlatformWindow {
     }
     fn window_rect(&self) -> DeviceIndependentIntRect;
     fn maximize(&self, _: &WebView) {}
-    fn focus(&self) {}
     fn has_platform_focus(&self) -> bool {
         true
     }

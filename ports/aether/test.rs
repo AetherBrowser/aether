@@ -321,14 +321,14 @@ fn test_issue_35754() {
 #[test]
 fn test_home_url_is_new_tab_page() {
     let home = crate::window::new_tab_url();
-    assert_eq!(home.as_str(), crate::window::NEW_TAB_URL);
+    assert_eq!(home.as_str(), crate::home::AETHER_HOME_URL);
     assert_eq!(home.as_str(), "servo:newtab");
 }
 
 #[test]
 fn test_location_bar_accepts_new_tab_url() {
     let url = location_bar_input_to_url(
-        crate::window::NEW_TAB_URL,
+        crate::home::AETHER_HOME_URL,
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("new tab URL should parse");
@@ -390,6 +390,72 @@ fn test_location_bar_accepts_history_url() {
     )
     .expect("history URL should parse");
     assert_eq!(url.as_str(), "servo:history");
+}
+
+#[test]
+fn test_settings_url_is_settings_page() {
+    let settings = crate::window::settings_url();
+    assert_eq!(settings.as_str(), crate::window::SETTINGS_URL);
+    assert_eq!(settings.as_str(), "servo:settings");
+}
+
+#[test]
+fn test_location_bar_accepts_settings_url() {
+    let url = location_bar_input_to_url(
+        crate::window::SETTINGS_URL,
+        "https://duckduckgo.com/html/?q=%s",
+    )
+    .expect("settings URL should parse");
+    assert_eq!(url.as_str(), "servo:settings");
+}
+
+#[test]
+fn settings_page_has_a_search_section() {
+    let html = include_str!("../../resources/resource_protocol/settings.html");
+    assert!(html.contains("<title>Settings</title>"));
+    assert!(html.contains("<section id=\"search\" hidden>"));
+    assert!(html.contains("href=\"#home\""));
+    assert!(html.contains("href=\"#search\""));
+    assert!(html.contains("href=\"#download\""));
+    assert!(html.contains("href=\"#appearance\""));
+    assert!(html.contains("href=\"#about\""));
+    assert!(html.contains("<section id=\"about\" hidden>"));
+    assert!(html.contains(">About<"));
+    assert!(html.contains("servo:about"));
+    assert!(html.contains(">Version<"));
+    assert!(html.contains(">Channel<"));
+    assert!(html.contains(">Architecture<"));
+    assert!(html.contains("Home and startup"));
+    assert!(html.contains("id=\"new-windows\""));
+    assert!(html.contains("Aether home page"));
+    assert!(html.contains(">URL<"));
+    assert!(html.contains("Blank page"));
+    assert!(html.contains("id=\"new-tabs\""));
+    assert!(html.contains("id=\"show-search\""));
+    assert!(html.contains("Aether logo"));
+    assert!(html.contains("servo:home"));
+    assert!(html.contains("id=\"homepage-url-error\""));
+    assert!(html.contains("addEventListener(\"blur\", commitHomepageUrl)"));
+    assert!(html.contains("Enter a valid homepage URL"));
+    assert!(html.contains(">Downloads<"));
+    assert!(html.contains(">Appearance<"));
+    assert!(html.contains("location.hash === \"#search\""));
+    assert!(html.contains("servo:search-engines"));
+    assert!(html.contains("Default search engine"));
+    assert!(html.contains("Add a search engine"));
+}
+
+#[test]
+fn new_tab_page_follows_home_content_preferences() {
+    let html = include_str!("../../resources/resource_protocol/newtab.html");
+    let css = include_str!("../../resources/resource_protocol/newtab.css");
+    assert!(html.contains("id=\"home-logo\""));
+    assert!(html.contains("id=\"home-search\""));
+    assert!(html.contains("servo:home"));
+    assert!(html.contains("showLogo"));
+    assert!(html.contains("showSearch"));
+    // `form { display: flex }` would otherwise keep a hidden search bar visible.
+    assert!(css.contains("form[hidden]"));
 }
 
 #[test]

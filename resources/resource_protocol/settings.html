@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings</title>
+    <style>
+      :root {
+        --bg: #f6f7f8;
+        --surface: #ffffff;
+        --text: #1b1b1b;
+        --muted: #5c5c5c;
+        --border: #d7d7d7;
+        --accent: #1191e8;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121619;
+          --surface: #1c2126;
+          --text: #f5f5f5;
+          --muted: #b0b8c0;
+          --border: #2f3942;
+          --accent: #5cb6f0;
+        }
+      }
+
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: sans-serif;
+      }
+
+      .layout {
+        display: flex;
+        height: 100%;
+        min-height: 100%;
+      }
+
+      nav {
+        flex: 0 0 14rem;
+        box-sizing: border-box;
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        padding: 12px 8px;
+        overflow: auto;
+      }
+
+      nav a {
+        display: block;
+        margin: 2px 0;
+        padding: 8px 12px;
+        border-radius: 6px;
+        color: inherit;
+        text-decoration: none;
+      }
+
+      nav a:hover {
+        background: var(--bg);
+      }
+
+      nav a[aria-current="page"] {
+        background: var(--accent);
+        color: #fff;
+      }
+
+      main {
+        flex: 1;
+        min-width: 0;
+        overflow: auto;
+        padding: 24px 16px 48px;
+      }
+
+      main section {
+        max-width: 40rem;
+        margin: 0 auto;
+      }
+
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 600;
+        margin: 0 0 24px;
+      }
+
+      h2 {
+        font-size: 1.2rem;
+        margin: 0 0 16px;
+      }
+
+      h3 {
+        font-size: 1rem;
+        margin: 24px 0 8px;
+      }
+
+      section {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      select,
+      input,
+      button {
+        font: inherit;
+        color: inherit;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      #default-engine,
+      #add-name,
+      #add-url,
+      #builtin-engine,
+      #new-windows,
+      #new-tabs,
+      #homepage-url {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 8px;
+      }
+
+      #search-error {
+        color: #b42318;
+        min-height: 1.2em;
+      }
+
+      #engine-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      #engine-list li {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 4px 12px;
+        padding: 10px 0;
+        border-top: 1px solid var(--border);
+      }
+
+      #engine-list .name {
+        font-weight: 600;
+      }
+
+      #engine-list code {
+        grid-column: 1;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      #engine-list button {
+        grid-row: 1 / span 2;
+        grid-column: 2;
+        align-self: center;
+      }
+
+      #add-engine button,
+      #add-builtin {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0 0 8px;
+      }
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 8px 0;
+      }
+
+      #home-error,
+      #homepage-url-error {
+        color: #b42318;
+        min-height: 1.2em;
+      }
+
+      #about dl {
+        margin: 0;
+      }
+
+      #about dt {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin-top: 12px;
+      }
+
+      #about dt:first-child {
+        margin-top: 0;
+      }
+
+      #about dd {
+        margin: 2px 0 0;
+      }
+
+      #about-error {
+        color: #b42318;
+      }
+
+      #about-error:empty {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <nav aria-label="Settings sections">
+        <a href="#home">Home and startup</a>
+        <a href="#search">Search</a>
+        <a href="#download">Downloads</a>
+        <a href="#appearance">Appearance</a>
+        <a href="#about">About</a>
+      </nav>
+      <main>
+        <section id="home" hidden>
+          <h2>Home and startup</h2>
+          <p id="home-error" role="alert"></p>
+
+          <h3>Homepage</h3>
+          <label for="new-windows">New windows</label>
+          <select id="new-windows">
+            <option value="home">Aether home page</option>
+            <option value="url">URL</option>
+            <option value="blank">Blank page</option>
+          </select>
+          <div id="homepage-url-row" hidden>
+            <label for="homepage-url">URL</label>
+            <input id="homepage-url" type="text" placeholder="https://example.com" />
+            <p id="homepage-url-error" role="alert"></p>
+          </div>
+
+          <h3>New tabs</h3>
+          <label for="new-tabs">New tabs</label>
+          <select id="new-tabs">
+            <option value="home">Aether home page</option>
+            <option value="blank">Blank page</option>
+          </select>
+
+          <h3>Aether home page</h3>
+          <label class="check" for="show-search">
+            <input id="show-search" type="checkbox" />
+            Search
+          </label>
+          <label class="check" for="show-logo">
+            <input id="show-logo" type="checkbox" />
+            Aether logo
+          </label>
+        </section>
+        <section id="search" hidden>
+        <h2>Search</h2>
+        <p id="search-error" role="alert"></p>
+        <label for="default-engine">Default search engine</label>
+        <select id="default-engine"></select>
+
+        <h3>Configured search engines</h3>
+        <ul id="engine-list"></ul>
+
+        <h3>Add a search engine</h3>
+        <p class="hint">Use <code>%s</code> where the search terms should go.</p>
+        <form id="add-engine">
+          <label for="add-name">Name</label>
+          <input id="add-name" name="name" required />
+          <label for="add-url">Search URL</label>
+          <input
+            id="add-url"
+            name="url"
+            required
+            placeholder="https://example.com/search?q=%s"
+          />
+          <button type="submit">Add</button>
+        </form>
+
+        <div id="available-builtins" hidden>
+          <h3>Built-in engines</h3>
+          <label for="builtin-engine">Add a built-in engine</label>
+          <select id="builtin-engine"></select>
+          <button type="button" id="add-builtin">Add</button>
+        </div>
+      </section>
+        <section id="download" hidden>
+          <h2>Downloads</h2>
+        </section>
+        <section id="appearance" hidden>
+          <h2>Appearance</h2>
+        </section>
+        <section id="about" hidden>
+          <h2>About</h2>
+          <p id="about-error" role="alert"></p>
+          <dl>
+            <dt>Version</dt>
+            <dd id="about-version"></dd>
+            <dt>Channel</dt>
+            <dd id="about-channel"></dd>
+            <dt>Architecture</dt>
+            <dd id="about-architecture"></dd>
+          </dl>
+        </section>
+      </main>
+    </div>
+    <script>
+      const defaultEngine = document.getElementById("default-engine");
+      const engineList = document.getElementById("engine-list");
+      const addForm = document.getElementById("add-engine");
+      const availableBox = document.getElementById("available-builtins");
+      const builtinEngine = document.getElementById("builtin-engine");
+      const searchError = document.getElementById("search-error");
+
+      function render(data) {
+        defaultEngine.replaceChildren();
+        for (const engine of data.engines) {
+          const option = document.createElement("option");
+          option.value = engine.id;
+          option.textContent = engine.name;
+          defaultEngine.append(option);
+        }
+        defaultEngine.value = data.defaultId;
+
+        engineList.replaceChildren();
+        const onlyOne = data.engines.length < 2;
+        for (const engine of data.engines) {
+          const item = document.createElement("li");
+          const name = document.createElement("span");
+          name.className = "name";
+          name.textContent = engine.name;
+          const url = document.createElement("code");
+          url.textContent = engine.url;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "Remove";
+          remove.disabled = onlyOne;
+          remove.addEventListener("click", () => {
+            apply("remove=" + encodeURIComponent(engine.id));
+          });
+          item.append(name, url, remove);
+          engineList.append(item);
+        }
+
+        builtinEngine.replaceChildren();
+        availableBox.hidden = data.available.length === 0;
+        for (const engine of data.available) {
+          const option = document.createElement("option");
+          option.value = engine.id;
+          option.textContent = engine.name;
+          builtinEngine.append(option);
+        }
+      }
+
+      async function apply(query) {
+        const url = query ? "servo:search-engines?" + query : "servo:search-engines";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          searchError.textContent = data.error || "";
+          if (Array.isArray(data.engines)) {
+            render(data);
+          }
+        } catch (error) {
+          searchError.textContent = "Could not update search engines.";
+        }
+      }
+
+      defaultEngine.addEventListener("change", () => {
+        apply("default=" + encodeURIComponent(defaultEngine.value));
+      });
+
+      addForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const name = document.getElementById("add-name").value;
+        const url = document.getElementById("add-url").value;
+        apply(
+          "name=" + encodeURIComponent(name) + "&url=" + encodeURIComponent(url)
+        ).then(() => {
+          if (!searchError.textContent) {
+            addForm.reset();
+          }
+        });
+      });
+
+      document.getElementById("add-builtin").addEventListener("click", () => {
+        apply("addBuiltin=" + encodeURIComponent(builtinEngine.value));
+      });
+
+      const newWindows = document.getElementById("new-windows");
+      const newTabs = document.getElementById("new-tabs");
+      const homepageUrlRow = document.getElementById("homepage-url-row");
+      const homepageUrl = document.getElementById("homepage-url");
+      const homepageUrlError = document.getElementById("homepage-url-error");
+      const showSearch = document.getElementById("show-search");
+      const showLogo = document.getElementById("show-logo");
+      const homeError = document.getElementById("home-error");
+      const homePane = document.getElementById("home");
+
+      function renderHome(data) {
+        newWindows.value = data.newWindows;
+        homepageUrlRow.hidden = data.newWindows !== "url";
+        if (data.newWindows === "url") {
+          homepageUrl.value = data.homepage || "";
+        }
+        newTabs.value = data.newTabs;
+        showSearch.checked = !!data.showSearch;
+        showLogo.checked = !!data.showLogo;
+      }
+
+      function invalidHomepageUrl(value) {
+        const raw = value.trim();
+        if (!raw) {
+          return "Enter a homepage URL";
+        }
+        let url;
+        try {
+          url = new URL(raw);
+        } catch (error) {
+          if (raw.includes(" ")) {
+            return "Enter a valid homepage URL";
+          }
+          try {
+            url = new URL("https://" + raw);
+          } catch (error) {
+            return "Enter a valid homepage URL";
+          }
+        }
+        if (url.protocol !== "http:" && url.protocol !== "https:" && url.protocol !== "file:") {
+          return "Homepage URL must be http, https, or file";
+        }
+        return "";
+      }
+
+      async function applyHome(query) {
+        const url = query ? "servo:home?" + query : "servo:home";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          if (data.error) {
+            if (query && query.indexOf("homepage=") !== -1) {
+              homepageUrlError.textContent = data.error;
+              homeError.textContent = "";
+            } else {
+              homeError.textContent = data.error;
+            }
+            return;
+          }
+          homeError.textContent = "";
+          homepageUrlError.textContent = "";
+          if (data.newWindows) {
+            renderHome(data);
+          }
+        } catch (error) {
+          homeError.textContent = "Could not update homepage settings.";
+        }
+      }
+
+      function commitHomepageUrl() {
+        if (newWindows.value !== "url") {
+          return;
+        }
+        const error = invalidHomepageUrl(homepageUrl.value);
+        homepageUrlError.textContent = error;
+        if (error) {
+          return;
+        }
+        applyHome("newWindows=url&homepage=" + encodeURIComponent(homepageUrl.value.trim()));
+      }
+
+      newWindows.addEventListener("change", () => {
+        homepageUrlRow.hidden = newWindows.value !== "url";
+        if (newWindows.value === "url") {
+          homepageUrl.focus();
+          return;
+        }
+        homepageUrlError.textContent = "";
+        applyHome("newWindows=" + encodeURIComponent(newWindows.value));
+      });
+
+      homepageUrl.addEventListener("blur", commitHomepageUrl);
+
+      newTabs.addEventListener("change", () => {
+        applyHome("newTabs=" + encodeURIComponent(newTabs.value));
+      });
+
+      showSearch.addEventListener("change", () => {
+        applyHome("showSearch=" + showSearch.checked);
+      });
+
+      showLogo.addEventListener("change", () => {
+        applyHome("showLogo=" + showLogo.checked);
+      });
+
+      const searchPane = document.getElementById("search");
+      const aboutPane = document.getElementById("about");
+      const aboutError = document.getElementById("about-error");
+      const sectionIds = ["home", "search", "download", "appearance", "about"];
+
+      async function loadAbout() {
+        aboutPane.dataset.loading = "1";
+        try {
+          const response = await fetch("servo:about");
+          if (!response.ok) {
+            throw new Error(response.statusText);
+          }
+          const data = await response.json();
+          document.getElementById("about-version").textContent = data.version || "";
+          document.getElementById("about-channel").textContent = data.channel || "";
+          document.getElementById("about-architecture").textContent =
+            data.architecture || "";
+          aboutError.textContent = "";
+          aboutPane.dataset.loaded = "1";
+        } catch (error) {
+          aboutError.textContent = "Could not load version information.";
+        } finally {
+          delete aboutPane.dataset.loading;
+        }
+      }
+
+      function showCurrentPane() {
+        const requested = location.hash.slice(1);
+        const current = sectionIds.includes(requested) ? requested : "home";
+        for (const id of sectionIds) {
+          document.getElementById(id).hidden = id !== current;
+          const link = document.querySelector('nav a[href="#' + id + '"]');
+          if (id === current) {
+            link.setAttribute("aria-current", "page");
+          } else {
+            link.removeAttribute("aria-current");
+          }
+        }
+        if (current === "home" && !homePane.dataset.loaded) {
+          homePane.dataset.loaded = "1";
+          applyHome();
+        }
+        const showSearchPane = location.hash === "#search";
+        if (showSearchPane && !searchPane.dataset.loaded) {
+          searchPane.dataset.loaded = "1";
+          apply();
+        }
+        if (
+          current === "about" &&
+          !aboutPane.dataset.loaded &&
+          !aboutPane.dataset.loading
+        ) {
+          loadAbout();
+        }
+      }
+
+      window.addEventListener("hashchange", showCurrentPane);
+      showCurrentPane();
+    </script>
+  </body>
+</html>

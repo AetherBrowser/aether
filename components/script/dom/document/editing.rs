@@ -5,12 +5,20 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use embedder_traits::{EditingActionEvent, EmbedderMsg, InputEventResult};
+use embedder_traits::{
+    ClipboardAction, EditingAction, EditingDirection, EditingMotion, EmbedderMsg, InputEventResult,
+    ModifySelection, MouseButton,
+};
 use js::context::{JSContext, NoGC};
-use keyboard_types::{Key, Modifiers, NamedKey};
+use keyboard_types::{
+    CompositionEvent, CompositionState, Key, KeyState, KeyboardEvent as KeyboardTypesEvent,
+    Modifiers, NamedKey, ShortcutMatcher,
+};
+use layout_api::{QueryMsg, SegmentGranularity};
 use script_bindings::codegen::GenericBindings::DocumentBinding::DocumentMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
+use script_bindings::codegen::GenericBindings::UIEventBinding::UIEventMethods as _;
 use script_bindings::dom::UnrootedDom;
 use script_bindings::inheritance::Castable;
 use script_bindings::root::DomRoot;
@@ -20,14 +28,66 @@ use servo_base::generic_channel::GenericCallback;
 use crate::dom::clipboardevent::ClipboardEventType;
 use crate::dom::event::{EventBubbles, EventCancelable};
 use crate::dom::execcommand::execcommands::DocumentExecCommandSupport;
+use crate::dom::inputevent::HitTestResult;
+use crate::dom::selection_range::{RootedSelectionBoundary, SelectionRange};
 use crate::dom::text_control::TextControlElement;
 use crate::dom::text_input::{InputEventType, IsComposing};
 use crate::dom::types::{
     ClipboardEvent, DataTransfer, Event, EventTarget, HTMLInputElement, HTMLTextAreaElement,
-    KeyboardEvent,
+    MouseEvent, UIEvent,
 };
-use crate::dom::{Document, Node};
+use crate::dom::{Document, Node, NodeTraits};
+use crate::drag::document_selection_drag::{
+    DocumentDragSegment, DocumentSelectionDragHandler, adjust_anchor_for_user_select,
+};
 use crate::drag::drag_data_store::{DragDataStore, Kind, Mode};
+use crate::drag::drag_gesture::{DragGesture, DragHandler};
+
+#[cfg(target_os = "macos")]
+pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::META;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CMD_OR_CONTROL: Modifiers = Modifiers::CONTROL;
+
+#[cfg(target_os = "macos")]
+pub(crate) const ALT_OR_CONTROL: Modifiers = Modifiers::ALT;
+#[cfg(not(target_os = "macos"))]
+pub(crate) const ALT_OR_CONTROL: Modifiers = Modifiers::CONTROL;
+
+/// A selection action to use when handling mouse button events.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum MouseButtonSelectionAction {
+    /// Select a single selection focus node position. This is created via single primary click
+    /// or middle clicks.
+    MoveCursor,
+    /// Select a range at the target point. This is created via double and triple primary clicks.
+    SelectRange(SegmentGranularity),
+}
+
+impl MouseButtonSelectionAction {
+    pub(crate) fn from_mouse_event(mouse_event: &MouseEvent) -> Option<Self> {
+        match mouse_event.button() {
+            MouseButton::Primary => {}, // continue below
+            MouseButton::Auxiliary => return Some(Self::MoveCursor),
+            _ => return None,
+        }
+
+        // We currently don't do anything for higher click counts, but some platforms do.
+        // For example on desktop linux, 4+ click cycle back starting at same as single click:
+        // ```
+        // const MAX_CLICKS: i32 = 3;
+        // let click_count = (click_count - 1) % MAX_CLICKS + 1;
+        // ```
+        // We should re-examine this when implementing support for platform-specific editing
+        // behaviors.
+        let click_count = mouse_event.upcast::<UIEvent>().Detail();
+        match click_count {
+            1 => Some(Self::MoveCursor),
+            2 => Some(Self::SelectRange(SegmentGranularity::Word)),
+            3 => Some(Self::SelectRange(SegmentGranularity::HardLineBreak)),
+            _ => None,
+        }
+    }
+}
 
 impl Document {
     pub(crate) fn editing_context(&self, no_gc: &NoGC, node: &Node) -> EditingContext {
@@ -47,16 +107,16 @@ impl Document {
     }
 
     /// <https://www.w3.org/TR/clipboard-apis/#clipboard-actions>
-    pub(crate) fn handle_editing_action(
+    pub(crate) fn handle_clipboard_action(
         &self,
         cx: &mut JSContext,
-        node: &Node,
-        action: EditingActionEvent,
+        editing_context: &EditingContext,
+        action: ClipboardAction,
     ) -> InputEventResult {
         let clipboard_event_type = match action {
-            EditingActionEvent::Copy => ClipboardEventType::Copy,
-            EditingActionEvent::Cut => ClipboardEventType::Cut,
-            EditingActionEvent::Paste => ClipboardEventType::Paste,
+            ClipboardAction::Copy => ClipboardEventType::Copy,
+            ClipboardAction::Cut => ClipboardEventType::Cut,
+            ClipboardAction::Paste => ClipboardEventType::Paste,
         };
 
         // The script_triggered flag is set if the action runs because of a script, e.g. document.execCommand()
@@ -67,13 +127,12 @@ impl Document {
         // if action is copy or cut and the script thread is allowed to modify the clipboard
         let script_may_access_clipboard = false;
 
-        // Step 1 If the script-triggered flag is set and the script-may-access-clipboard flag is unset
+        // Step 1. If the script-triggered flag is set and the script-may-access-clipboard flag is unset
         if script_triggered && !script_may_access_clipboard {
             return InputEventResult::empty();
         }
 
-        // Step 2 Fire a clipboard event
-        let editing_context = self.editing_context(cx.no_gc(), node);
+        // Step 2. Fire a clipboard event
         let event_target = editing_context.event_target();
         let clipboard_event = self.fire_clipboard_event(cx, &event_target, clipboard_event_type);
 
@@ -81,7 +140,7 @@ impl Document {
         if !event.DefaultPrevented() {
             // Step 3. If the event was not canceled, then
             match clipboard_event.clipboard_event_type() {
-                ClipboardEventType::Copy => {
+                ClipboardEventType::Copy if editing_context.copying_enabled() => {
                     // Step 3.1. Copy the selected contents, if any, to the clipboard.
                     // Implementations should create alternate text/html and text/plain
                     // clipboard formats when content in a web page is selected.
@@ -99,8 +158,13 @@ impl Document {
                 },
                 ClipboardEventType::Cut => {
                     if let Some(selection) = editing_context.selection_content(cx) &&
-                        editing_context.cutting_and_pasting_enabled()
+                        editing_context.cutting_enabled()
                     {
+                        let canceled = editing_context.fire_cut_beforeinput_event(cx);
+                        if canceled {
+                            return InputEventResult::empty();
+                        }
+
                         // Step 3.1. If there is a selection in an editable context where
                         // cutting is enabled, then
                         // Step 3.1.1. Copy the selected contents, if any, to the clipboard.
@@ -129,9 +193,15 @@ impl Document {
                 },
                 ClipboardEventType::Paste => {
                     if editing_context.has_selection_or_cursor() &&
-                        editing_context.cutting_and_pasting_enabled() &&
+                        editing_context.pasting_enabled() &&
                         let Some(text_content) = clipboard_event.text_content()
                     {
+                        let canceled =
+                            editing_context.fire_paste_beforeinput_event(cx, &text_content);
+                        if canceled {
+                            return InputEventResult::empty();
+                        }
+
                         // Step 3.1. If there is a selection or cursor in an editable context
                         // where pasting is enabled, then
                         // Step 3.1.1. Insert the most suitable content found on the
@@ -308,77 +378,137 @@ impl Document {
     }
 
     /// <https://w3c.github.io/editing/docs/execCommand/#additional-requirements>
-    pub(crate) fn maybe_perform_editing_command(
+    ///
+    /// This function does not do any checks for whether or not we are actually inside an
+    /// editing host, since those checks are performed by exec_command_for_command_id
+    /// either way.
+    pub(crate) fn perform_editing_action(
         &self,
         cx: &mut JSContext,
-        event: &KeyboardEvent,
+        editing_action: &EditingAction,
     ) -> bool {
         if !servo_config::pref!(dom_exec_command_enabled) {
             return false;
         }
+
         // This function does not do any checks for whether or not we are actually inside an
         // editing host, since those checks are performed by exec_command_for_command_id either way.
-        match event.key() {
-            Key::Named(NamedKey::Enter) => {
-                // TODO: Figure out if the bit about Option+Enter works and whether or not this
-                //       ends up providing the correct behavior on Mac. (i.e. whether or not
-                //       Shift should be accepted in addition to Option.)
-                if event.modifiers().contains(Modifiers::SHIFT) {
-                    // > When the user instructs the user agent to insert a line break inside an
-                    // > editing host without breaking out of the current block, such as by
-                    // > pressing Shift-Enter or Option-Enter while the cursor is in an editable
-                    // > node, the user agent must call execCommand("insertlinebreak") on the
-                    // > relevant document.
-                    self.exec_command_for_command_id(
-                        cx,
-                        DOMString::from_static("insertlinebreak"),
-                        DOMString::new(),
-                    )
-                } else {
-                    // > When the user instructs the user agent to insert a line break inside an
-                    // > editing host, such as by pressing the Enter key while the cursor is in an
-                    // > editable node, the user agent must call execCommand("insertparagraph") on
-                    // > the relevant document.
-                    self.exec_command_for_command_id(
-                        cx,
-                        DOMString::from_static("insertparagraph"),
-                        DOMString::new(),
-                    )
-                }
+        let (command, argument) = match editing_action {
+            // TODO: composition should be supported once editing hosts have selection support
+            EditingAction::MoveCursor(..) |
+            EditingAction::StartComposition |
+            EditingAction::EndComposition(..) => return false,
+            EditingAction::SelectAll | EditingAction::Clipboard(_) => {
+                unreachable!("Should have been handled before this point.")
+            },
+            EditingAction::InsertNewline => {
+                // > When the user instructs the user agent to insert a line break inside an
+                // > editing host without breaking out of the current block, such as by
+                // > pressing Shift-Enter or Option-Enter while the cursor is in an editable
+                // > node, the user agent must call execCommand("insertlinebreak") on the
+                // > relevant document.
+                (DOMString::from_static("insertlinebreak"), DOMString::new())
+            },
+            EditingAction::InsertParagraph => {
+                // > When the user instructs the user agent to insert a line break inside an
+                // > editing host, such as by pressing the Enter key while the cursor is in an
+                // > editable node, the user agent must call execCommand("insertparagraph") on
+                // > the relevant document.
+                (DOMString::from_static("insertparagraph"), DOMString::new())
             },
             // > When the user instructs the user agent to delete the previous character inside an
             // > editing host, such as by pressing the Backspace key while the cursor is in an
             // > editable node, the user agent must call execCommand("delete") on the relevant
             // > document.
-            // TODO: Gecko, Chromium and WebKit seem to delete up to the next word boundary on
-            //       Ctrl+Backspace and Ctrl+Delete. We probably want that as well.
-            Key::Named(NamedKey::Backspace) => self.exec_command_for_command_id(
-                cx,
-                DOMString::from_static("delete"),
-                DOMString::new(),
-            ),
+            //
+            // TODO: Handle other types of motions here.
+            EditingAction::Backspace(..) => (DOMString::from_static("delete"), DOMString::new()),
             // > When the user instructs the user agent to delete the next character inside an
             // > editing host, such as by pressing the Delete key while the cursor is in an
             // > editable node, the user agent must call execCommand("forwarddelete") on the
-            // > relevant document.
-            Key::Named(NamedKey::Delete) => self.exec_command_for_command_id(
-                cx,
-                DOMString::from_static("forwarddelete"),
-                DOMString::new(),
-            ),
+            // > relevant document
+            EditingAction::Delete => (DOMString::from_static("forwarddelete"), DOMString::new()),
             // > When the user instructs the user agent to insert text inside an editing host, such
             // > as by typing on the keyboard while the cursor is in an editable node, the user
             // > agent must call execCommand("inserttext", false, value) on the relevant document,
             // > with value equal to the text the user provided. If the user inserts multiple
             // > characters at once or in quick succession, this specification does not define
             // > whether it is treated as one insertion or several consecutive insertions.
-            Key::Character(string) => self.exec_command_for_command_id(
-                cx,
+            // TODO: composition should be supported once editing hosts have selection support
+            EditingAction::InsertText(text) | EditingAction::InsertCompositionText(text) => (
                 DOMString::from_static("inserttext"),
-                DOMString::from(string),
+                DOMString::from(text.as_str()),
             ),
-            _ => false,
+        };
+
+        self.exec_command_for_command_id(cx, command, argument)
+    }
+
+    fn handle_mousedown_event(
+        &self,
+        cx: &mut JSContext,
+        mouse_event: &MouseEvent,
+        hit_test_result: &HitTestResult,
+    ) {
+        assert_eq!(mouse_event.upcast::<Event>().type_(), atom!("mousedown"));
+
+        let Some(selection) = self.GetSelection(cx) else {
+            return;
+        };
+
+        if mouse_event.button() == MouseButton::Auxiliary {
+            let _ = selection.Collapse(cx, None, 0);
+            mouse_event.upcast::<Event>().mark_as_handled();
+            return;
         }
+
+        if mouse_event.button() != MouseButton::Primary {
+            return;
+        }
+
+        let Some(action) = MouseButtonSelectionAction::from_mouse_event(mouse_event) else {
+            return;
+        };
+
+        // When the hit test cannot find a suitable DOM position for selection, just
+        // use the first offset within the target node of the `mousedown` event. This
+        // is a reasonable place to start the selection from.
+        let boundary = hit_test_result
+            .dom_position_for_selection
+            .clone()
+            .unwrap_or_else(|| RootedSelectionBoundary::start_of(&hit_test_result.node));
+        let Some((boundary, user_select_contain_node)) =
+            adjust_anchor_for_user_select(cx, boundary)
+        else {
+            return;
+        };
+
+        let segment_data = match action {
+            MouseButtonSelectionAction::MoveCursor => {
+                selection.collapse_to_dom_position(cx, &boundary);
+                None
+            },
+            MouseButtonSelectionAction::SelectRange(granularity) => self
+                .window()
+                .query_text_segment(&boundary.container, boundary.utf32_offset(), granularity)
+                .map(|(start, end)| {
+                    selection.set_anchor_and_focus(cx, &start, &end);
+                    (granularity, start, end)
+                }),
+        };
+
+        self.event_handler().install_drag_gesture(DragGesture::new(
+            DragHandler::DocumentSelection(DocumentSelectionDragHandler::new(
+                self,
+                user_select_contain_node.as_deref(),
+                segment_data.map(|(granularity, start, end)| DocumentDragSegment {
+                    granularity,
+                    range: SelectionRange::new_from_rooted(start, end),
+                }),
+            )),
+        ));
+
+        mouse_event.upcast::<Event>().mark_as_handled();
     }
 }
 
@@ -392,6 +522,18 @@ impl TextControlElementEditingContext {
         match self {
             TextControlElementEditingContext::TextArea(text_area) => &**text_area,
             TextControlElementEditingContext::Input(input) => &**input,
+        }
+    }
+
+    fn handle_mousedown_event(&self, mouse_event: &MouseEvent, hit_test_result: &HitTestResult) {
+        let text_control = self.text_control_element();
+        if text_control.text_input_mut().handle_mousedown_event(
+            text_control.as_element(),
+            mouse_event,
+            hit_test_result,
+        ) {
+            text_control.maybe_update_shared_selection();
+            mouse_event.upcast::<Event>().mark_as_handled();
         }
     }
 }
@@ -433,6 +575,16 @@ impl EditingContext {
             EditingContext::Document(document) => {
                 document.event_handler().target_for_events_following_focus()
             },
+        }
+    }
+
+    pub(crate) fn document(&self) -> DomRoot<Document> {
+        match self {
+            EditingContext::TextControl(element) => match element {
+                TextControlElementEditingContext::TextArea(element) => element.owner_document(),
+                TextControlElementEditingContext::Input(element) => element.owner_document(),
+            },
+            EditingContext::Document(document) => document.clone(),
         }
     }
 
@@ -478,7 +630,22 @@ impl EditingContext {
         }
     }
 
-    pub(crate) fn cutting_and_pasting_enabled(&self) -> bool {
+    pub(crate) fn copying_enabled(&self) -> bool {
+        match self {
+            EditingContext::TextControl(element) => {
+                !element.text_control_element().is_password_field()
+            },
+            EditingContext::Document(..) => true,
+        }
+    }
+
+    pub(crate) fn cutting_enabled(&self) -> bool {
+        // `pasting_enabled` ensures that the editable content can be modified, which is necessary
+        // for cutting text.
+        self.copying_enabled() && self.pasting_enabled()
+    }
+
+    pub(crate) fn pasting_enabled(&self) -> bool {
         match self {
             EditingContext::TextControl(element) => {
                 !element.text_control_element().read_only_or_disabled()
@@ -500,6 +667,36 @@ impl EditingContext {
             EditingContext::Document(..) => {
                 // TODO(mrobinson): Add support for integration with contenteditable.
             },
+        }
+    }
+
+    /// Returns true if and only if the cut should be canceled.
+    pub(crate) fn fire_cut_beforeinput_event(&self, cx: &mut JSContext) -> bool {
+        match self {
+            EditingContext::TextControl(element) => {
+                element.text_control_element().fire_beforeinput_event(
+                    cx,
+                    None,
+                    IsComposing::NotComposing,
+                    InputEventType::DeleteByCut,
+                )
+            },
+            EditingContext::Document(..) => false,
+        }
+    }
+
+    /// Returns true if and only if the paste should be canceled.
+    pub(crate) fn fire_paste_beforeinput_event(&self, cx: &mut JSContext, text: &str) -> bool {
+        match self {
+            EditingContext::TextControl(element) => {
+                element.text_control_element().fire_beforeinput_event(
+                    cx,
+                    Some(text),
+                    IsComposing::NotComposing,
+                    InputEventType::InsertFromPaste,
+                )
+            },
+            EditingContext::Document(..) => false,
         }
     }
 
@@ -558,5 +755,248 @@ impl EditingContext {
                 }
             },
         }
+    }
+
+    pub(crate) fn perform_editing_action(&self, cx: &mut JSContext, action: EditingAction) -> bool {
+        if let Some(node) = self.event_target().downcast::<Node>() {
+            // A previous event listener, such as keydown or beforeinput, might have
+            // hidden the event target. So we should re-check the layout and see if
+            // the node is still being rendered before performing an editing action
+            // on it.
+            node.owner_window().layout_reflow(QueryMsg::StyleQuery);
+            if !node.is_being_rendered_or_delegates_rendering(None) {
+                return false;
+            }
+        }
+
+        // A couple editing actions can be performed via the external interface of
+        // `EditingContext`. If that's the case we want to do that so that the same
+        // code path is used regardless of how the action was executed.
+        if let EditingAction::Clipboard(clipboard_action) = action {
+            return self
+                .document()
+                .handle_clipboard_action(cx, self, clipboard_action)
+                .contains(InputEventResult::Consumed);
+        }
+
+        if let EditingAction::SelectAll = action {
+            self.select_all(cx);
+            return true;
+        }
+
+        match self {
+            EditingContext::TextControl(element) => element
+                .text_control_element()
+                .perform_editing_action(cx, action),
+            EditingContext::Document(document) => document.perform_editing_action(cx, &action),
+        }
+    }
+
+    pub(crate) fn handle_mousedown_event(
+        &self,
+        cx: &mut JSContext,
+        mouse_event: &MouseEvent,
+        hit_test_result: &HitTestResult,
+    ) {
+        match self {
+            EditingContext::TextControl(element) => {
+                element.handle_mousedown_event(mouse_event, hit_test_result)
+            },
+            EditingContext::Document(document) => {
+                document.handle_mousedown_event(cx, mouse_event, hit_test_result)
+            },
+        }
+    }
+}
+
+pub(crate) fn editing_action_from_keyboard_event(
+    event: &KeyboardTypesEvent,
+) -> Option<EditingAction> {
+    let mut modifiers = event.modifiers;
+    if let Some(action) = ShortcutMatcher::new(event.state, event.key.clone(), modifiers)
+        .shortcut(CMD_OR_CONTROL, 'A', || Some(EditingAction::SelectAll))
+        .shortcut(CMD_OR_CONTROL, 'C', || {
+            Some(EditingAction::Clipboard(ClipboardAction::Copy))
+        })
+        .shortcut(CMD_OR_CONTROL, 'X', || {
+            Some(EditingAction::Clipboard(ClipboardAction::Cut))
+        })
+        .shortcut(CMD_OR_CONTROL, 'V', || {
+            Some(EditingAction::Clipboard(ClipboardAction::Paste))
+        })
+        // TODO: Figure out if the bit about Option+Enter works and whether or not this
+        //       ends up providing the correct behavior on Mac. (i.e. whether or not
+        //       Shift should be accepted in addition to Option.)
+        .shortcut(Modifiers::SHIFT, Key::Named(NamedKey::Enter), || {
+            Some(EditingAction::InsertNewline)
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::Enter), || {
+            Some(EditingAction::InsertParagraph)
+        })
+        .otherwise(|| None)
+        .flatten()
+    {
+        return Some(action);
+    };
+
+    let update_selection = if modifiers.contains(Modifiers::SHIFT) {
+        ModifySelection::Yes
+    } else {
+        ModifySelection::No
+    };
+    modifiers.remove(Modifiers::SHIFT);
+
+    ShortcutMatcher::new(KeyState::Down, event.key.clone(), modifiers)
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::ArrowLeft), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::Grapheme,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::ArrowRight), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::Grapheme,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::ArrowUp), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::Line,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::ArrowDown), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::Line,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'B', || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::Word,
+                update_selection,
+            ))
+        })
+        .shortcut(ALT_OR_CONTROL, Key::Named(NamedKey::ArrowLeft), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::Word,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::CONTROL | Modifiers::ALT, 'F', || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::Word,
+                update_selection,
+            ))
+        })
+        .shortcut(ALT_OR_CONTROL, Key::Named(NamedKey::ArrowRight), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::Word,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::Home), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::LineStartOrEnd,
+                update_selection,
+            ))
+        })
+        .optional_shortcut(cfg!(target_os = "macos"), Modifiers::CONTROL, 'A', || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::LineStartOrEnd,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::End), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::LineStartOrEnd,
+                update_selection,
+            ))
+        })
+        .optional_shortcut(cfg!(target_os = "macos"), Modifiers::CONTROL, 'E', || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::LineStartOrEnd,
+                update_selection,
+            ))
+        })
+        .optional_shortcut(
+            cfg!(target_os = "macos"),
+            Modifiers::META,
+            Key::Named(NamedKey::ArrowLeft),
+            || {
+                Some(EditingAction::MoveCursor(
+                    EditingDirection::Backward,
+                    EditingMotion::LineStartOrEnd,
+                    update_selection,
+                ))
+            },
+        )
+        .optional_shortcut(
+            cfg!(target_os = "macos"),
+            Modifiers::META,
+            Key::Named(NamedKey::ArrowRight),
+            || {
+                Some(EditingAction::MoveCursor(
+                    EditingDirection::Forward,
+                    EditingMotion::LineStartOrEnd,
+                    update_selection,
+                ))
+            },
+        )
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::PageUp), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Backward,
+                EditingMotion::Page,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::PageDown), || {
+            Some(EditingAction::MoveCursor(
+                EditingDirection::Forward,
+                EditingMotion::Page,
+                update_selection,
+            ))
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::Delete), || {
+            Some(EditingAction::Delete)
+        })
+        .shortcut(Modifiers::empty(), Key::Named(NamedKey::Backspace), || {
+            Some(EditingAction::Backspace(EditingMotion::Grapheme))
+        })
+        .shortcut(ALT_OR_CONTROL, Key::Named(NamedKey::Backspace), || {
+            Some(EditingAction::Backspace(EditingMotion::Word))
+        })
+        .optional_shortcut(
+            cfg!(target_os = "macos"),
+            Modifiers::META,
+            Key::Named(NamedKey::Backspace),
+            || Some(EditingAction::Backspace(EditingMotion::Line)),
+        )
+        .otherwise(|| match &event.key {
+            Key::Character(character) if modifiers.is_empty() => {
+                Some(EditingAction::InsertText(character.to_string()))
+            },
+            _ => None,
+        })
+        .flatten()
+}
+
+pub(crate) fn editing_action_from_composition_event(event: &CompositionEvent) -> EditingAction {
+    match event.state {
+        CompositionState::Start => EditingAction::StartComposition,
+        CompositionState::Update => EditingAction::InsertCompositionText(event.data.to_string()),
+        CompositionState::End => EditingAction::EndComposition(event.data.to_string()),
     }
 }
