@@ -4,11 +4,10 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_int, c_void};
-use std::fs;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::{ptr, slice};
+use std::{fs, ptr, slice};
 
 use libmpv2::Mpv;
 use libmpv2_sys as sys;

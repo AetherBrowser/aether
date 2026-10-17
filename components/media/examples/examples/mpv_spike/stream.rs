@@ -3,10 +3,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::ffi::c_char;
-use std::fs;
 use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::slice;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{fs, slice};
 
 pub(crate) static STREAMS_OPENED: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BYTES_READ: AtomicU64 = AtomicU64::new(0);
