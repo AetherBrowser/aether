@@ -428,7 +428,7 @@ private fun AppMenu(
                 AppMenuItem(
                     label = stringResource(R.string.more_tools),
                     onClick = { onPageChange(AppMenuPage.MoreTools) },
-                    trailing = { Text("›") },
+                    trailing = { Icon(painterResource(R.drawable.arrow_forward), null) },
                 )
                 HorizontalDivider()
                 AppMenuItem(stringResource(R.string.exit), onClick = onExit)

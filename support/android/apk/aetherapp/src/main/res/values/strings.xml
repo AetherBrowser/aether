@@ -2,7 +2,7 @@
   <string name="app_name">Aether</string>
   <string name="back">Back</string>
   <string name="media_channel_name">AetherMedia</string>
-  <string name="media_channel_description">Notication channel for multimedia activity</string>
+  <string name="media_channel_description">Notification channel for multimedia activity</string>
   <string name="history_back">Back</string>
   <string name="history_forward">Forward</string>
   <string name="options">Options</string>
