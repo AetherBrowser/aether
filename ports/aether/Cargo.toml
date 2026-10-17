@@ -125,6 +125,7 @@ ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
 xcomponent-sys = { workspace = true, features = ["api-20", "keyboard-types"] }
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
+http = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
 serde_json = { workspace = true }
 servo-base = { workspace = true }

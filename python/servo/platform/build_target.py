@@ -301,7 +301,7 @@ class AndroidTarget(CrossBuildTarget):
     def get_package_path(self, build_type_directory: str) -> str:
         base_path = util.get_target_dir()
         base_path = path.join(base_path, self.triple())
-        apk_name = "servoapp.apk"
+        apk_name = "aetherapp.apk"
         return path.join(base_path, build_type_directory, apk_name)
 
 

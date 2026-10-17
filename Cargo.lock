@@ -201,6 +201,7 @@ dependencies = [
  "headers",
  "hilog",
  "hitrace",
+ "http",
  "image",
  "ipc-channel",
  "jni",

@@ -65,6 +65,12 @@ internal class JNIServo {
 
     external fun setExperimentalMode(enable: Boolean)
 
+    external fun homeSettings(query: String): String?
+
+    external fun searchEngines(query: String): String?
+
+    external fun aboutInfo(): String?
+
     external fun doFrame()
 
     interface Callbacks {

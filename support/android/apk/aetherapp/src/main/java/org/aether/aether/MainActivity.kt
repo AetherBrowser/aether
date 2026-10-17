@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-package org.servo.servoshell
+package org.aether.aether
 
 import android.content.Intent
 import android.content.SharedPreferences
@@ -18,24 +18,27 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.component1
 import androidx.activity.result.component2
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.selectAll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SearchBar
 import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,12 +55,14 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
-import androidx.window.core.layout.WindowSizeClass
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+import org.servo.servoview.BrowserSettings
 import org.servo.servoview.Servo
 import org.servo.servoview.ServoNavigator
 
@@ -80,6 +85,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         var settings = Settings(sharedPreferences)
+        var experimental = settings.experimental
         val navigator = ServoNavigator()
         val servo =
             Servo(
@@ -109,60 +115,29 @@ class MainActivity : ComponentActivity(), Servo.Client {
             }
 
         setContent {
+            var experimentalEnabled by remember { mutableStateOf(experimental) }
             LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
                 val updatedSettings = Settings(sharedPreferences)
+                experimentalEnabled = updatedSettings.experimental
                 if (updatedSettings.experimental != settings.experimental) {
                     servo.setExperimentalMode(updatedSettings.experimental)
                 }
                 settings = updatedSettings
+                experimental = updatedSettings.experimental
             }
 
-            val isWindowWidthAtLeastMedium =
-                currentWindowAdaptiveInfo()
-                    .windowSizeClass
-                    .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
-
             val servoFocusRequester = remember { FocusRequester() }
+            var menuExpanded by remember { mutableStateOf(false) }
+            var menuPage by remember { mutableStateOf(AppMenuPage.Root) }
+            fun closeMenu() {
+                menuExpanded = false
+                menuPage = AppMenuPage.Root
+            }
             Scaffold(
                 topBar = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (isWindowWidthAtLeastMedium) {
-                            IconButton(
-                                onClick = { onHistoryBackMenuItemClicked(navigator) },
-                                enabled = navigator.canGoBack,
-                            ) {
-                                Icon(
-                                    painterResource(R.drawable.arrow_back),
-                                    stringResource(R.string.history_back),
-                                )
-                            }
-                            IconButton(
-                                onClick = { onHistoryForwardMenuItemClicked(navigator) },
-                                enabled = navigator.canGoForward,
-                            ) {
-                                Icon(
-                                    painterResource(R.drawable.arrow_forward),
-                                    stringResource(R.string.history_forward),
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    if (isRefreshing) onCancelMenuItemClicked(navigator)
-                                    else onRefreshMenuItemClicked(navigator)
-                                }
-                            ) {
-                                if (isRefreshing) {
-                                    Icon(
-                                        painterResource(R.drawable.cancel),
-                                        stringResource(R.string.cancel),
-                                    )
-                                } else {
-                                    Icon(
-                                        painterResource(R.drawable.refresh),
-                                        stringResource(R.string.refresh),
-                                    )
-                                }
-                            }
+                        IconButton(onClick = { navigator.navigate(homeUrl()) }) {
+                            Icon(painterResource(R.drawable.home), stringResource(R.string.home))
                         }
                         Omnibox(
                             urlTextFieldState,
@@ -177,75 +152,68 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 modifier = Modifier.padding(end = 10.dp).size(20.dp)
                             )
                         }
-                        if (isWindowWidthAtLeastMedium) {
-                            IconButton(onClick = ::onSettingsMenuItemClicked) {
-                                Icon(
-                                    painterResource(R.drawable.settings),
-                                    stringResource(R.string.options),
-                                )
-                            }
+                        Box {
                             IconButton(
                                 onClick = {
-                                    onHistoryMenuItemClicked(historyActivityResultLauncher)
+                                    menuPage = AppMenuPage.Root
+                                    menuExpanded = true
                                 }
                             ) {
                                 Icon(
-                                    painterResource(R.drawable.history),
-                                    stringResource(R.string.history_title),
+                                    painterResource(R.drawable.menu),
+                                    stringResource(R.string.menu),
                                 )
                             }
-                        }
-                    }
-                },
-                bottomBar = {
-                    if (!isWindowWidthAtLeastMedium) {
-                        NavigationBar {
-                            NavigationBarItem(
-                                selected = false,
-                                enabled = navigator.canGoBack,
-                                onClick = { onHistoryBackMenuItemClicked(navigator) },
-                                icon = { Icon(painterResource(R.drawable.arrow_back), null) },
-                                label = { Text(stringResource(R.string.history_back)) },
-                            )
-                            NavigationBarItem(
-                                selected = false,
-                                enabled = navigator.canGoForward,
-                                onClick = { onHistoryForwardMenuItemClicked(navigator) },
-                                icon = { Icon(painterResource(R.drawable.arrow_forward), null) },
-                                label = { Text(stringResource(R.string.history_forward)) },
-                            )
-                            if (isRefreshing) {
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { onCancelMenuItemClicked(navigator) },
-                                    icon = { Icon(painterResource(R.drawable.cancel), null) },
-                                    label = { Text(stringResource(R.string.cancel)) },
-                                )
-                            } else {
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { onRefreshMenuItemClicked(navigator) },
-                                    icon = { Icon(painterResource(R.drawable.refresh), null) },
-                                    label = { Text(stringResource(R.string.refresh)) },
-                                )
-                            }
-                            NavigationBarItem(
-                                selected = false,
-                                onClick = ::onSettingsMenuItemClicked,
-                                icon = { Icon(painterResource(R.drawable.settings), null) },
-                                label = { Text(stringResource(R.string.options)) },
-                            )
-                            NavigationBarItem(
-                                selected = false,
-                                onClick = {
+                            AppMenu(
+                                expanded = menuExpanded,
+                                page = menuPage,
+                                onDismiss = ::closeMenu,
+                                onPageChange = { menuPage = it },
+                                canGoBack = navigator.canGoBack,
+                                canGoForward = navigator.canGoForward,
+                                isRefreshing = isRefreshing,
+                                onBack = {
+                                    closeMenu()
+                                    onHistoryBackMenuItemClicked(navigator)
+                                },
+                                onForward = {
+                                    closeMenu()
+                                    onHistoryForwardMenuItemClicked(navigator)
+                                },
+                                onRefresh = {
+                                    closeMenu()
+                                    if (isRefreshing) onCancelMenuItemClicked(navigator)
+                                    else onRefreshMenuItemClicked(navigator)
+                                },
+                                onNewTab = {
+                                    closeMenu()
+                                    navigator.navigate("about:blank")
+                                },
+                                onHistory = {
+                                    closeMenu()
                                     onHistoryMenuItemClicked(historyActivityResultLauncher)
                                 },
-                                icon = { Icon(painterResource(R.drawable.history), null) },
-                                label = { Text(stringResource(R.string.history_title)) },
+                                onSettings = {
+                                    closeMenu()
+                                    onSettingsMenuItemClicked()
+                                },
+                                experimental = experimentalEnabled,
+                                onExperimentalChange = { enabled ->
+                                    experimentalEnabled = enabled
+                                    experimental = enabled
+                                    settings.experimental = enabled
+                                    sharedPreferences.edit { putBoolean("experimental", enabled) }
+                                    servo.setExperimentalMode(enabled)
+                                    navigator.reload()
+                                },
+                                onExit = {
+                                    closeMenu()
+                                    finish()
+                                },
                             )
                         }
                     }
-                },
+                }
             ) { innerPadding ->
                 Servo(
                     softKeyboardVisible = softKeyboardVisible,
@@ -253,7 +221,14 @@ class MainActivity : ComponentActivity(), Servo.Client {
                     navigator = navigator,
                     modifier = Modifier.padding(innerPadding).focusRequester(servoFocusRequester),
                 )
-                BackHandler(enabled = navigator.canGoBack) { navigator.back() }
+                BackHandler(enabled = menuExpanded || navigator.canGoBack) {
+                    when {
+                        menuExpanded && menuPage == AppMenuPage.MoreTools ->
+                            menuPage = AppMenuPage.Root
+                        menuExpanded -> closeMenu()
+                        else -> navigator.back()
+                    }
+                }
                 LaunchedEffect(servoFocusRequester) { servoFocusRequester.requestFocus() }
                 alertMessage?.let { alertMessage ->
                     AlertDialog(
@@ -381,6 +356,140 @@ class MainActivity : ComponentActivity(), Servo.Client {
     companion object {
         private const val TAG = "MainActivity"
     }
+}
+
+/** Same pages as the desktop hamburger menu in `ports/aether/desktop/menu.rs`. */
+private enum class AppMenuPage {
+    Root,
+    MoreTools,
+}
+
+@Composable
+private fun AppMenu(
+    expanded: Boolean,
+    page: AppMenuPage,
+    onDismiss: () -> Unit,
+    onPageChange: (AppMenuPage) -> Unit,
+    canGoBack: Boolean,
+    canGoForward: Boolean,
+    isRefreshing: Boolean,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    onRefresh: () -> Unit,
+    onNewTab: () -> Unit,
+    onHistory: () -> Unit,
+    onSettings: () -> Unit,
+    experimental: Boolean,
+    onExperimentalChange: (Boolean) -> Unit,
+    onExit: () -> Unit,
+) {
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier.width(280.dp),
+    ) {
+        when (page) {
+            AppMenuPage.Root -> {
+                AppMenuItem(
+                    label = stringResource(R.string.history_back),
+                    enabled = canGoBack,
+                    onClick = onBack,
+                    leading = { Icon(painterResource(R.drawable.arrow_back), null) },
+                )
+                AppMenuItem(
+                    label = stringResource(R.string.history_forward),
+                    enabled = canGoForward,
+                    onClick = onForward,
+                    leading = { Icon(painterResource(R.drawable.arrow_forward), null) },
+                )
+                AppMenuItem(
+                    label = stringResource(if (isRefreshing) R.string.cancel else R.string.refresh),
+                    onClick = onRefresh,
+                    leading = {
+                        Icon(
+                            painterResource(
+                                if (isRefreshing) R.drawable.cancel else R.drawable.refresh
+                            ),
+                            null,
+                        )
+                    },
+                )
+                HorizontalDivider()
+                AppMenuItem(stringResource(R.string.new_tab), onClick = onNewTab)
+                // One WebView per activity; a second window is not supported yet.
+                AppMenuItem(stringResource(R.string.new_window), enabled = false, onClick = {})
+                AppMenuItem(stringResource(R.string.history_title), onClick = onHistory)
+                AppMenuItem(stringResource(R.string.settings_title), onClick = onSettings)
+                AppMenuItem(
+                    label = stringResource(R.string.settings_experimental_title),
+                    onClick = { onExperimentalChange(!experimental) },
+                    trailing = { Switch(checked = experimental, onCheckedChange = null) },
+                )
+                AppMenuItem(
+                    label = stringResource(R.string.more_tools),
+                    onClick = { onPageChange(AppMenuPage.MoreTools) },
+                    trailing = { Icon(painterResource(R.drawable.arrow_forward), null) },
+                )
+                HorizontalDivider()
+                AppMenuItem(stringResource(R.string.exit), onClick = onExit)
+            }
+            AppMenuPage.MoreTools -> {
+                AppMenuItem(
+                    label = stringResource(R.string.more_tools),
+                    onClick = { onPageChange(AppMenuPage.Root) },
+                    leading = {
+                        Icon(
+                            painterResource(R.drawable.arrow_back),
+                            stringResource(R.string.history_back),
+                        )
+                    },
+                )
+                // No developer-tools dock, process page, or view-source handler on Android yet.
+                AppMenuItem(
+                    stringResource(R.string.developer_tools),
+                    enabled = false,
+                    onClick = {},
+                )
+                AppMenuItem(stringResource(R.string.processes), enabled = false, onClick = {})
+                AppMenuItem(
+                    stringResource(R.string.view_page_source),
+                    enabled = false,
+                    onClick = {},
+                )
+            }
+        }
+    }
+}
+
+private fun homeUrl(): String {
+    val value =
+        try {
+            JSONObject(BrowserSettings().home())
+        } catch (_: Exception) {
+            return "about:blank"
+        }
+    return when (value.optString("newWindows", "home")) {
+        "blank" -> "about:blank"
+        "url" -> value.optString("homepage").ifBlank { "about:blank" }
+        else -> "servo:newtab"
+    }
+}
+
+@Composable
+private fun AppMenuItem(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    leading: (@Composable () -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        onClick = onClick,
+        enabled = enabled,
+        leadingIcon = leading,
+        trailingIcon = trailing,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

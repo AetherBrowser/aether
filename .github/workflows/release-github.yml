@@ -148,7 +148,7 @@ jobs:
       - upload-artifacts-release
       # Add all build-* jobs here, so that the we take the `Publish release (failure)` branch, if
       # any of the build jobs failed.
-      # - build-android
+      - build-android
       - build-linux
       - build-linux-arm64
       - build-mac
@@ -222,7 +222,7 @@ jobs:
       - build-mac-arm64
       - build-linux
       - build-linux-arm64
-      # - build-android
+      - build-android
       - build-ohos
     strategy: &upload-artifacts-strategy
       fail-fast: false
@@ -238,8 +238,8 @@ jobs:
             artifact_platform: linux
           - artifact_ids: ${{ needs.build-linux-arm64.outputs.artifact_ids }}
             artifact_platform: linux-arm64
-          # - artifact_ids: ${{ needs.build-android.outputs.artifact_ids }}
-          #   artifact_platform: android
+          - artifact_ids: ${{ needs.build-android.outputs.artifact_ids }}
+            artifact_platform: android
           - artifact_ids: ${{ needs.build-ohos.outputs.artifact_ids }}
             artifact_platform: ohos
     env:
@@ -350,16 +350,16 @@ jobs:
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
       release-tag: ${{ needs.resolve-tag.outputs.name }}
 
-  # build-android:
-  #   # This job is only useful when run on upstream aether.
-  #   needs: resolve-tag
-  #   if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-  #   name: Build release (Android)
-  #   uses: ./.github/workflows/android.yml
-  #   with:
-  #     profile: "production"
-  #     release-tag: ${{ needs.resolve-tag.outputs.name }}
-  #   secrets: inherit
+  build-android:
+    # This job is only useful when run on upstream aether.
+    needs: resolve-tag
+    if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
+    name: Build release (Android)
+    uses: ./.github/workflows/android.yml
+    with:
+      profile: "production"
+      release-tag: ${{ needs.resolve-tag.outputs.name }}
+    secrets: inherit
 
   build-ohos:
     # This job is only useful when run on upstream aether.

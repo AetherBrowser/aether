@@ -1,0 +1,57 @@
+<resources>
+  <string name="app_name">Aether</string>
+  <string name="back">Back</string>
+  <string name="media_channel_name">AetherMedia</string>
+  <string name="media_channel_description">Notification channel for multimedia activity</string>
+  <string name="history_back">Back</string>
+  <string name="history_forward">Forward</string>
+  <string name="options">Options</string>
+  <string name="menu">Menu</string>
+  <string name="home">Home</string>
+  <string name="new_tab">New Tab</string>
+  <string name="new_window">New Window</string>
+  <string name="more_tools">More Tools</string>
+  <string name="developer_tools">Developer Tools</string>
+  <string name="processes">Processes</string>
+  <string name="view_page_source">View Page Source</string>
+  <string name="exit">Exit</string>
+  <string name="url_or_search">URL or Search</string>
+  <string name="refresh">Refresh</string>
+  <string name="cancel">Cancel</string>
+  
+  <!-- Settings -->
+  <string name="settings_title">Settings</string>
+  <string name="settings_experimental_title">Experimental features</string>
+  <string name="settings_experimental_summary">Enable experimental web platform features</string>
+  <string name="settings_home">Home and startup</string>
+  <string name="settings_homepage">Homepage</string>
+  <string name="settings_new_windows">New windows</string>
+  <string name="settings_new_tabs">New tabs</string>
+  <string name="settings_aether_home">Aether home page</string>
+  <string name="settings_blank_page">Blank page</string>
+  <string name="settings_url">URL</string>
+  <string name="settings_search_box">Search</string>
+  <string name="settings_logo">Aether logo</string>
+  <string name="settings_search">Search</string>
+  <string name="settings_default_engine">Default search engine</string>
+  <string name="settings_configured_engines">Configured search engines</string>
+  <string name="settings_add_engine">Add a search engine</string>
+  <string name="settings_add_engine_hint">Use %s where the search terms should go.</string>
+  <string name="settings_engine_name">Name</string>
+  <string name="settings_engine_url">Search URL</string>
+  <string name="settings_add">Add</string>
+  <string name="settings_remove">Remove</string>
+  <string name="settings_builtin_engines">Built-in engines</string>
+  <string name="settings_downloads">Downloads</string>
+  <string name="settings_appearance">Appearance</string>
+  <string name="settings_about">About</string>
+  <string name="settings_version">Version</string>
+  <string name="settings_channel">Channel</string>
+  <string name="settings_architecture">Architecture</string>
+  
+  <!-- History -->
+  <string name="history_title">History</string>
+  <string name="history_placeholder_title">History</string>
+  <string name="history_placeholder_message">Your browsing history is empty</string>
+  <string name="clear_history">Clear History</string>
+</resources>
