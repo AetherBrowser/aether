@@ -16,12 +16,13 @@
 //! - servo:home
 //! - servo:about
 //! - servo:search-engines
+//! - servo:history-data
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 
-use headers::{ContentType, HeaderMapExt};
+use headers::{ContentType, HeaderMapExt, HeaderName, HeaderValue};
 use servo::UserAgentPlatform;
 use servo::protocol_handler::{
     DoneChannel, FetchContext, NetworkError, Origin, ProtocolHandler, Referrer, Request,
@@ -30,16 +31,19 @@ use servo::protocol_handler::{
 
 use crate::desktop::protocols::processes::ProcessSampler;
 use crate::desktop::protocols::resource::ResourceProtocolHandler;
+use crate::history::HistoryPage;
 use crate::prefs::EXPERIMENTAL_PREFS;
 
 pub struct ServoProtocolHandler {
     process_sampler: Mutex<ProcessSampler>,
+    history_page: Mutex<HistoryPage>,
 }
 
-impl Default for ServoProtocolHandler {
-    fn default() -> Self {
+impl ServoProtocolHandler {
+    pub fn new(history_page: HistoryPage) -> Self {
         Self {
             process_sampler: Mutex::new(ProcessSampler::default()),
+            history_page: Mutex::new(history_page),
         }
     }
 }
@@ -62,53 +66,18 @@ impl ProtocolHandler for ServoProtocolHandler {
         let url = request.current_url();
 
         match url.path() {
-            "config" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/config.html",
-            ),
-            "newtab" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/newtab.html",
-            ),
+            "config" => page_response(request, done_chan, context, "/config.html"),
+            "newtab" => page_response(request, done_chan, context, "/newtab.html"),
 
-            "preferences" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/preferences.html",
-            ),
+            "preferences" => page_response(request, done_chan, context, "/preferences.html"),
 
-            "license" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/license.html",
-            ),
+            "license" => page_response(request, done_chan, context, "/license.html"),
 
-            "processes" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/processes.html",
-            ),
+            "processes" => page_response(request, done_chan, context, "/processes.html"),
 
-            "history" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/history.html",
-            ),
+            "history" => page_response(request, done_chan, context, "/history.html"),
 
-            "settings" => ResourceProtocolHandler::response_for_path(
-                request,
-                done_chan,
-                context,
-                "/settings.html",
-            ),
+            "settings" => page_response(request, done_chan, context, "/settings.html"),
 
             // Internal JSON used by `settings.html` and `newtab.html`. A
             // navigation would show that JSON to the user. Web pages can also
@@ -137,6 +106,17 @@ impl ProtocolHandler for ServoProtocolHandler {
                     request,
                     crate::search::handle_search_engines_request(url.query()),
                 )
+            },
+
+            "history-data" => {
+                if internal_endpoint_is_hidden(request) || !request_is_from_history_page(request) {
+                    return forbidden_response();
+                }
+                let body = match self.history_page.lock() {
+                    Ok(mut page) => page.handle_request(url.query()),
+                    Err(poisoned) => poisoned.into_inner().handle_request(url.query()),
+                };
+                json_response(request, body)
             },
 
             "process-list" => {
@@ -198,6 +178,35 @@ fn is_settings_page_url(url: &url::Url) -> bool {
     url.scheme() == "servo" && url.path() == "settings"
 }
 
+fn request_is_from_history_page(request: &Request) -> bool {
+    request
+        .source_document_url
+        .as_ref()
+        .is_some_and(|url| is_history_page_url(url.as_url()))
+}
+
+fn is_history_page_url(url: &url::Url) -> bool {
+    url.scheme() == "servo" && url.path() == "history"
+}
+
+/// Loads an internal page, which web pages cannot show in a frame.
+fn page_response(
+    request: &mut Request,
+    done_chan: &mut DoneChannel,
+    context: &FetchContext,
+    path: &str,
+) -> Pin<Box<dyn Future<Output = Response> + Send>> {
+    let response = ResourceProtocolHandler::response_for_path(request, done_chan, context, path);
+    Box::pin(async move {
+        let mut response = response.await;
+        response.headers.insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        );
+        response
+    })
+}
+
 fn forbidden_response() -> Pin<Box<dyn Future<Output = Response> + Send>> {
     Box::pin(std::future::ready(Response::network_error(
         NetworkError::ResourceLoadError("Forbidden".to_owned()),
@@ -237,7 +246,7 @@ fn json_response(
 mod tests {
     use url::Url;
 
-    use super::is_settings_page_url;
+    use super::{is_history_page_url, is_settings_page_url};
 
     #[test]
     fn settings_page_url_is_the_settings_path() {
@@ -249,5 +258,16 @@ mod tests {
 
         let file = Url::parse("file:///tmp/page.html").unwrap();
         assert!(!is_settings_page_url(&file));
+    }
+
+    #[test]
+    fn history_page_url_is_the_history_path() {
+        assert!(is_history_page_url(&Url::parse("servo:history").unwrap()));
+        assert!(!is_history_page_url(
+            &Url::parse("servo:history-data").unwrap()
+        ));
+        assert!(!is_history_page_url(
+            &Url::parse("https://example.com/history").unwrap()
+        ));
     }
 }

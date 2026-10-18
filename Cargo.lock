@@ -234,6 +234,7 @@ dependencies = [
  "servo-webdriver-server",
  "signal-hook-registry",
  "surfman",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-perfetto",

@@ -69,6 +69,7 @@ impl HistoryStore {
 
     fn new(mut connection: Connection) -> rusqlite::Result<Self> {
         connection.pragma_update(None, "foreign_keys", true)?;
+        connection.pragma_update(None, "secure_delete", true)?;
         migrate(&mut connection)?;
         Ok(Self { connection })
     }
@@ -111,6 +112,33 @@ impl HistoryStore {
         }
         transaction.commit()
     }
+
+    /// Deletes the visits before `date`, and the places left without visits.
+    pub(crate) fn delete_visits_before(&mut self, date: SystemTime) -> rusqlite::Result<()> {
+        self.delete_visits("DELETE FROM visits WHERE visit_date < ?1", date)
+    }
+
+    /// Deletes the visits at or after `date`, and the places left without visits.
+    pub(crate) fn delete_visits_since(&mut self, date: SystemTime) -> rusqlite::Result<()> {
+        self.delete_visits("DELETE FROM visits WHERE visit_date >= ?1", date)
+    }
+
+    /// Also erases the deleted rows from the database files, so that they cannot be read back.
+    fn delete_visits(&mut self, statement: &str, date: SystemTime) -> rusqlite::Result<()> {
+        let transaction = self.connection.transaction()?;
+        let deleted = transaction.execute(statement, [microseconds_since_epoch(date)])?;
+        if deleted == 0 {
+            return Ok(());
+        }
+        transaction.execute(
+            "DELETE FROM places
+             WHERE NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
+            [],
+        )?;
+        transaction.commit()?;
+        self.connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+    }
 }
 
 fn record_visit(
@@ -146,9 +174,6 @@ fn replace_visit(
     let old_url = stored_url(old_url);
     let new_url = new_url.map(stored_url);
     let visit_date = microseconds_since_epoch(visit_date);
-    if let Some(new_url) = &new_url {
-        insert_place(connection, new_url, title)?;
-    }
     let visit_id: Option<i64> = connection
         .query_row(
             "SELECT visits.id FROM visits JOIN places ON places.id = visits.place_id
@@ -158,19 +183,18 @@ fn replace_visit(
             |row| row.get(0),
         )
         .optional()?;
-    match (visit_id, &new_url) {
-        (Some(visit_id), Some(new_url)) => connection.execute(
-            "UPDATE visits SET place_id = (SELECT id FROM places WHERE url = ?1) WHERE id = ?2",
-            params![new_url, visit_id],
-        )?,
-        (Some(visit_id), None) => {
-            connection.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?
+    let Some(visit_id) = visit_id else {
+        return Ok(());
+    };
+    match &new_url {
+        Some(new_url) => {
+            insert_place(connection, new_url, title)?;
+            connection.execute(
+                "UPDATE visits SET place_id = (SELECT id FROM places WHERE url = ?1) WHERE id = ?2",
+                params![new_url, visit_id],
+            )?
         },
-        (None, Some(new_url)) => connection.execute(
-            "INSERT INTO visits (place_id, visit_date) SELECT id, ?2 FROM places WHERE url = ?1",
-            params![new_url, visit_date],
-        )?,
-        (None, None) => 0,
+        None => connection.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?,
     };
     connection.execute(
         "DELETE FROM places WHERE url = ?1
@@ -224,6 +248,8 @@ fn microseconds_since_epoch(time: SystemTime) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use rusqlite::Connection;
@@ -628,18 +654,98 @@ mod tests {
     }
 
     #[test]
-    fn a_visit_that_was_not_written_is_given_to_the_new_url() {
+    fn visits_before_a_date_are_deleted_with_their_places() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let servo = Url::parse("https://servo.org/").unwrap();
+        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+        let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
+        store.record_visit(&servo, date(1), Some("Servo")).unwrap();
+        store.record_visit(&rust, date(2), Some("Rust")).unwrap();
+        store.record_visit(&servo, date(3), None).unwrap();
+
+        store.delete_visits_before(date(3)).unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://servo.org/".to_owned(), 3)]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn visits_since_a_date_are_deleted_with_their_places() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let servo = Url::parse("https://servo.org/").unwrap();
+        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+        let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
+        store.record_visit(&servo, date(1), Some("Servo")).unwrap();
+        store.record_visit(&rust, date(2), Some("Rust")).unwrap();
+        store.record_visit(&servo, date(3), None).unwrap();
+
+        store.delete_visits_since(date(2)).unwrap();
+
+        assert_eq!(
+            visits(&store.connection),
+            [("https://servo.org/".to_owned(), 1)]
+        );
+        assert_eq!(
+            titles(&store.connection),
+            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+        );
+    }
+
+    #[test]
+    fn visits_dated_before_the_epoch_are_deleted_with_all_visits() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let url = Url::parse("https://servo.org/").unwrap();
+        store
+            .record_visit(&url, UNIX_EPOCH - Duration::from_secs(1), None)
+            .unwrap();
+
+        store.delete_visits_since(UNIX_EPOCH).unwrap();
+
+        assert!(visits(&store.connection).is_empty());
+    }
+
+    fn files_contain(directory: &Path, text: &str) -> bool {
+        ["places.sqlite", "places.sqlite-wal"].iter().any(|file| {
+            fs::read(directory.join(file))
+                .unwrap_or_default()
+                .windows(text.len())
+                .any(|bytes| bytes == text.as_bytes())
+        })
+    }
+
+    #[test]
+    fn deleted_urls_and_titles_are_erased_from_the_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = HistoryStore::open(&directory.path().join("places.sqlite")).unwrap();
+        let url = Url::parse("https://very-secret.example/page").unwrap();
+        store
+            .record_visit(&url, UNIX_EPOCH, Some("Very secret title"))
+            .unwrap();
+        assert!(files_contain(directory.path(), "very-secret.example"));
+
+        store.delete_visits_since(UNIX_EPOCH).unwrap();
+
+        assert!(!files_contain(directory.path(), "very-secret.example"));
+        assert!(!files_contain(directory.path(), "Very secret title"));
+    }
+
+    #[test]
+    fn a_visit_that_no_longer_exists_is_not_recreated_by_its_replacement() {
         let mut store = HistoryStore::open_in_memory().unwrap();
         let old_url = Url::parse("https://servo.org/").unwrap();
         let new_url = Url::parse("https://servo.org/blog").unwrap();
 
         store
-            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url), None)
+            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url), Some("Blog"))
             .unwrap();
 
-        assert_eq!(
-            visits(&store.connection),
-            [("https://servo.org/blog".to_owned(), 0)]
-        );
+        assert!(visits(&store.connection).is_empty());
+        assert!(titles(&store.connection).is_empty());
     }
 }
