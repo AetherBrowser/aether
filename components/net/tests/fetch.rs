@@ -757,8 +757,8 @@ fn test_fetch_with_local_urls_only() {
 // NOTE(emilio): If this test starts failing:
 //
 // openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-//   -keyout resources/privatekey_for_testing.key       \
-//   -out resources/self_signed_certificate_for_testing.crt
+//   -keyout components/net/tests/privatekey_for_testing.key         \
+//   -out components/net/tests/self_signed_certificate_for_testing.crt
 //
 // And make sure to specify `localhost` as the server name.
 #[test]
@@ -1538,7 +1538,7 @@ fn test_fetch_request_intercepted() {
                     HeaderValue::from_static(HEADERVALUE),
                 );
                 let response =
-                    embedder_traits::WebResourceResponse::new(web_resource_request.url.clone())
+                    embedder_traits::WebResourceResponse::new(web_resource_request.url.into_url())
                         .headers(headers)
                         .status_code(StatusCode::FOUND)
                         .status_message(STATUS_MESSAGE.to_vec());

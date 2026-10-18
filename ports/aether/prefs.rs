@@ -24,6 +24,8 @@ use servo::{
 };
 use url::Url;
 
+use crate::home::{HomeSettings, load_home_settings};
+use crate::search::{SearchEngines, load_search_engines};
 use crate::version;
 
 /// Preferences enabled when servoshell is launched with the `--enable-experimental-web-platform-features` flag.
@@ -45,12 +47,10 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[
     "dom_storage_manager_api_enabled",
     "dom_webgl2_enabled",
     "dom_webgpu_enabled",
-    "layout_css_alpha_color_function_enabled",
+    "layout_css_columns_enabled",
+    "layout_css_container_queries_enabled",
     "layout_css_ellipse_corners_enabled",
-    "layout_css_progress_function_enabled",
-    "layout_columns_enabled",
-    "layout_container_queries_enabled",
-    "layout_variable_fonts_enabled",
+    "layout_css_font_variations_enabled",
 ];
 
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
@@ -64,11 +64,19 @@ pub(crate) struct ServoShellPreferences {
     pub clean_shutdown: bool,
     /// Enable native window's titlebar and decorations.
     pub no_native_titlebar: bool,
-    /// URL string of the homepage.
+    /// URL opened for a new window when the command line does not pass one.
+    ///
+    /// Resolved from [`Self::home_settings`]: the Aether home page, a custom URL,
+    /// or `about:blank`.
     pub homepage: String,
-    /// URL string of the search engine page with '%s' standing in for the search term.
-    /// For example <https://duckduckgo.com/html/?q=%s>.
-    pub searchpage: String,
+    /// Homepage, new-tab, and Aether home page preferences from `home.json`.
+    pub home_settings: HomeSettings,
+    /// Configured search engines: the default, the others, and any the user added.
+    ///
+    /// Loaded from `search.json` in the config directory. Without that file, this is
+    /// the built-in list and DuckDuckGo stays the default. The location bar uses
+    /// [`SearchEngines::default_engine`]'s URL template (`%s` stands in for the query).
+    pub search_engines: SearchEngines,
     /// Whether or not to run servoshell in headless mode. While running in headless
     /// mode, image output is supported.
     pub headless: bool,
@@ -106,6 +114,9 @@ pub(crate) struct ServoShellPreferences {
     /// Log also to a file
     #[cfg(target_env = "ohos")]
     pub log_to_file: bool,
+    /// Enable memory output if tracing is enabled.
+    #[allow(unused)]
+    pub memory_output: bool,
 }
 
 impl Default for ServoShellPreferences {
@@ -114,12 +125,13 @@ impl Default for ServoShellPreferences {
             clean_shutdown: false,
             device_pixel_ratio_override: None,
             headless: false,
-            homepage: "https://servo.org".into(),
+            homepage: HomeSettings::default().new_window_url(),
+            home_settings: HomeSettings::default(),
             initial_window_size: Size2D::new(1024, 740),
             no_native_titlebar: true,
             screen_size_override: None,
             simulate_touch_events: false,
-            searchpage: "https://duckduckgo.com/html/?q=%s".into(),
+            search_engines: SearchEngines::builtin(),
             tracing_filter: None,
             url: None,
             output_image_path: None,
@@ -132,6 +144,7 @@ impl Default for ServoShellPreferences {
             #[cfg(target_env = "ohos")]
             log_to_file: false,
             experimental_preferences_enabled: false,
+            memory_output: false,
         }
     }
 }
@@ -145,7 +158,7 @@ impl Default for ServoShellPreferences {
 ))]
 pub fn default_config_dir() -> Option<PathBuf> {
     let mut config_dir = ::dirs::config_dir().unwrap();
-    config_dir.push("servo");
+    config_dir.push("aether");
     config_dir.push("default");
     Some(config_dir)
 }
@@ -163,14 +176,14 @@ pub fn default_config_dir() -> Option<PathBuf> {
     // FIXME: use `config_dir()` ($HOME/Library/Preferences)
     // instead of `data_dir()` ($HOME/Library/Application Support) ?
     let mut config_dir = ::dirs::data_dir().unwrap();
-    config_dir.push("Servo");
+    config_dir.push("Aether");
     Some(config_dir)
 }
 
 #[cfg(target_os = "windows")]
 pub fn default_config_dir() -> Option<PathBuf> {
     let mut config_dir = ::dirs::config_dir().unwrap();
-    config_dir.push("Servo");
+    config_dir.push("Aether");
     Some(config_dir)
 }
 
@@ -392,7 +405,7 @@ struct CmdArgs {
 
     ///
     ///  Config directory following xdg spec on linux platform.
-    #[bpaf(argument("~/.config/servo"))]
+    #[bpaf(argument("~/.config/aether"))]
     config_dir: Option<PathBuf>,
 
     ///
@@ -404,7 +417,7 @@ struct CmdArgs {
     ///  A comma-separated string of debug options. Pass help to show available options.
     #[bpaf(
         short('Z'),
-        argument("layout_grid_enabled=true,dom_async_clipboard_enabled"),
+        argument("style-tree,flow-tree"),
         long,
         map(map_debug_options),
         fallback(vec![])
@@ -470,6 +483,10 @@ struct CmdArgs {
     /// Also log to a file (/data/app/el2/100/base/org.servo.servo/cache/servo.log).
     #[bpaf(long)]
     log_to_file: bool,
+
+    /// Should we output memory stats after a page load. Only useful if tracing is enabled
+    #[bpaf(long)]
+    memory_output: bool,
 
     /// Run in multiprocess mode.
     #[bpaf(short('M'), long)]
@@ -575,8 +592,8 @@ struct CmdArgs {
     #[bpaf(long)]
     zealous_gc: bool,
 
-    /// The url we should load.
-    #[bpaf(positional("URL"), fallback(String::from("https://www.servo.org")))]
+    /// The url we should load. When omitted, the configured homepage is opened.
+    #[bpaf(positional("URL"), fallback(String::new()))]
     url: String,
 }
 
@@ -584,6 +601,7 @@ fn update_preferences_from_command_line_arguments(
     preferences: &mut Preferences,
     cmd_args: &CmdArgs,
 ) {
+    #[cfg(feature = "devtools")]
     if let Some(listen_address) = &cmd_args.devtools {
         preferences.devtools_server_enabled = true;
         preferences.devtools_server_listen_address = listen_address.clone();
@@ -705,12 +723,32 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
             default_window_size.min(screen_size_override)
         });
 
+    #[cfg(not(all(feature = "tracing", feature = "tracing-hitrace")))]
+    if cmd_args.memory_output {
+        log::error!("Memory reporting only works with tracing and tracing-hitrace enabled.");
+    }
+
+    // Argument-parsing tests must not depend on a search.json or home.json on this machine.
+    let search_engines = if cfg!(test) {
+        SearchEngines::builtin()
+    } else {
+        load_search_engines(config_dir.as_deref())
+    };
+    let home_settings = if cfg!(test) {
+        HomeSettings::default()
+    } else {
+        load_home_settings(config_dir.as_deref())
+    };
+
     let servoshell_preferences = ServoShellPreferences {
         url: Some(cmd_args.url),
+        homepage: home_settings.new_window_url(),
+        home_settings,
         no_native_titlebar: cmd_args.no_native_titlebar,
         device_pixel_ratio_override: cmd_args.device_pixel_ratio,
         clean_shutdown: cmd_args.clean_shutdown,
         headless: cmd_args.headless,
+        search_engines,
         tracing_filter: cmd_args.tracing_filter,
         initial_window_size: cmd_args.window_size.unwrap_or(default_window_size),
         screen_size_override: cmd_args.screen_size_override,
@@ -727,7 +765,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
         }),
         #[cfg(target_env = "ohos")]
         log_to_file: cmd_args.log_to_file,
-        ..Default::default()
+        memory_output: cmd_args.memory_output,
     };
 
     let Ok(debug_options) = parse_diagnostics_logging(cmd_args.debug) else {
@@ -860,7 +898,7 @@ fn test_invalid_prefs_from_command_line_panics() {
 #[test]
 fn test_create_prefs_map() {
     let json_str = "{
-        \"layout.writing-mode.enabled\": true,
+        \"layout.css.writing-mode.enabled\": true,
         \"network.mime.sniff\": false,
         \"shell.homepage\": \"https://servo.org\"
     }";

@@ -50,7 +50,7 @@ impl Callback for RepresentationDataPromiseFulfillmentHandler {
             // 1.1 Let dataAsBytes be the result of UTF-8 encoding v.
             let data_as_bytes = match DOMString::from_jsval(cx, v, StringificationBehavior::Default)
             {
-                Ok(ConversionResult::Success(s)) => s.as_bytes().to_owned(),
+                Ok(ConversionResult::Success(s)) => s.as_bytes(cx.no_gc()).to_owned(),
                 _ => return,
             };
 
@@ -275,7 +275,7 @@ impl ClipboardItemMethods<crate::DomTypeHolder> for ClipboardItem {
         let item_type_list = self.representations.borrow();
 
         // Step 7 Let p be a new promise in realm.
-        let p = Promise::new_in_realm_rooted(realm);
+        let p = Promise::new_in_realm(realm);
 
         // Step 8 For each representation in itemTypeList
         for representation in item_type_list.iter() {

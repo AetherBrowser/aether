@@ -15,7 +15,6 @@ use std::{cmp, fmt, iter};
 
 use app_units::Au;
 use bitflags::bitflags;
-use devtools_traits::NodeInfo;
 use dom_struct::dom_struct;
 use embedder_traits::{MouseButton, UntrustedNodeAddress};
 use euclid::default::Size2D;
@@ -35,7 +34,6 @@ use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::codegen::GenericBindings::ElementBinding::ElementMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::ProcessingInstructionBinding::ProcessingInstructionMethods;
-use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::codegen::InheritTypes::{DocumentFragmentTypeId, TextTypeId};
 use script_bindings::reflector::{
     DomObject, DomObjectWrap, WeakReferenceableDomObjectWrap, reflect_dom_object_with_proto,
@@ -43,8 +41,6 @@ use script_bindings::reflector::{
 };
 use script_traits::{DocumentActivity, MouseButtons};
 use servo_base::id::PipelineId;
-use servo_base::text::Utf32CodeUnitsOrNodeOffset;
-use servo_config::pref;
 use smallvec::SmallVec;
 use style::Atom;
 use style::context::QuirksMode;
@@ -55,11 +51,9 @@ use style_traits::CSSPixel;
 use uuid::Uuid;
 use xml5ever::{local_name, serialize as xml_serialize};
 
-use crate::conversions::Convert;
 use crate::dom::ChildrenMutation;
 use crate::dom::attr::Attr;
 use crate::dom::bindings::codegen::Bindings::AttrBinding::AttrMethods;
-use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLCollectionBinding::HTMLCollectionMethods;
@@ -104,7 +98,6 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmllinkelement::HTMLLinkElement;
 use crate::dom::html::htmlslotelement::{HTMLSlotElement, Slottable};
 use crate::dom::html::htmlstyleelement::HTMLStyleElement;
-use crate::dom::inputevent::HitTestResult;
 use crate::dom::iterators::{
     ShadowIncluding, UnrootedAncestorIterator, UnrootedFollowingFlatTreeNodesTraversal,
     UnrootedFollowingNodeIterator, UnrootedPrecedingNodeIterator,
@@ -120,15 +113,11 @@ use crate::dom::pointerevent::{PointerEvent, PointerId};
 use crate::dom::raredata::NodeRareData;
 use crate::dom::servoparser::html::HtmlSerialize;
 use crate::dom::servoparser::serialize_html_fragment;
-use crate::dom::shadowroot::{IsUserAgentWidget, ShadowRoot};
+use crate::dom::shadowroot::shadowroot::{IsUserAgentWidget, ShadowRoot};
 use crate::dom::text::Text;
 use crate::dom::traversal::LightDomNoGcTraversal;
-use crate::dom::types::{CDATASection, KeyboardEvent, MouseEvent, ProcessingInstruction};
+use crate::dom::types::{CDATASection, KeyboardEvent, ProcessingInstruction};
 use crate::dom::window::Window;
-use crate::drag::document_selection_drag::{
-    DocumentSelectionDragHandler, adjust_anchor_for_user_select,
-};
-use crate::drag::drag_gesture::{DragGesture, DragHandler};
 use crate::event_loop::document_loader::DocumentLoader;
 use crate::event_loop::script_thread::ScriptThread;
 use crate::layout_dom::{ServoDangerousStyleElement, ServoDangerousStyleNode};
@@ -394,7 +383,7 @@ impl Node {
             .union(NodeFlags::OVERLAPS_DOCUMENT_SELECTION)
             .union(NodeFlags::SELECTION_INHIBITED);
 
-        for node in root.traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::No) {
+        for node in root.traverse_preorder_unrooted(cx.no_gc(), ShadowIncluding::No) {
             node.set_flag(RESET_FLAGS | NodeFlags::IS_IN_SHADOW_TREE, false);
 
             // If the element has a shadow root attached to it then we traverse that as well,
@@ -402,7 +391,7 @@ impl Node {
             if let Some(shadow_root) = node.downcast::<Element>().and_then(Element::shadow_root) {
                 for node in shadow_root
                     .upcast::<Node>()
-                    .traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::Yes)
+                    .traverse_preorder_unrooted(cx.no_gc(), ShadowIncluding::Yes)
                 {
                     node.set_flag(RESET_FLAGS, false);
                 }
@@ -818,8 +807,8 @@ impl Node {
         }
     }
 
-    pub(crate) fn set_in_ua_widget(&self, in_ua_widget: bool) {
-        self.set_flag(NodeFlags::IS_IN_UA_WIDGET, in_ua_widget)
+    pub(crate) fn mark_in_ua_widget(&self) {
+        self.set_flag(NodeFlags::IS_IN_UA_WIDGET, true)
     }
 
     pub(crate) fn is_in_ua_widget(&self) -> bool {
@@ -951,7 +940,7 @@ impl Node {
 
     /// Iterates over this node and all its descendants, in preorder.
     /// We take &NoGC to prevent GC which allows us to avoid rooting.
-    pub(crate) fn traverse_preorder_non_rooting<'b>(
+    pub(crate) fn traverse_preorder_unrooted<'b>(
         &self,
         no_gc: &'b NoGC,
         shadow_including: ShadowIncluding,
@@ -1528,7 +1517,7 @@ impl Node {
 
         // Step 16. If node has an inclusive descendant that is a slot:
         let has_slot_descendant = node
-            .traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::No)
+            .traverse_preorder_unrooted(cx.no_gc(), ShadowIncluding::No)
             .any(|element| element.is::<HTMLSlotElement>());
         if has_slot_descendant {
             // Step 16.1. Run assign slottables for a tree with oldParent’s root.
@@ -1879,7 +1868,10 @@ impl Node {
         rare_data.unique_id.as_ref().unwrap().simple().to_string()
     }
 
-    pub(crate) fn summarize(&self, cx: &mut JSContext) -> NodeInfo {
+    #[cfg(feature = "devtools")]
+    pub(crate) fn summarize(&self, cx: &mut JSContext) -> devtools_traits::NodeInfo {
+        use crate::conversions::Convert;
+        use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
         let USVString(base_uri) = self.BaseURI();
         let node_type = self.NodeType();
         let pipeline = self.owner_window().pipeline_id();
@@ -1895,7 +1887,8 @@ impl Node {
             let Some(root) = potential_host.shadow_root() else {
                 return false;
             };
-            !root.is_user_agent_widget() || pref!(inspector_show_servo_internal_shadow_roots)
+            !root.is_user_agent_widget() ||
+                servo_config::pref!(inspector_show_servo_internal_shadow_roots)
         });
 
         let num_children = if is_shadow_host {
@@ -1920,7 +1913,7 @@ impl Node {
             element.is_none_or(|element| !element.is_display_none()) || self.is::<DocumentType>();
         let attrs = element.map(Element::summarize).unwrap_or_default();
 
-        NodeInfo {
+        devtools_traits::NodeInfo {
             unique_id: self.unique_id(pipeline),
             host,
             base_uri,
@@ -2118,7 +2111,7 @@ impl Node {
 
         // > To assign slottables for a tree, given a node root, run assign slottables for each slot
         // > slot in root’s inclusive descendants, in tree order.
-        for node in self.traverse_preorder_non_rooting(cx, ShadowIncluding::No) {
+        for node in self.traverse_preorder_unrooted(cx, ShadowIncluding::No) {
             if let Some(slot) = node.downcast::<HTMLSlotElement>() {
                 slot.assign_slottables(cx);
             }
@@ -2895,17 +2888,19 @@ impl Node {
         // 2) post_connection_steps from Node::insert,
         // we use a delayed task that will run as soon as Node::insert removes its
         // script/layout blocker.
-        parent_document.add_delayed_task(
-            task!(PostConnectionSteps: |cx, static_node_list: SmallVec<[DomRoot<Node>; 4]>| {
-                // Step 12. For each node of staticNodeList, if node is connected, then run the
-                //          post-connection steps with node.
-                //
-                // Note: We only add the nodes to the static_node_list which are connected.
-                for node in static_node_list {
-                    vtable_for(&node).post_connection_steps(cx);
-                }
-            }),
-        );
+        if !static_node_list.is_empty() {
+            parent_document.add_delayed_task(
+                task!(PostConnectionSteps: |cx, static_node_list: SmallVec<[DomRoot<Node>; 4]>| {
+                    // Step 12. For each node of staticNodeList, if node is connected, then run the
+                    //          post-connection steps with node.
+                    //
+                    // Note: We only add the nodes to the static_node_list which are connected.
+                    for node in static_node_list {
+                        vtable_for(&node).post_connection_steps(cx);
+                    }
+                }),
+            );
+        }
 
         parent_document.remove_script_and_layout_blocker(cx);
         from_document.remove_script_and_layout_blocker(cx);
@@ -3077,7 +3072,7 @@ impl Node {
 
         // Step 10. If node has an inclusive descendant that is a slot:
         let has_slot_descendant = node
-            .traverse_preorder_non_rooting(cx.no_gc(), ShadowIncluding::No)
+            .traverse_preorder_unrooted(cx.no_gc(), ShadowIncluding::No)
             .any(|elem| elem.is::<HTMLSlotElement>());
         if has_slot_descendant {
             // Step 10.1 Run assign slottables for a tree with parent’s root.
@@ -3190,7 +3185,6 @@ impl Node {
                     loader,
                     None,
                     document.status_code(),
-                    Default::default(),
                     false,
                     document.allow_declarative_shadow_roots(),
                     Some(document.insecure_requests_policy()),
@@ -4601,58 +4595,13 @@ impl VirtualMethods for Node {
             return;
         }
 
-        if let Some(event) = event.downcast::<KeyboardEvent>() {
+        if event.type_() == atom!("keydown") &&
+            let Some(event) = event.downcast::<KeyboardEvent>()
+        {
             self.owner_document()
                 .event_handler()
-                .run_default_keyboard_event_handler(cx, self, event);
+                .maybe_dispatch_simulated_click(cx, self, event);
         }
-    }
-
-    fn handle_mousedown_event(
-        &self,
-        cx: &mut JSContext,
-        event: &MouseEvent,
-        hit_test_result: &HitTestResult,
-    ) {
-        assert_eq!(event.upcast::<Event>().type_(), atom!("mousedown"));
-
-        let document = self.owner_document();
-        if event.button() == MouseButton::Auxiliary {
-            let Some(selection) = document.selection() else {
-                return;
-            };
-            let _ = selection.Collapse(cx, None, 0);
-            event.upcast::<Event>().mark_as_handled();
-            return;
-        }
-
-        if event.button() != MouseButton::Primary {
-            return;
-        }
-        let Some(selection) = document.GetSelection(cx) else {
-            return;
-        };
-
-        // When the hit test cannot find a suitable DOM position for selection, just
-        // use the first offset within the target node of the `mousedown` event. This
-        // is a reasonable place to start the selection from.
-        let (container, offset) = hit_test_result
-            .dom_position_for_selection
-            .as_ref()
-            .map(|(node, offset)| (node, *offset))
-            .unwrap_or((&hit_test_result.node, Utf32CodeUnitsOrNodeOffset(0)));
-        let Some((container, offset, user_select_contain_node)) =
-            adjust_anchor_for_user_select(cx, container.clone(), offset)
-        else {
-            return;
-        };
-        selection.collapse_to_dom_position(cx, &container, offset);
-        document
-            .event_handler()
-            .install_drag_gesture(DragGesture::new(DragHandler::DocumentSelection(
-                DocumentSelectionDragHandler::new(user_select_contain_node.as_deref()),
-            )));
-        event.upcast::<Event>().mark_as_handled();
     }
 }
 

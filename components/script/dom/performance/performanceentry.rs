@@ -4,6 +4,8 @@
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
+use script_bindings::inheritance::Castable;
+use script_bindings::num::Finite;
 use script_bindings::reflector::Reflector;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use strum::VariantArray;
@@ -12,12 +14,15 @@ use time::Duration;
 use super::performance::ToDOMHighResTimeStamp;
 use crate::dom::bindings::codegen::Bindings::PerformanceBinding::DOMHighResTimeStamp;
 use crate::dom::bindings::codegen::Bindings::PerformanceEntryBinding::PerformanceEntryMethods;
+use crate::dom::bindings::codegen::Bindings::PerformanceResourceTimingBinding::PerformanceResourceTimingMethods;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::str::DOMString;
+use crate::dom::performance::performanceresourcetiming::PerformanceResourceTiming;
 
 /// All supported entry types, in alphabetical order.
 #[derive(Clone, Copy, JSTraceable, MallocSizeOf, PartialEq, VariantArray)]
 pub(crate) enum EntryType {
+    ContainerTiming,
     LargestContentfulPaint,
     Mark,
     Measure,
@@ -30,6 +35,7 @@ pub(crate) enum EntryType {
 impl EntryType {
     pub(crate) fn as_str(&self) -> &'static str {
         match self {
+            EntryType::ContainerTiming => "container",
             EntryType::Measure => "measure",
             EntryType::Mark => "mark",
             EntryType::LargestContentfulPaint => "largest-contentful-paint",
@@ -46,6 +52,7 @@ impl<'a> TryFrom<&'a str> for EntryType {
 
     fn try_from(value: &'a str) -> Result<EntryType, ()> {
         Ok(match value {
+            "container" => EntryType::ContainerTiming,
             "measure" => EntryType::Measure,
             "mark" => EntryType::Mark,
             "largest-contentful-paint" => EntryType::LargestContentfulPaint,
@@ -133,7 +140,12 @@ impl PerformanceEntryMethods<crate::DomTypeHolder> for PerformanceEntry {
     }
 
     /// <https://w3c.github.io/performance-timeline/#dom-performanceentry-duration>
-    fn Duration(&self) -> DOMHighResTimeStamp {
-        self.duration.to_dom_high_res_time_stamp()
+    fn Duration(&self, cx: &mut JSContext) -> DOMHighResTimeStamp {
+        if let Some(resource_timing) = self.downcast::<PerformanceResourceTiming>() {
+            Finite::new(*resource_timing.ResponseEnd(cx) - *self.StartTime(cx))
+                .unwrap_or(Finite::default())
+        } else {
+            self.duration.to_dom_high_res_time_stamp()
+        }
     }
 }

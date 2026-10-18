@@ -28,5 +28,13 @@ name = "mpv_spike"
 path = "examples/mpv_spike/main.rs"
 required-features = ["mpv"]
 
+[features]
+mpv = []
+
+[[example]]
+name = "mpv_spike_ffi"
+path = "examples/mpv_spike_ffi/main.rs"
+required-features = ["mpv"]
+
 [lints]
 workspace = true

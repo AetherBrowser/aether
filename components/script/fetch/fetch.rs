@@ -14,18 +14,19 @@ use js::jsapi::ExceptionStackBehavior;
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::HandleValue;
-use js::rust::wrappers2::{JS_IsExceptionPending, JS_SetPendingException};
 use net_traits::blob_url_store::UrlWithBlobClaim;
+use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::{
     CorsSettings, CredentialsMode, Destination, Referrer, Request as NetTraitsRequest,
     RequestBuilder, RequestId, RequestMode, ServiceWorkersMode,
 };
 use net_traits::{
     CoreResourceMsg, CoreResourceThread, FetchChannels, FetchMetadata, FetchResponseMsg,
-    FilteredMetadata, Metadata, NetworkError, ResourceFetchTiming, cancel_async_fetch, fetch_async,
+    FilteredMetadata, Metadata, NetworkError, ResourceFetchTiming, fetch_async,
 };
 use rustc_hash::FxHashMap;
 use script_bindings::cformat;
+use script_bindings::js::{JS_IsExceptionPending, JS_SetPendingException};
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::GenericCallback;
 use servo_base::id::WebViewId;
@@ -47,7 +48,6 @@ use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
-use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::fetchlaterresult::FetchLaterResult;
 use crate::dom::globalscope::GlobalScope;
@@ -63,68 +63,6 @@ use crate::fetch::network_listener::{
     self, FetchResponseListener, NetworkListener, ResourceTimingListener, submit_timing_data,
 };
 use crate::realms::enter_auto_realm;
-
-/// Fetch canceller object. By default initialized to having a
-/// request associated with it, which can be aborted or terminated.
-/// Calling `ignore` will sever the relationship with the request,
-/// meaning it cannot be cancelled through this canceller from that point on.
-#[derive(Default, JSTraceable, MallocSizeOf)]
-pub(crate) struct FetchCanceller {
-    #[no_trace]
-    request_id: Option<RequestId>,
-    #[no_trace]
-    core_resource_thread: Option<CoreResourceThread>,
-    keep_alive: bool,
-}
-
-impl FetchCanceller {
-    /// Create a FetchCanceller associated with a request,
-    /// and a particular(public vs private) resource thread.
-    pub(crate) fn new(
-        request_id: RequestId,
-        keep_alive: bool,
-        core_resource_thread: CoreResourceThread,
-    ) -> Self {
-        Self {
-            request_id: Some(request_id),
-            core_resource_thread: Some(core_resource_thread),
-            keep_alive,
-        }
-    }
-
-    pub(crate) fn keep_alive(&self) -> bool {
-        self.keep_alive
-    }
-
-    fn cancel(&mut self) {
-        if let Some(request_id) = self.request_id.take() {
-            // stop trying to make fetch happen
-            // it's not going to happen
-
-            if let Some(ref core_resource_thread) = self.core_resource_thread {
-                // No error handling here. Cancellation is a courtesy call,
-                // we don't actually care if the other side heard.
-                cancel_async_fetch(vec![request_id], core_resource_thread);
-            }
-        }
-    }
-
-    /// Use this if you don't want it to send a cancellation request
-    /// on drop (e.g. if the fetch completes)
-    pub(crate) fn ignore(&mut self) {
-        let _ = self.request_id.take();
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-abort>
-    pub(crate) fn abort(&mut self) {
-        self.cancel();
-    }
-
-    /// <https://fetch.spec.whatwg.org/#fetch-controller-terminate>
-    pub(crate) fn terminate(&mut self) {
-        self.cancel();
-    }
-}
 
 /// An id to differentiate one deferred fetch record from another.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
@@ -142,9 +80,7 @@ pub(crate) type QueuedDeferredFetchRecord = Rc<DeferredFetchRecord>;
 #[derive(MallocSizeOf)]
 pub(crate) struct FetchRecord {
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record-fetch>
-    ///
-    /// Note: The fetch controller is currently represented in Servo by the [`FetchCanceller`].
-    controller: Option<FetchCanceller>,
+    controller: Option<FetchController>,
     /// Whether or not the [`Request`] has finished.
     ///
     /// TODO: In the specification this is in the [`Request`], so it should be moved there and the
@@ -181,7 +117,7 @@ impl FetchGroup {
         self.fetch_records.insert(
             request.id,
             FetchRecord {
-                controller: Some(FetchCanceller::new(
+                controller: Some(FetchController::new(
                     request.id,
                     request.keep_alive,
                     self.core_resource_thread.clone(),
@@ -224,7 +160,7 @@ impl FetchGroup {
     pub(crate) fn fetch_controller(
         &mut self,
         request_id: &RequestId,
-    ) -> Option<&mut FetchCanceller> {
+    ) -> Option<&mut FetchController> {
         self.fetch_records.get_mut(request_id)?.controller.as_mut()
     }
 
@@ -367,15 +303,15 @@ fn abort_fetch_call(
 pub(crate) fn Fetch(
     global: &GlobalScope,
     input: RequestInfo,
-    init: RootedTraceableBox<RequestInit>,
+    init: &RequestInit,
     cx: &mut CurrentRealm,
 ) -> RootedPromise {
     // Step 1. Let p be a new promise.
-    let promise = Promise::new_in_realm_rooted(cx);
+    let promise = Promise::new_in_realm(cx);
 
     // Step 7. Let responseObject be null.
     // NOTE: We do initialize the object earlier so we can use it to track errors.
-    let response = Response::new(cx, global);
+    let response = Response::new_fetch_response(cx, global);
     response.Headers(cx).set_guard(Guard::Immutable);
 
     // Step 2. Let requestObject be the result of invoking the initial value of Request as constructor
@@ -509,12 +445,12 @@ fn queue_deferred_fetch(
 }
 
 /// <https://fetch.spec.whatwg.org/#dom-window-fetchlater>
-#[expect(non_snake_case, unsafe_code)]
+#[expect(non_snake_case)]
 pub(crate) fn FetchLater(
     cx: &mut JSContext,
     window: &Window,
     input: RequestInfo,
-    init: RootedTraceableBox<DeferredRequestInit>,
+    init: &DeferredRequestInit,
 ) -> Fallible<DomRoot<FetchLaterResult>> {
     let global_scope = window.upcast();
     let document = window.Document();
@@ -526,10 +462,8 @@ pub(crate) fn FetchLater(
     if signal.aborted() {
         rooted!(&in(cx) let mut abort_reason = UndefinedValue());
         signal.Reason(abort_reason.handle_mut());
-        unsafe {
-            assert!(!JS_IsExceptionPending(cx));
-            JS_SetPendingException(cx, abort_reason.handle(), ExceptionStackBehavior::Capture)
-        };
+        assert!(!JS_IsExceptionPending(cx));
+        JS_SetPendingException(cx, abort_reason.handle(), ExceptionStackBehavior::Capture);
         return Err(Error::JSFailed);
     }
     // Step 3. Let request be requestObject’s request.

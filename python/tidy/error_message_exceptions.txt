@@ -50,9 +50,7 @@
 ./components/script/dom/form/formdata.rs 2
 ./components/script/dom/gamepad/gamepadhapticactuator.rs 3
 ./components/script/dom/geometry/dommatrixreadonly.rs 3
-./components/script/dom/globalscope/globalscope.rs 1
 ./components/script/dom/globalscope/messageport.rs 2
-./components/script/dom/globalscope/script_execution.rs 1
 ./components/script/dom/indexeddb/idbcursor.rs 1
 ./components/script/dom/indexeddb/idbdatabase.rs 13
 ./components/script/dom/indexeddb/idbfactory.rs 9
@@ -77,7 +75,6 @@
 ./components/script/dom/stream/transformstream.rs 1
 ./components/script/dom/stream/writablestream.rs 1
 ./components/script/dom/timeranges.rs 2
-./components/script/dom/webcrypto/crypto.rs 1
 ./components/script/dom/webgl/webglrenderingcontext.rs 4
 ./components/script/dom/webrtc/rtcdatachannel.rs 2
 ./components/script/dom/webrtc/rtcpeerconnection.rs 2
@@ -101,9 +98,10 @@
 ./components/script/dom/workers/workerglobalscope.rs 4
 ./components/script/dom/worklet/paintworkletglobalscope.rs 2
 ./components/script/dom/worklet/worklet.rs 2
-./components/script/dom/xmlhttprequest/xmlhttprequest.rs 30
+./components/script/dom/xmlhttprequest/xmlhttprequest.rs 5
 ./components/script/dom/xpath/xpathexpression.rs 2
 ./components/script/dom/xpath/xpathresult.rs 1
 ./components/script/drag/drag_data_store.rs 1
+./components/script/scripting/script_execution.rs 1
 ./components/script/xpath.rs 1
 ./components/script_bindings/proxyhandler.rs 1

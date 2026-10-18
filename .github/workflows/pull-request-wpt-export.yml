@@ -14,8 +14,8 @@ permissions:
 
 jobs:
   upstream:
-    # Run job only on servo/servo
-    if: github.repository == 'servo/servo'
+    # Run job only on AetherBrowser/aether
+    if: github.repository == 'AetherBrowser/aether'
     runs-on: ubuntu-latest
     steps:
       - name: Calculate PR fetch depth

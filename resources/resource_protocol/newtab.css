@@ -31,6 +31,11 @@ form {
   gap: 1.0em;
 }
 
+/* Author `display` beats the user-agent `[hidden]` rule. */
+form[hidden] {
+  display: none;
+}
+
 input {
   border-width: 0;
   border-radius: 5px;

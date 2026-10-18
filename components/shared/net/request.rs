@@ -216,7 +216,8 @@ pub struct RequestClient {
     /// <https://html.spec.whatwg.org/multipage/#map-of-preloaded-resources>
     pub preloaded_resources: PreloadedResources,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-policy-container>
-    pub policy_container: PolicyContainer,
+    #[conditional_malloc_size_of]
+    pub policy_container: Arc<PolicyContainer>,
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-origin>
     pub origin: Origin,
     /// <https://html.spec.whatwg.org/multipage/#nested-browsing-context>
@@ -519,6 +520,9 @@ pub struct RequestBuilder {
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
     pub is_internal_request: InternalRequest,
+    /// The embedder or WebDriver started this navigation.
+    /// A document load leaves this unset, including one whose origin is opaque.
+    pub embedder_initiated: bool,
 }
 
 impl RequestBuilder {
@@ -562,6 +566,7 @@ impl RequestBuilder {
             response_tainting: ResponseTainting::Basic,
             is_internal_request: Default::default(),
             crash: None,
+            embedder_initiated: false,
         }
     }
 
@@ -697,7 +702,7 @@ impl RequestBuilder {
     }
 
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
-    pub fn policy_container(mut self, policy_container: PolicyContainer) -> RequestBuilder {
+    pub fn policy_container(mut self, policy_container: Arc<PolicyContainer>) -> RequestBuilder {
         self.policy_container = RequestPolicyContainer::PolicyContainer(policy_container);
         self
     }
@@ -725,6 +730,11 @@ impl RequestBuilder {
 
     pub fn is_internal_request(mut self, is_internal_request: InternalRequest) -> RequestBuilder {
         self.is_internal_request = is_internal_request;
+        self
+    }
+
+    pub fn embedder_initiated(mut self, embedder_initiated: bool) -> RequestBuilder {
+        self.embedder_initiated = embedder_initiated;
         self
     }
 
@@ -774,6 +784,7 @@ impl RequestBuilder {
         request.client = self.client;
         request.policy_container = self.policy_container;
         request.is_internal_request = self.is_internal_request;
+        request.embedder_initiated = self.embedder_initiated;
         request
     }
 
@@ -827,6 +838,13 @@ pub struct Request {
     pub origin: Origin,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
+    /// Document URL when this request was started by a `servo:` page.
+    ///
+    /// Those pages have an opaque origin, so the referrer is omitted and a
+    /// protocol handler cannot tell `servo:settings` from `file:` or another
+    /// opaque caller. `main_fetch` records the URL here and still sends no
+    /// `Referer` header.
+    pub source_document_url: Option<ServoUrl>,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer-policy>
     pub referrer_policy: ReferrerPolicy,
     pub pipeline_id: Option<PipelineId>,
@@ -862,6 +880,9 @@ pub struct Request {
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
     pub is_internal_request: InternalRequest,
+    /// The embedder or WebDriver started this navigation.
+    /// A document load leaves this unset, including one whose origin is opaque.
+    pub embedder_initiated: bool,
 }
 
 impl Request {
@@ -891,6 +912,7 @@ impl Request {
             destination: Destination::None,
             origin: origin.unwrap_or(Origin::Client),
             referrer,
+            source_document_url: None,
             referrer_policy: ReferrerPolicy::EmptyString,
             pipeline_id,
             target_webview_id: webview_id,
@@ -910,6 +932,7 @@ impl Request {
             policy_container: RequestPolicyContainer::Client,
             is_internal_request: Default::default(),
             crash: None,
+            embedder_initiated: false,
         }
     }
 
@@ -1023,7 +1046,7 @@ impl Request {
             } else {
                 // Step 3.2. Otherwise, set request’s policy container to a new policy container.
                 self.policy_container =
-                    RequestPolicyContainer::PolicyContainer(PolicyContainer::default());
+                    RequestPolicyContainer::PolicyContainer(Arc::new(PolicyContainer::default()));
             }
         }
     }
