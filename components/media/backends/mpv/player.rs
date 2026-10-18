@@ -106,7 +106,19 @@ impl Player for MpvPlayer {
     }
 
     fn stop(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("stop"))
+        // Without a libmpv instance nothing ever played: there is nothing to stop.
+        let Some(handle) = self.handle.get() else {
+            return Ok(());
+        };
+        handle.set_flag("pause", true).map_err(backend_error)?;
+        self.resume_after_suspend.set(false);
+        // Seeking needs a loaded file. When mpv is idle, pausing is all there is to do.
+        if !handle.get_flag("idle-active").map_err(backend_error)? {
+            handle
+                .command(&["seek", "0", "absolute"])
+                .map_err(backend_error)?;
+        }
+        Ok(())
     }
 
     fn seek(&self, _time: f64) -> Result<(), PlayerError> {
@@ -231,6 +243,10 @@ impl Drop for MpvPlayer {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use super::*;
     use crate::handle::Node;
 
@@ -335,6 +351,66 @@ mod tests {
         player.suspend().unwrap();
         player.resume().unwrap();
         assert!(player.handle.get().is_none());
+    }
+
+    /// Waits until `condition` holds, failing the test after a few seconds.
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn time_pos(handle: &MpvHandle) -> Option<f64> {
+        match handle.get_node("time-pos") {
+            Ok(Node::Double(seconds)) => Some(seconds),
+            _ => None,
+        }
+    }
+
+    /// Loads a file directly, as the stream bridge will once it exists.
+    fn load_test_file(player: &MpvPlayer) -> &MpvHandle {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tests/wpt/tests/media/sine440.mp3");
+        let handle = player.handle().unwrap();
+        handle
+            .command(&["loadfile", path.to_str().unwrap()])
+            .unwrap();
+        wait_until("the file to load", || handle.get_node("duration").is_ok());
+        handle
+    }
+
+    #[test]
+    fn stop_without_libmpv_does_not_start_it() {
+        let player = player();
+        player.stop().unwrap();
+        assert!(player.handle.get().is_none());
+    }
+
+    #[test]
+    fn stop_without_a_file_only_pauses() {
+        let player = player();
+        player.play().unwrap();
+        player.stop().unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn stop_pauses_and_rewinds_a_loaded_file() {
+        let player = player();
+        let handle = load_test_file(&player);
+        player.play().unwrap();
+        wait_until("playback to advance", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 0.2)
+        });
+
+        player.stop().unwrap();
+        assert!(player.paused());
+        assert!(!player.can_resume());
+        wait_until("the rewind", || {
+            time_pos(handle).is_some_and(|seconds| seconds < 0.05)
+        });
     }
 
     #[test]

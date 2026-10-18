@@ -4,9 +4,9 @@
 
 //! Safe wrapper around an `mpv_handle`. This is the only module allowed to call into `ffi`.
 
-use std::ffi::{CStr, CString, c_int};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::mem::MaybeUninit;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::{fmt, slice};
 
 use crate::ffi;
@@ -245,6 +245,24 @@ impl MpvHandle {
         Ok(flag != 0)
     }
 
+    /// Runs a command, e.g. `["seek", "0", "absolute"]` (see `DOCS/man/input.rst`).
+    pub fn command(&self, args: &[&str]) -> Result<(), MpvError> {
+        let c_args = args
+            .iter()
+            .map(|arg| to_cstring(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        // mpv_command() takes a NULL-terminated list of strings.
+        let mut argv: Vec<*const c_char> = c_args
+            .iter()
+            .map(|arg| arg.as_ptr())
+            .chain(std::iter::once(ptr::null()))
+            .collect();
+        check(
+            unsafe { ffi::mpv_command(self.ctx.as_ptr(), argv.as_mut_ptr()) },
+            || format!("mpv_command({})", args.join(" ")),
+        )
+    }
+
     /// Reads a property as an owned [`Node`].
     pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
         let c_name = to_cstring(name)?;
@@ -320,6 +338,19 @@ mod tests {
             handle.set_flag("not-a-property", true),
             Err(MpvError::Api { .. })
         ));
+    }
+
+    #[test]
+    fn commands_are_run() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.command(&["set", "pause", "yes"]).unwrap();
+        assert_eq!(handle.get_flag("pause"), Ok(true));
+        let error = handle.command(&["not-a-command"]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("mpv_command(not-a-command) failed: ")
+        );
     }
 
     #[test]

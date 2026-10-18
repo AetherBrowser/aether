@@ -334,7 +334,7 @@ mod tests {
         let backend = backend();
         let player = create_player(&backend, &ClientContextId::build(1, 1));
         let player = player.lock().unwrap();
-        assert!(matches!(player.stop(), Err(PlayerError::Backend(_))));
+        assert!(matches!(player.seek(1.0), Err(PlayerError::Backend(_))));
         assert!(matches!(
             player.push_data(vec![0]),
             Err(PlayerError::Backend(_))
