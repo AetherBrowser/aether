@@ -110,10 +110,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         // should show up in adb logcat with a release build.
         let filters = [
             "servo",
-            "servoshell",
-            "servoshell::egl:gl_glue",
-            // Show redirected stdout / stderr by default
-            "servoshell::egl::log",
+            // This binary is the `aether` crate. `console.log` is emitted from
+            // `aether::egl::app`, and redirected stdout/stderr from `aether::egl::log`.
+            "aether",
             // Show JS errors by default.
             "script::dom::bindings::error",
             // Show GL errors by default.
