@@ -70,6 +70,12 @@ unsafe extern "C" {
         name: *const c_char,
         data: *const c_char,
     ) -> c_int;
+    pub fn mpv_set_property(
+        ctx: *mut mpv_handle,
+        name: *const c_char,
+        format: mpv_format,
+        data: *mut c_void,
+    ) -> c_int;
     pub fn mpv_get_property(
         ctx: *mut mpv_handle,
         name: *const c_char,

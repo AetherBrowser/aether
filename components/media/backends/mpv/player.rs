@@ -2,8 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::OnceCell;
 use std::ops::Range;
-use std::sync::{Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use servo_media::MediaInstanceError;
 use servo_media_player::{Player, PlayerError};
@@ -11,6 +12,7 @@ use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
 use crate::Instances;
+use crate::handle::{MpvError, MpvHandle};
 
 const DEFAULT_PAUSED: bool = true;
 const DEFAULT_MUTED: bool = false;
@@ -19,14 +21,17 @@ const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
 
 /// A media player backed by libmpv.
 ///
-/// This is the skeleton of the player: it is registered with its backend and implements
-/// the `Player` contract, but playback commands, events and the data path are not wired
-/// to libmpv yet, so they report a `PlayerError::Backend` instead of silently succeeding.
+/// Its libmpv instance is only created when first needed, so a media element that never
+/// plays costs no mpv threads. Operations that are not wired to libmpv yet report a
+/// `PlayerError::Backend` instead of silently succeeding.
 pub struct MpvPlayer {
     id: usize,
     context_id: ClientContextId,
     /// The backend's instance table. Weak so a player never keeps its backend alive.
     instances: Weak<Mutex<Instances>>,
+    /// Options of the libmpv instance, read when it gets created.
+    options: Arc<[(&'static str, &'static str)]>,
+    handle: OnceCell<MpvHandle>,
 }
 
 impl MpvPlayer {
@@ -34,13 +39,29 @@ impl MpvPlayer {
         id: usize,
         context_id: ClientContextId,
         instances: Weak<Mutex<Instances>>,
+        options: Arc<[(&'static str, &'static str)]>,
     ) -> MpvPlayer {
         MpvPlayer {
             id,
             context_id,
             instances,
+            options,
+            handle: OnceCell::new(),
         }
     }
+
+    /// The libmpv instance of this player, created on first use.
+    fn handle(&self) -> Result<&MpvHandle, PlayerError> {
+        if let Some(handle) = self.handle.get() {
+            return Ok(handle);
+        }
+        let handle = MpvHandle::new(&self.options).map_err(backend_error)?;
+        Ok(self.handle.get_or_init(|| handle))
+    }
+}
+
+fn backend_error(error: MpvError) -> PlayerError {
+    PlayerError::Backend(format!("MPV backend: {error}"))
 }
 
 fn not_implemented(operation: &str) -> PlayerError {
@@ -49,7 +70,9 @@ fn not_implemented(operation: &str) -> PlayerError {
 
 impl Player for MpvPlayer {
     fn play(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("play"))
+        self.handle()?
+            .set_flag("pause", false)
+            .map_err(backend_error)
     }
 
     fn pause(&self) -> Result<(), PlayerError> {
@@ -180,5 +203,64 @@ impl Drop for MpvPlayer {
                 instances.remove(&self.context_id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handle::Node;
+
+    /// A player whose libmpv instance never opens an audio output.
+    fn player_with(options: &[(&'static str, &'static str)]) -> MpvPlayer {
+        MpvPlayer::new(
+            0,
+            ClientContextId::build(1, 1),
+            Weak::new(),
+            Arc::from(options),
+        )
+    }
+
+    /// A player with the real player options, without an audio output.
+    fn player() -> MpvPlayer {
+        let options: Vec<_> = crate::BASE_OPTIONS
+            .iter()
+            .chain(crate::PLAYER_OPTIONS)
+            .chain(&[("ao", "null")])
+            .copied()
+            .collect();
+        player_with(&options)
+    }
+
+    #[test]
+    fn libmpv_is_only_started_when_needed() {
+        let player = player();
+        assert!(player.handle.get().is_none());
+        player.play().unwrap();
+        assert!(player.handle.get().is_some());
+    }
+
+    #[test]
+    fn new_players_start_paused() {
+        let player = player();
+        let handle = player.handle().unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+    }
+
+    #[test]
+    fn play_unpauses_libmpv() {
+        let player = player();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+    }
+
+    #[test]
+    fn libmpv_failures_are_reported_as_backend_errors() {
+        let player = player_with(&[("not-an-option", "1")]);
+        let Err(PlayerError::Backend(message)) = player.play() else {
+            panic!("play() should fail when libmpv cannot be created");
+        };
+        assert!(message.starts_with("MPV backend: mpv_set_option_string(not-an-option=1)"));
     }
 }
