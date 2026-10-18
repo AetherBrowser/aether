@@ -8204,6 +8204,7 @@ version = "0.7.0"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
+ "aether-media-mpv",
  "arboard",
  "bitflags 2.13.2",
  "content-security-policy",
