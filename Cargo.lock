@@ -256,6 +256,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-media-mpv"
+version = "0.7.0"
+dependencies = [
+ "data-url",
+ "log",
+ "pkg-config",
+ "servo-base",
+ "servo-media",
+ "servo-media-audio",
+ "servo-media-dummy",
+ "servo-media-player",
+ "servo-media-streams",
+ "servo-media-traits",
+ "servo-media-webrtc",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
