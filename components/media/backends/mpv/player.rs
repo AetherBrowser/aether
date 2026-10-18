@@ -2,10 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 
+use log::warn;
 use servo_media::MediaInstanceError;
 use servo_media_player::{Player, PlayerError};
 use servo_media_streams::registry::MediaStreamId;
@@ -32,6 +33,9 @@ pub struct MpvPlayer {
     /// Options of the libmpv instance, read when it gets created.
     options: Arc<[(&'static str, &'static str)]>,
     handle: OnceCell<MpvHandle>,
+    /// Whether this player was playing when its page got suspended, so `resume` restarts
+    /// it. A media paused by the page stays paused when the page is resumed.
+    resume_after_suspend: Cell<bool>,
 }
 
 impl MpvPlayer {
@@ -47,6 +51,7 @@ impl MpvPlayer {
             instances,
             options,
             handle: OnceCell::new(),
+            resume_after_suspend: Cell::new(false),
         }
     }
 
@@ -72,19 +77,32 @@ impl Player for MpvPlayer {
     fn play(&self) -> Result<(), PlayerError> {
         self.handle()?
             .set_flag("pause", false)
-            .map_err(backend_error)
+            .map_err(backend_error)?;
+        self.resume_after_suspend.set(false);
+        Ok(())
     }
 
     fn pause(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("pause"))
+        self.handle()?
+            .set_flag("pause", true)
+            .map_err(backend_error)?;
+        self.resume_after_suspend.set(false);
+        Ok(())
     }
 
     fn paused(&self) -> bool {
-        DEFAULT_PAUSED
+        // Without a libmpv instance nothing ever played: don't start one just to answer.
+        let Some(handle) = self.handle.get() else {
+            return DEFAULT_PAUSED;
+        };
+        handle.get_flag("pause").unwrap_or_else(|error| {
+            warn!("MPV backend: cannot read the pause state: {error}");
+            DEFAULT_PAUSED
+        })
     }
 
     fn can_resume(&self) -> bool {
-        false
+        self.resume_after_suspend.get()
     }
 
     fn stop(&self) -> Result<(), PlayerError> {
@@ -176,7 +194,12 @@ impl MediaInstance for MpvPlayer {
     }
 
     fn suspend(&self) -> Result<(), MediaInstanceError> {
-        self.pause().map_err(|_| MediaInstanceError)
+        if self.paused() {
+            return Ok(());
+        }
+        self.pause().map_err(|_| MediaInstanceError)?;
+        self.resume_after_suspend.set(true);
+        Ok(())
     }
 
     fn resume(&self) -> Result<(), MediaInstanceError> {
@@ -253,6 +276,65 @@ mod tests {
         player.play().unwrap();
         let handle = player.handle.get().unwrap();
         assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+    }
+
+    #[test]
+    fn pause_pauses_libmpv() {
+        let player = player();
+        player.play().unwrap();
+        assert!(!player.paused());
+        player.pause().unwrap();
+        assert!(player.paused());
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+    }
+
+    #[test]
+    fn paused_does_not_start_libmpv() {
+        let player = player();
+        assert!(player.paused());
+        assert!(player.handle.get().is_none());
+    }
+
+    #[test]
+    fn suspend_then_resume_restarts_a_playing_media() {
+        let player = player();
+        player.play().unwrap();
+        player.suspend().unwrap();
+        assert!(player.paused());
+        assert!(player.can_resume());
+        player.resume().unwrap();
+        assert!(!player.paused());
+        assert!(!player.can_resume());
+    }
+
+    #[test]
+    fn resume_keeps_a_media_paused_by_the_page_paused() {
+        let player = player();
+        player.play().unwrap();
+        player.pause().unwrap();
+        player.suspend().unwrap();
+        assert!(!player.can_resume());
+        player.resume().unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn a_page_action_after_suspend_cancels_the_resume() {
+        let player = player();
+        player.play().unwrap();
+        player.suspend().unwrap();
+        player.pause().unwrap();
+        player.resume().unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn suspend_and_resume_do_not_start_libmpv() {
+        let player = player();
+        player.suspend().unwrap();
+        player.resume().unwrap();
+        assert!(player.handle.get().is_none());
     }
 
     #[test]

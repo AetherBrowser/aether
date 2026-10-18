@@ -227,6 +227,24 @@ impl MpvHandle {
         )
     }
 
+    /// Reads a boolean (`MPV_FORMAT_FLAG`) property.
+    pub fn get_flag(&self, name: &str) -> Result<bool, MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut flag: c_int = 0;
+        check(
+            unsafe {
+                ffi::mpv_get_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_FLAG,
+                    (&raw mut flag).cast(),
+                )
+            },
+            || format!("mpv_get_property({name})"),
+        )?;
+        Ok(flag != 0)
+    }
+
     /// Reads a property as an owned [`Node`].
     pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
         let c_name = to_cstring(name)?;
@@ -286,12 +304,18 @@ mod tests {
     }
 
     #[test]
-    fn flags_are_written() {
+    fn flags_are_written_and_read() {
         let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
         handle.set_flag("pause", true).unwrap();
         assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+        assert_eq!(handle.get_flag("pause"), Ok(true));
         handle.set_flag("pause", false).unwrap();
         assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+        assert_eq!(handle.get_flag("pause"), Ok(false));
+        assert!(matches!(
+            handle.get_flag("not-a-property"),
+            Err(MpvError::Api { .. })
+        ));
         assert!(matches!(
             handle.set_flag("not-a-property", true),
             Err(MpvError::Api { .. })
