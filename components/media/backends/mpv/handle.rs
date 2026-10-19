@@ -7,6 +7,8 @@
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::mem::MaybeUninit;
 use std::ptr::{self, NonNull};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt, slice};
 
 use crate::ffi;
@@ -167,13 +169,86 @@ unsafe fn list_values<'a>(list: *const ffi::mpv_node_list) -> &'a [ffi::mpv_node
     }
 }
 
+/// Why mpv stopped playing a file.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EndFileReason {
+    /// The end of the file was reached.
+    Eof,
+    /// Playback failed, with libmpv's description of the error.
+    Error(String),
+    /// Stopped, replaced by another file, or mpv is quitting.
+    Other,
+}
+
+/// An owned copy of an `mpv_event`, limited to what this crate reacts to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// The wait timed out, or was interrupted by [`MpvHandle::wakeup`].
+    None,
+    /// The instance is being destroyed: no more events will come.
+    Shutdown,
+    FileLoaded,
+    EndFile(EndFileReason),
+    /// An observed property changed. `value` is [`Node::None`] when it is unavailable.
+    PropertyChange {
+        name: String,
+        value: Node,
+    },
+    /// An event this crate does not handle.
+    Other,
+}
+
+impl Event {
+    /// Copies an event returned by `mpv_wait_event()`.
+    ///
+    /// # Safety
+    /// `event` must be valid, and its `data` must match its `event_id` as documented in
+    /// client.h. The data of property changes must have been requested as `MPV_FORMAT_NODE`.
+    unsafe fn from_raw(event: &ffi::mpv_event) -> Event {
+        unsafe {
+            match event.event_id {
+                ffi::MPV_EVENT_NONE => Event::None,
+                ffi::MPV_EVENT_SHUTDOWN => Event::Shutdown,
+                ffi::MPV_EVENT_FILE_LOADED => Event::FileLoaded,
+                ffi::MPV_EVENT_END_FILE => {
+                    let end_file = &*(event.data as *const ffi::mpv_event_end_file);
+                    Event::EndFile(match end_file.reason {
+                        ffi::MPV_END_FILE_REASON_EOF => EndFileReason::Eof,
+                        ffi::MPV_END_FILE_REASON_ERROR => {
+                            EndFileReason::Error(error_string(end_file.error))
+                        },
+                        _ => EndFileReason::Other,
+                    })
+                },
+                ffi::MPV_EVENT_PROPERTY_CHANGE => {
+                    let property = &*(event.data as *const ffi::mpv_event_property);
+                    let value =
+                        if property.format == ffi::MPV_FORMAT_NODE && !property.data.is_null() {
+                            Node::from_raw(&*(property.data as *const ffi::mpv_node))
+                        } else {
+                            Node::None
+                        };
+                    Event::PropertyChange {
+                        name: string_from_raw(property.name),
+                        value,
+                    }
+                },
+                _ => Event::Other,
+            }
+        }
+    }
+}
+
 /// An initialized mpv instance, destroyed on drop.
 pub struct MpvHandle {
     ctx: NonNull<ffi::mpv_handle>,
+    /// Whether the [`EventQueue`] of this instance was handed out.
+    events_taken: AtomicBool,
 }
 
 // client.h: "The client API is generally fully thread-safe, unless otherwise noted."
-// The only exception relevant here is mpv_wait_event(), which this wrapper does not expose.
+// The only exception relevant here is mpv_wait_event(), which may only be called by one
+// thread at a time: it is only reachable through the unique `EventQueue` of an instance.
 unsafe impl Send for MpvHandle {}
 unsafe impl Sync for MpvHandle {}
 
@@ -189,7 +264,10 @@ impl MpvHandle {
         let ctx = NonNull::new(unsafe { ffi::mpv_create() }).ok_or(MpvError::CreateFailed)?;
         // From here on, dropping `handle` releases the instance, even if it never
         // gets initialized.
-        let handle = MpvHandle { ctx };
+        let handle = MpvHandle {
+            ctx,
+            events_taken: AtomicBool::new(false),
+        };
         for (name, value) in options {
             handle.set_option(name, value)?;
         }
@@ -279,6 +357,39 @@ impl MpvHandle {
         )
     }
 
+    /// Asks libmpv to report changes of a property as [`Event::PropertyChange`]. libmpv
+    /// also reports its current value right away.
+    pub fn observe(&self, name: &str) -> Result<(), MpvError> {
+        let c_name = to_cstring(name)?;
+        check(
+            unsafe {
+                ffi::mpv_observe_property(
+                    self.ctx.as_ptr(),
+                    0,
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_NODE,
+                )
+            },
+            || format!("mpv_observe_property({name})"),
+        )
+    }
+
+    /// Interrupts a pending [`EventQueue::wait`], which then returns [`Event::None`].
+    pub fn wakeup(&self) {
+        unsafe { ffi::mpv_wakeup(self.ctx.as_ptr()) };
+    }
+
+    /// The event queue of this instance. libmpv allows only one consumer, so this
+    /// returns `None` once the queue was handed out.
+    pub fn events(self: &Arc<Self>) -> Option<EventQueue> {
+        if self.events_taken.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(EventQueue {
+            handle: self.clone(),
+        })
+    }
+
     /// Reads a property as an owned [`Node`].
     pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
         let c_name = to_cstring(name)?;
@@ -299,6 +410,28 @@ impl MpvHandle {
         let node = unsafe { Node::from_raw(&raw) };
         unsafe { ffi::mpv_free_node_contents(&mut raw) };
         Ok(node)
+    }
+}
+
+/// The only consumer of the events of an mpv instance. Keeps the instance alive.
+pub struct EventQueue {
+    handle: Arc<MpvHandle>,
+}
+
+impl EventQueue {
+    pub fn handle(&self) -> &MpvHandle {
+        &self.handle
+    }
+
+    /// Waits up to `timeout` seconds (forever if negative) for the next event.
+    pub fn wait(&mut self, timeout: f64) -> Event {
+        // `&mut self` on the unique queue of the instance: no other thread can be in
+        // mpv_wait_event(). The event stays valid until the next call, and is copied first.
+        let event = unsafe { ffi::mpv_wait_event(self.handle.ctx.as_ptr(), timeout) };
+        match unsafe { event.as_ref() } {
+            Some(event) => unsafe { Event::from_raw(event) },
+            None => Event::None,
+        }
     }
 }
 

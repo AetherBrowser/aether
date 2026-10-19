@@ -8,6 +8,7 @@
 //! capture, media streams) is delegated to a fallback backend.
 
 mod capabilities;
+mod events;
 #[expect(non_camel_case_types, reason = "Mirrors the C names of mpv/client.h")]
 mod ffi;
 mod handle;
@@ -138,7 +139,7 @@ impl Backend for MpvBackend {
         &self,
         id: &ClientContextId,
         _stream_type: StreamType,
-        _sender: GenericCallback<PlayerEvent>,
+        sender: GenericCallback<PlayerEvent>,
         _video_renderer: Option<Arc<Mutex<dyn VideoFrameRenderer>>>,
         _audio_renderer: Option<Arc<Mutex<dyn AudioRenderer>>>,
         _gl_context: Box<dyn PlayerGLContext>,
@@ -149,6 +150,7 @@ impl Backend for MpvBackend {
             *id,
             Arc::downgrade(&self.instances),
             self.player_options.clone(),
+            sender,
         )));
         let instance: Arc<Mutex<dyn MediaInstance>> = player.clone();
         self.instances
