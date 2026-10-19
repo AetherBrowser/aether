@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -12,7 +12,7 @@ use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
 use crate::Instances;
-use crate::handle::{MpvError, MpvHandle};
+use crate::handle::{MpvError, MpvHandle, Node};
 
 const DEFAULT_PAUSED: bool = true;
 const DEFAULT_MUTED: bool = false;
@@ -32,6 +32,8 @@ pub struct MpvPlayer {
     /// Options of the libmpv instance, read when it gets created.
     options: Arc<[(&'static str, &'static str)]>,
     handle: OnceCell<MpvHandle>,
+    /// The requested mute state, applied to libmpv once its instance exists.
+    muted: Cell<bool>,
 }
 
 impl MpvPlayer {
@@ -47,6 +49,7 @@ impl MpvPlayer {
             instances,
             options,
             handle: OnceCell::new(),
+            muted: Cell::new(DEFAULT_MUTED),
         }
     }
 
@@ -56,6 +59,11 @@ impl MpvPlayer {
             return Ok(handle);
         }
         let handle = MpvHandle::new(&self.options).map_err(backend_error)?;
+        if self.muted.get() != DEFAULT_MUTED {
+            handle
+                .set_flag("mute", self.muted.get())
+                .map_err(backend_error)?;
+        }
         Ok(self.handle.get_or_init(|| handle))
     }
 }
@@ -99,12 +107,19 @@ impl Player for MpvPlayer {
         vec![]
     }
 
-    fn set_mute(&self, _muted: bool) -> Result<(), PlayerError> {
-        Err(not_implemented("set_mute"))
+    fn set_mute(&self, muted: bool) -> Result<(), PlayerError> {
+        if let Some(handle) = self.handle.get() {
+            handle.set_flag("mute", muted).map_err(backend_error)?;
+        }
+        self.muted.set(muted);
+        Ok(())
     }
 
     fn muted(&self) -> bool {
-        DEFAULT_MUTED
+        match self.handle.get().map(|handle| handle.get_node("mute")) {
+            Some(Ok(Node::Flag(muted))) => muted,
+            _ => self.muted.get(),
+        }
     }
 
     fn set_volume(&self, _volume: f64) -> Result<(), PlayerError> {
@@ -209,7 +224,6 @@ impl Drop for MpvPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handle::Node;
 
     /// A player whose libmpv instance never opens an audio output.
     fn player_with(options: &[(&'static str, &'static str)]) -> MpvPlayer {
@@ -253,6 +267,38 @@ mod tests {
         player.play().unwrap();
         let handle = player.handle.get().unwrap();
         assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+    }
+
+    #[test]
+    fn muting_does_not_start_libmpv() {
+        let player = player();
+        player.set_mute(true).unwrap();
+        assert!(player.handle.get().is_none());
+        assert!(player.muted());
+    }
+
+    #[test]
+    fn mute_requested_before_start_is_applied_to_libmpv() {
+        let player = player();
+        player.set_mute(true).unwrap();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(true)));
+    }
+
+    #[test]
+    fn set_mute_drives_the_libmpv_mute_property() {
+        let player = player();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+
+        player.set_mute(true).unwrap();
+        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(true)));
+        assert!(player.muted());
+
+        player.set_mute(false).unwrap();
+        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(false)));
+        assert!(!player.muted());
     }
 
     #[test]
