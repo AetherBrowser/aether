@@ -196,6 +196,7 @@ dependencies = [
  "encoding_rs",
  "env_filter",
  "euclid",
+ "futures",
  "gilrs",
  "glow",
  "headers",
@@ -251,9 +252,11 @@ name = "aether-history"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "futures",
  "log",
  "rusqlite",
  "tempfile",
+ "tokio",
  "url",
 ]
 
