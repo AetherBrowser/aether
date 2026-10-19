@@ -46,6 +46,13 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
     ("audio-display", "no"),
 ];
 
+/// Options of the libmpv instance of each player, on top of `BASE_OPTIONS`.
+/// - `pause=yes`: a media element is paused until the page calls `play()`, while mpv
+///   starts playing as soon as a file is loaded.
+/// - `vid=no`: video is not rendered yet, so do not spend CPU decoding it. The audio of a
+///   video file still plays.
+const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no")];
+
 /// Media instances per client context (a pipeline), weakly referenced.
 type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstance>>)>>;
 
@@ -56,6 +63,8 @@ pub struct MpvBackend {
     capabilities: Option<Capabilities>,
     instances: Arc<Mutex<Instances>>,
     next_instance_id: AtomicUsize,
+    /// Options given to every player's libmpv instance.
+    player_options: Arc<[(&'static str, &'static str)]>,
 }
 
 impl MpvBackend {
@@ -75,6 +84,7 @@ impl MpvBackend {
             capabilities,
             instances: Default::default(),
             next_instance_id: AtomicUsize::new(0),
+            player_options: BASE_OPTIONS.iter().chain(PLAYER_OPTIONS).copied().collect(),
         }
     }
 
@@ -138,6 +148,7 @@ impl Backend for MpvBackend {
             instance_id,
             *id,
             Arc::downgrade(&self.instances),
+            self.player_options.clone(),
         )));
         let instance: Arc<Mutex<dyn MediaInstance>> = player.clone();
         self.instances
@@ -242,13 +253,20 @@ mod tests {
         }
     }
 
-    /// A backend that never touches libmpv, to test the instance bookkeeping alone.
+    /// A backend that skips the libmpv probe, to test the instance bookkeeping alone.
+    /// Its players never open an audio output.
     fn backend() -> MpvBackend {
         MpvBackend {
             fallback: DummyBackend::init(),
             capabilities: None,
             instances: Default::default(),
             next_instance_id: AtomicUsize::new(0),
+            player_options: BASE_OPTIONS
+                .iter()
+                .chain(PLAYER_OPTIONS)
+                .chain(&[("ao", "null")])
+                .copied()
+                .collect(),
         }
     }
 
@@ -316,7 +334,7 @@ mod tests {
         let backend = backend();
         let player = create_player(&backend, &ClientContextId::build(1, 1));
         let player = player.lock().unwrap();
-        assert!(matches!(player.play(), Err(PlayerError::Backend(_))));
+        assert!(matches!(player.seek(1.0), Err(PlayerError::Backend(_))));
         assert!(matches!(
             player.push_data(vec![0]),
             Err(PlayerError::Backend(_))

@@ -4,9 +4,9 @@
 
 //! Safe wrapper around an `mpv_handle`. This is the only module allowed to call into `ffi`.
 
-use std::ffi::{CStr, CString, c_int};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::mem::MaybeUninit;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::{fmt, slice};
 
 use crate::ffi;
@@ -210,6 +210,75 @@ impl MpvHandle {
         )
     }
 
+    /// Sets a boolean (`MPV_FORMAT_FLAG`) property.
+    pub fn set_flag(&self, name: &str, value: bool) -> Result<(), MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut flag = c_int::from(value);
+        check(
+            unsafe {
+                ffi::mpv_set_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_FLAG,
+                    (&raw mut flag).cast(),
+                )
+            },
+            || format!("mpv_set_property({name}={value})"),
+        )
+    }
+
+    /// Reads a boolean (`MPV_FORMAT_FLAG`) property.
+    pub fn get_flag(&self, name: &str) -> Result<bool, MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut flag: c_int = 0;
+        check(
+            unsafe {
+                ffi::mpv_get_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_FLAG,
+                    (&raw mut flag).cast(),
+                )
+            },
+            || format!("mpv_get_property({name})"),
+        )?;
+        Ok(flag != 0)
+    }
+
+    /// Runs a command, e.g. `["seek", "0", "absolute"]` (see `DOCS/man/input.rst`).
+    pub fn command(&self, args: &[&str]) -> Result<(), MpvError> {
+        let c_args = args
+            .iter()
+            .map(|arg| to_cstring(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        // mpv_command() takes a NULL-terminated list of strings.
+        let mut argv: Vec<*const c_char> = c_args
+            .iter()
+            .map(|arg| arg.as_ptr())
+            .chain(std::iter::once(ptr::null()))
+            .collect();
+        check(
+            unsafe { ffi::mpv_command(self.ctx.as_ptr(), argv.as_mut_ptr()) },
+            || format!("mpv_command({})", args.join(" ")),
+        )
+    }
+
+    pub fn set_double(&self, name: &str, value: f64) -> Result<(), MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut double = value;
+        check(
+            unsafe {
+                ffi::mpv_set_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_DOUBLE,
+                    (&raw mut double).cast(),
+                )
+            },
+            || format!("mpv_set_property({name}={value})"),
+        )
+    }
+
     /// Reads a property as an owned [`Node`].
     pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
         let c_name = to_cstring(name)?;
@@ -266,6 +335,49 @@ mod tests {
             MpvHandle::new(&[("vid", "n\0o")]).err(),
             Some(MpvError::InvalidString("n\0o".to_owned()))
         );
+    }
+
+    #[test]
+    fn flags_are_written_and_read() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.set_flag("pause", true).unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+        assert_eq!(handle.get_flag("pause"), Ok(true));
+        handle.set_flag("pause", false).unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+        assert_eq!(handle.get_flag("pause"), Ok(false));
+        assert!(matches!(
+            handle.get_flag("not-a-property"),
+            Err(MpvError::Api { .. })
+        ));
+        assert!(matches!(
+            handle.set_flag("not-a-property", true),
+            Err(MpvError::Api { .. })
+        ));
+    }
+
+    #[test]
+    fn commands_are_run() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.command(&["set", "pause", "yes"]).unwrap();
+        assert_eq!(handle.get_flag("pause"), Ok(true));
+        let error = handle.command(&["not-a-command"]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("mpv_command(not-a-command) failed: ")
+        );
+    }
+
+    #[test]
+    fn doubles_are_written() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.set_double("volume", 42.5).unwrap();
+        assert_eq!(handle.get_node("volume"), Ok(Node::Double(42.5)));
+        assert!(matches!(
+            handle.set_double("not-a-property", 1.0),
+            Err(MpvError::Api { .. })
+        ));
     }
 
     #[test]
