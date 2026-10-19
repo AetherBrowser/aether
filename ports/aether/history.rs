@@ -9,7 +9,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aether_history::{HistoryCleaner, HistoryService};
+use aether_history::{CleanerReply, HistoryCleaner, HistoryService};
 use log::warn;
 use serde_json::Value;
 use servo::{NavigationType, Opts};
@@ -127,24 +127,37 @@ pub(crate) struct HistoryPage {
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 impl HistoryPage {
     /// Answers `servo:history-data`, applying its `retentionDays` and `delete` parameters.
-    pub(crate) fn handle_request(&mut self, query: Option<&str>) -> String {
+    pub(crate) fn handle_request(
+        &mut self,
+        query: Option<&str>,
+    ) -> impl Future<Output = String> + Send + 'static {
         let mut error = None;
+        let mut deletions = Vec::new();
         for (name, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-            let result = match &*name {
+            let deletion = match &*name {
                 "retentionDays" => self.set_retention_days(&value),
                 "delete" => self.delete_visits(&value),
                 _ => continue,
             };
-            error = error.or(result.err());
+            match deletion {
+                Ok(deletion) => deletions.push(deletion),
+                Err(invalid) => error = error.or(Some(invalid)),
+            }
         }
-        let mut response = serde_json::json!({ "retentionDays": self.retention_days });
-        if let Some(error) = error {
-            response["error"] = Value::String(error);
+        let retention_days = self.retention_days;
+        async move {
+            for deletion in deletions {
+                error = error.or(deletion.await.err());
+            }
+            let mut response = serde_json::json!({ "retentionDays": retention_days });
+            if let Some(error) = error {
+                response["error"] = Value::String(error);
+            }
+            response.to_string()
         }
-        response.to_string()
     }
 
-    fn set_retention_days(&mut self, days: &str) -> Result<(), String> {
+    fn set_retention_days(&mut self, days: &str) -> Result<CleanerReply, String> {
         let Some(days) = days.parse::<u32>().ok().filter(|days| *days > 0) else {
             return Err(format!("Invalid number of days: {days}"));
         };
@@ -152,16 +165,14 @@ impl HistoryPage {
             save_retention_days(config_dir, days)?;
         }
         self.retention_days = days;
-        self.cleaner.set_retention(retention_period(days));
-        Ok(())
+        Ok(self.cleaner.set_retention(retention_period(days)))
     }
 
-    fn delete_visits(&self, range: &str) -> Result<(), String> {
+    fn delete_visits(&self, range: &str) -> Result<CleanerReply, String> {
         let Some(start) = deletion_start(range, SystemTime::now()) else {
             return Err(format!("Invalid time range: {range}"));
         };
-        self.cleaner.delete_visits_since(start);
-        Ok(())
+        Ok(self.cleaner.delete_visits_since(start))
     }
 }
 
@@ -227,6 +238,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use aether_history::HistoryService;
+    use futures::executor::block_on;
     use serde_json::{Value, json};
     use servo::NavigationType;
     use url::Url;
@@ -391,7 +403,7 @@ mod tests {
     }
 
     fn response(page: &mut HistoryPage, query: Option<&str>) -> Value {
-        serde_json::from_str(&page.handle_request(query)).unwrap()
+        serde_json::from_str(&block_on(page.handle_request(query))).unwrap()
     }
 
     #[test]
@@ -484,5 +496,19 @@ mod tests {
             response(&mut page, Some("delete=60")),
             json!({ "retentionDays": 90 })
         );
+    }
+
+    #[test]
+    fn a_failed_deletion_is_reported() {
+        let history = HistoryService::open_in_memory(Duration::MAX);
+        let mut page = HistoryPage {
+            config_dir: None,
+            retention_days: 90,
+            cleaner: history.cleaner(),
+        };
+        drop(history);
+
+        assert!(response(&mut page, Some("delete=60"))["error"].is_string());
+        assert!(response(&mut page, Some("retentionDays=7"))["error"].is_string());
     }
 }

@@ -116,7 +116,7 @@ impl ProtocolHandler for ServoProtocolHandler {
                     Ok(mut page) => page.handle_request(url.query()),
                     Err(poisoned) => poisoned.into_inner().handle_request(url.query()),
                 };
-                json_response(request, body)
+                json_response_when_ready(request, body)
             },
 
             "process-list" => {
@@ -233,13 +233,21 @@ fn json_response(
     request: &Request,
     body: String,
 ) -> Pin<Box<dyn Future<Output = Response> + Send>> {
-    let mut response = Response::new(
-        request.current_url(),
-        ResourceFetchTiming::new(request.timing_type()),
-    );
-    response.headers.typed_insert(ContentType::json());
-    *response.body.lock() = ResponseBody::Done(body.into_bytes());
-    Box::pin(std::future::ready(response))
+    json_response_when_ready(request, std::future::ready(body))
+}
+
+fn json_response_when_ready(
+    request: &Request,
+    body: impl Future<Output = String> + Send + 'static,
+) -> Pin<Box<dyn Future<Output = Response> + Send>> {
+    let url = request.current_url();
+    let timing_type = request.timing_type();
+    Box::pin(async move {
+        let mut response = Response::new(url, ResourceFetchTiming::new(timing_type));
+        response.headers.typed_insert(ContentType::json());
+        *response.body.lock() = ResponseBody::Done(body.await.into_bytes());
+        response
+    })
 }
 
 #[cfg(test)]

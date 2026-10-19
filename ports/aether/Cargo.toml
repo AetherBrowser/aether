@@ -96,6 +96,7 @@ url = { workspace = true }
 webdriver_server = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "android")'.dependencies]

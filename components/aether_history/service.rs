@@ -2,13 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::future::Future;
 use std::iter;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use crossbeam_channel::{Receiver, Sender, select, tick, unbounded};
 use log::{error, warn};
+use tokio::sync::oneshot;
 use url::Url;
 
 use crate::HistoryStore;
@@ -27,9 +31,13 @@ pub struct HistoryService {
     thread: Option<JoinHandle<()>>,
 }
 
+const HISTORY_UNAVAILABLE: &str = "The history is not available";
+
+type Reply = oneshot::Sender<Result<(), String>>;
+
 enum CleanerRequest {
-    SetRetention(Duration),
-    DeleteVisitsSince(SystemTime),
+    SetRetention(Duration, Reply),
+    DeleteVisitsSince(SystemTime, Reply),
 }
 
 /// Deletes visits of a [`HistoryService`], after the changes already sent to it.
@@ -38,13 +46,33 @@ pub struct HistoryCleaner(Sender<CleanerRequest>);
 
 impl HistoryCleaner {
     /// Keeps visits for `retention`, and deletes the older ones now.
-    pub fn set_retention(&self, retention: Duration) {
-        let _ = self.0.send(CleanerRequest::SetRetention(retention));
+    pub fn set_retention(&self, retention: Duration) -> CleanerReply {
+        self.request(|reply| CleanerRequest::SetRetention(retention, reply))
     }
 
     /// Deletes the visits at or after `date`.
-    pub fn delete_visits_since(&self, date: SystemTime) {
-        let _ = self.0.send(CleanerRequest::DeleteVisitsSince(date));
+    pub fn delete_visits_since(&self, date: SystemTime) -> CleanerReply {
+        self.request(|reply| CleanerRequest::DeleteVisitsSince(date, reply))
+    }
+
+    fn request(&self, request: impl FnOnce(Reply) -> CleanerRequest) -> CleanerReply {
+        let (reply, receiver) = oneshot::channel();
+        let _ = self.0.send(request(reply));
+        CleanerReply(receiver)
+    }
+}
+
+/// Resolves when the deletion asked to a [`HistoryCleaner`] is done, with its error if any.
+#[must_use]
+pub struct CleanerReply(oneshot::Receiver<Result<(), String>>);
+
+impl Future for CleanerReply {
+    type Output = Result<(), String>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0)
+            .poll(context)
+            .map(|result| result.unwrap_or_else(|_| Err(HISTORY_UNAVAILABLE.to_owned())))
     }
 }
 
@@ -142,7 +170,7 @@ fn run(
     cleaner_receiver: Receiver<CleanerRequest>,
 ) {
     let expiration_timer = tick(EXPIRATION_INTERVAL);
-    expire(&mut store, retention);
+    expire_or_warn(&mut store, retention);
     loop {
         select! {
             recv(receiver) -> command => {
@@ -161,23 +189,24 @@ fn run(
                 write(&mut store, receiver.try_iter().collect());
                 clean(&mut store, request, &mut retention);
             },
-            recv(expiration_timer) -> _ => expire(&mut store, retention),
+            recv(expiration_timer) -> _ => expire_or_warn(&mut store, retention),
         }
     }
 }
 
 fn clean(store: &mut HistoryStore, request: CleanerRequest, retention: &mut Duration) {
-    match request {
-        CleanerRequest::SetRetention(new_retention) => {
+    let (result, reply) = match request {
+        CleanerRequest::SetRetention(new_retention, reply) => {
             *retention = new_retention;
-            expire(store, *retention);
+            (expire(store, *retention), reply)
         },
-        CleanerRequest::DeleteVisitsSince(date) => {
-            if let Err(error) = store.delete_visits_since(date) {
-                warn!("Could not delete the history: {error}");
-            }
-        },
-    }
+        CleanerRequest::DeleteVisitsSince(date, reply) => (store.delete_visits_since(date), reply),
+    };
+    let result = result.map_err(|error| {
+        warn!("Could not delete the history: {error}");
+        format!("Could not delete the history: {error}")
+    });
+    let _ = reply.send(result);
 }
 
 fn write(store: &mut HistoryStore, commands: Vec<HistoryCommand>) {
@@ -192,11 +221,15 @@ fn write(store: &mut HistoryStore, commands: Vec<HistoryCommand>) {
     }
 }
 
-fn expire(store: &mut HistoryStore, retention: Duration) {
-    let Some(date) = SystemTime::now().checked_sub(retention) else {
-        return;
-    };
-    if let Err(error) = store.delete_visits_before(date) {
+fn expire(store: &mut HistoryStore, retention: Duration) -> rusqlite::Result<()> {
+    match SystemTime::now().checked_sub(retention) {
+        Some(date) => store.delete_visits_before(date),
+        None => Ok(()),
+    }
+}
+
+fn expire_or_warn(store: &mut HistoryStore, retention: Duration) {
+    if let Err(error) = expire(store, retention) {
         warn!("Could not delete the expired history: {error}");
     }
 }
@@ -206,10 +239,11 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use futures::executor::block_on;
     use rusqlite::Connection;
     use url::Url;
 
-    use super::HistoryService;
+    use super::{HISTORY_UNAVAILABLE, HistoryService};
 
     fn days(days: u64) -> Duration {
         Duration::from_secs(days * 24 * 60 * 60)
@@ -229,8 +263,8 @@ mod tests {
     fn write_old_and_recent_visits(path: &Path) {
         let now = SystemTime::now();
         let service = HistoryService::open(path.to_owned(), Duration::MAX);
-        let old = Url::parse("https://servo.org/old").unwrap();
-        let recent = Url::parse("https://servo.org/recent").unwrap();
+        let old = Url::parse("https://example.com/old").unwrap();
+        let recent = Url::parse("https://example.com/recent").unwrap();
         service.record_visit(old, now - days(100), None);
         service.record_visit(recent, now - days(1), None);
         drop(service);
@@ -334,7 +368,7 @@ mod tests {
 
         drop(HistoryService::open(path.clone(), days(90)));
 
-        assert_eq!(urls(&path), ["https://servo.org/recent"]);
+        assert_eq!(urls(&path), ["https://example.com/recent"]);
     }
 
     #[test]
@@ -344,10 +378,9 @@ mod tests {
         write_old_and_recent_visits(&path);
         let service = HistoryService::open(path.clone(), days(365));
 
-        service.cleaner().set_retention(days(90));
-        drop(service);
+        assert_eq!(block_on(service.cleaner().set_retention(days(90))), Ok(()));
 
-        assert_eq!(urls(&path), ["https://servo.org/recent"]);
+        assert_eq!(urls(&path), ["https://example.com/recent"]);
     }
 
     #[test]
@@ -357,19 +390,39 @@ mod tests {
         let now = SystemTime::now();
         let service = HistoryService::open(path.clone(), Duration::MAX);
         service.record_visit(
-            Url::parse("https://servo.org/old").unwrap(),
+            Url::parse("https://example.com/old").unwrap(),
             now - days(2),
             None,
         );
         for index in 0..10_000 {
-            let url = Url::parse(&format!("https://servo.org/{index}")).unwrap();
+            let url = Url::parse(&format!("https://example.com/{index}")).unwrap();
             service.record_visit(url, now, None);
         }
 
-        service.cleaner().delete_visits_since(now - days(1));
+        let deletion = service.cleaner().delete_visits_since(now - days(1));
         drop(service);
 
-        assert_eq!(urls(&path), ["https://servo.org/old"]);
+        assert_eq!(block_on(deletion), Ok(()));
+        assert_eq!(urls(&path), ["https://example.com/old"]);
+    }
+
+    #[test]
+    fn deletion_errors_are_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        write_old_and_recent_visits(&path);
+        let service = HistoryService::open(path.clone(), Duration::MAX);
+        assert_eq!(
+            block_on(service.cleaner().set_retention(Duration::MAX)),
+            Ok(())
+        );
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("DROP TABLE visits")
+            .unwrap();
+
+        assert!(block_on(service.cleaner().set_retention(days(90))).is_err());
+        assert!(block_on(service.cleaner().delete_visits_since(UNIX_EPOCH)).is_err());
     }
 
     #[test]
@@ -378,7 +431,12 @@ mod tests {
         let cleaner = service.cleaner();
 
         drop(service);
-        cleaner.set_retention(days(1));
-        cleaner.delete_visits_since(UNIX_EPOCH);
+
+        let unavailable = Err(HISTORY_UNAVAILABLE.to_owned());
+        assert_eq!(block_on(cleaner.set_retention(days(1))), unavailable);
+        assert_eq!(
+            block_on(cleaner.delete_visits_since(UNIX_EPOCH)),
+            unavailable
+        );
     }
 }

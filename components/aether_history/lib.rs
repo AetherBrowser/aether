@@ -16,5 +16,5 @@
 mod service;
 mod store;
 
-pub use service::{HistoryCleaner, HistoryService};
+pub use service::{CleanerReply, HistoryCleaner, HistoryService};
 pub use store::HistoryStore;

@@ -656,51 +656,61 @@ mod tests {
     #[test]
     fn visits_before_a_date_are_deleted_with_their_places() {
         let mut store = HistoryStore::open_in_memory().unwrap();
-        let servo = Url::parse("https://servo.org/").unwrap();
-        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+        let first = Url::parse("https://example.com/first").unwrap();
+        let second = Url::parse("https://example.com/second").unwrap();
         let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
-        store.record_visit(&servo, date(1), Some("Servo")).unwrap();
-        store.record_visit(&rust, date(2), Some("Rust")).unwrap();
-        store.record_visit(&servo, date(3), None).unwrap();
+        store.record_visit(&first, date(1), Some("First")).unwrap();
+        store
+            .record_visit(&second, date(2), Some("Second"))
+            .unwrap();
+        store.record_visit(&first, date(3), None).unwrap();
 
         store.delete_visits_before(date(3)).unwrap();
 
         assert_eq!(
             visits(&store.connection),
-            [("https://servo.org/".to_owned(), 3)]
+            [("https://example.com/first".to_owned(), 3)]
         );
         assert_eq!(
             titles(&store.connection),
-            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+            [(
+                "https://example.com/first".to_owned(),
+                Some("First".to_owned())
+            )]
         );
     }
 
     #[test]
     fn visits_since_a_date_are_deleted_with_their_places() {
         let mut store = HistoryStore::open_in_memory().unwrap();
-        let servo = Url::parse("https://servo.org/").unwrap();
-        let rust = Url::parse("https://www.rust-lang.org/").unwrap();
+        let first = Url::parse("https://example.com/first").unwrap();
+        let second = Url::parse("https://example.com/second").unwrap();
         let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
-        store.record_visit(&servo, date(1), Some("Servo")).unwrap();
-        store.record_visit(&rust, date(2), Some("Rust")).unwrap();
-        store.record_visit(&servo, date(3), None).unwrap();
+        store.record_visit(&first, date(1), Some("First")).unwrap();
+        store
+            .record_visit(&second, date(2), Some("Second"))
+            .unwrap();
+        store.record_visit(&first, date(3), None).unwrap();
 
         store.delete_visits_since(date(2)).unwrap();
 
         assert_eq!(
             visits(&store.connection),
-            [("https://servo.org/".to_owned(), 1)]
+            [("https://example.com/first".to_owned(), 1)]
         );
         assert_eq!(
             titles(&store.connection),
-            [("https://servo.org/".to_owned(), Some("Servo".to_owned()))]
+            [(
+                "https://example.com/first".to_owned(),
+                Some("First".to_owned())
+            )]
         );
     }
 
     #[test]
     fn visits_dated_before_the_epoch_are_deleted_with_all_visits() {
         let mut store = HistoryStore::open_in_memory().unwrap();
-        let url = Url::parse("https://servo.org/").unwrap();
+        let url = Url::parse("https://example.com/test").unwrap();
         store
             .record_visit(&url, UNIX_EPOCH - Duration::from_secs(1), None)
             .unwrap();
@@ -723,26 +733,26 @@ mod tests {
     fn deleted_urls_and_titles_are_erased_from_the_files() {
         let directory = tempfile::tempdir().unwrap();
         let mut store = HistoryStore::open(&directory.path().join("places.sqlite")).unwrap();
-        let url = Url::parse("https://very-secret.example/page").unwrap();
+        let url = Url::parse("https://example.com/test").unwrap();
         store
             .record_visit(&url, UNIX_EPOCH, Some("Very secret title"))
             .unwrap();
-        assert!(files_contain(directory.path(), "very-secret.example"));
+        assert!(files_contain(directory.path(), "example.com/test"));
 
         store.delete_visits_since(UNIX_EPOCH).unwrap();
 
-        assert!(!files_contain(directory.path(), "very-secret.example"));
+        assert!(!files_contain(directory.path(), "example.com/test"));
         assert!(!files_contain(directory.path(), "Very secret title"));
     }
 
     #[test]
     fn a_visit_that_no_longer_exists_is_not_recreated_by_its_replacement() {
         let mut store = HistoryStore::open_in_memory().unwrap();
-        let old_url = Url::parse("https://servo.org/").unwrap();
-        let new_url = Url::parse("https://servo.org/blog").unwrap();
+        let old_url = Url::parse("https://example.com/test").unwrap();
+        let new_url = Url::parse("https://example.com/new").unwrap();
 
         store
-            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url), Some("Blog"))
+            .replace_visit(&old_url, UNIX_EPOCH, Some(&new_url), Some("New"))
             .unwrap();
 
         assert!(visits(&store.connection).is_empty());
