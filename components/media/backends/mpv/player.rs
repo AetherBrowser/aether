@@ -34,6 +34,8 @@ pub struct MpvPlayer {
     handle: OnceCell<MpvHandle>,
     /// The requested mute state, applied to libmpv once its instance exists.
     muted: Cell<bool>,
+    /// The requested HTML volume, applied to libmpv once its instance exists.
+    volume: Cell<f64>,
 }
 
 impl MpvPlayer {
@@ -50,6 +52,7 @@ impl MpvPlayer {
             options,
             handle: OnceCell::new(),
             muted: Cell::new(DEFAULT_MUTED),
+            volume: Cell::new(DEFAULT_VOLUME),
         }
     }
 
@@ -64,8 +67,23 @@ impl MpvPlayer {
                 .set_flag("mute", self.muted.get())
                 .map_err(backend_error)?;
         }
+        if self.volume.get() != DEFAULT_VOLUME {
+            handle
+                .set_double("volume", html_to_mpv_volume(self.volume.get()))
+                .map_err(backend_error)?;
+        }
         Ok(self.handle.get_or_init(|| handle))
     }
+}
+
+/// mpv applies a cubic curve to its `volume` property (gain = (volume / 100)³), while an
+/// HTML volume is a linear gain in [0, 1]. Taking the cube root makes the two match.
+fn html_to_mpv_volume(volume: f64) -> f64 {
+    100.0 * volume.clamp(0.0, 1.0).cbrt()
+}
+
+fn mpv_to_html_volume(volume: f64) -> f64 {
+    (volume / 100.0).powi(3)
 }
 
 fn backend_error(error: MpvError) -> PlayerError {
@@ -122,12 +140,21 @@ impl Player for MpvPlayer {
         }
     }
 
-    fn set_volume(&self, _volume: f64) -> Result<(), PlayerError> {
-        Err(not_implemented("set_volume"))
+    fn set_volume(&self, volume: f64) -> Result<(), PlayerError> {
+        if let Some(handle) = self.handle.get() {
+            handle
+                .set_double("volume", html_to_mpv_volume(volume))
+                .map_err(backend_error)?;
+        }
+        self.volume.set(volume.clamp(0.0, 1.0));
+        Ok(())
     }
 
     fn volume(&self) -> f64 {
-        DEFAULT_VOLUME
+        match self.handle.get().map(|handle| handle.get_node("volume")) {
+            Some(Ok(Node::Double(volume))) => mpv_to_html_volume(volume),
+            _ => self.volume.get(),
+        }
     }
 
     fn set_input_size(&self, _size: u64) -> Result<(), PlayerError> {
@@ -299,6 +326,48 @@ mod tests {
         player.set_mute(false).unwrap();
         assert_eq!(handle.get_node("mute"), Ok(Node::Flag(false)));
         assert!(!player.muted());
+    }
+
+    #[test]
+    fn html_volume_is_converted_to_mpv_cubic_volume() {
+        assert_eq!(html_to_mpv_volume(0.0), 0.0);
+        assert_eq!(html_to_mpv_volume(1.0), 100.0);
+        assert_eq!(html_to_mpv_volume(0.125), 50.0);
+        assert_eq!(mpv_to_html_volume(50.0), 0.125);
+        assert_eq!(html_to_mpv_volume(-1.0), 0.0);
+        assert_eq!(html_to_mpv_volume(2.0), 100.0);
+    }
+
+    #[test]
+    fn volume_change_does_not_start_libmpv() {
+        let player = player();
+        player.set_volume(0.125).unwrap();
+        assert!(player.handle.get().is_none());
+        assert_eq!(player.volume(), 0.125);
+    }
+
+    #[test]
+    fn volume_requested_before_start_is_applied_to_libmpv() {
+        let player = player();
+        player.set_volume(0.125).unwrap();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("volume"), Ok(Node::Double(50.0)));
+    }
+
+    #[test]
+    fn set_volume_drives_the_libmpv_volume_property() {
+        let player = player();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+
+        player.set_volume(0.125).unwrap();
+        assert_eq!(handle.get_node("volume"), Ok(Node::Double(50.0)));
+        assert_eq!(player.volume(), 0.125);
+
+        player.set_volume(0.0).unwrap();
+        assert_eq!(handle.get_node("volume"), Ok(Node::Double(0.0)));
+        assert_eq!(player.volume(), 0.0);
     }
 
     #[test]

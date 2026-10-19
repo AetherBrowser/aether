@@ -227,6 +227,22 @@ impl MpvHandle {
         )
     }
 
+    pub fn set_double(&self, name: &str, value: f64) -> Result<(), MpvError> {
+        let c_name = to_cstring(name)?;
+        let mut double = value;
+        check(
+            unsafe {
+                ffi::mpv_set_property(
+                    self.ctx.as_ptr(),
+                    c_name.as_ptr(),
+                    ffi::MPV_FORMAT_DOUBLE,
+                    (&raw mut double).cast(),
+                )
+            },
+            || format!("mpv_set_property({name}={value})"),
+        )
+    }
+
     /// Reads a property as an owned [`Node`].
     pub fn get_node(&self, name: &str) -> Result<Node, MpvError> {
         let c_name = to_cstring(name)?;
@@ -294,6 +310,17 @@ mod tests {
         assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
         assert!(matches!(
             handle.set_flag("not-a-property", true),
+            Err(MpvError::Api { .. })
+        ));
+    }
+
+    #[test]
+    fn doubles_are_written() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.set_double("volume", 42.5).unwrap();
+        assert_eq!(handle.get_node("volume"), Ok(Node::Double(42.5)));
+        assert!(matches!(
+            handle.set_double("not-a-property", 1.0),
             Err(MpvError::Api { .. })
         ));
     }
