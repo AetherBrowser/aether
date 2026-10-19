@@ -6,7 +6,9 @@ use std::path::Path;
 
 use url::Url;
 
-use crate::parser::{get_default_url, location_bar_input_to_url, parse_url_or_filename};
+use crate::parser::{
+    complete_com_domain, get_default_url, location_bar_input_to_url, parse_url_or_filename,
+};
 
 #[cfg(not(target_os = "windows"))]
 const FAKE_CWD: &str = "/fake/cwd";
@@ -476,4 +478,17 @@ fn processes_page_lists_sortable_columns_and_json_endpoint() {
         !html.contains("Updating every second"),
         "status subtitle should stay off the page"
     );
+}
+
+#[test]
+fn test_ctrl_enter_completes_com_domain() {
+    assert_eq!(complete_com_domain("example"), "www.example.com");
+    assert_eq!(
+        complete_com_domain(" example/news "),
+        "www.example.com/news"
+    );
+    assert_eq!(complete_com_domain("example.org"), "example.org");
+    assert_eq!(complete_com_domain("localhost:8000"), "localhost:8000");
+    assert_eq!(complete_com_domain("two words"), "two words");
+    assert_eq!(complete_com_domain(""), "");
 }

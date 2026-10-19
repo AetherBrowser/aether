@@ -150,6 +150,14 @@ impl App {
                 .map(ServoshellGamepadDelegate::new)
                 .map(Rc::new),
         ));
+        let url_given = self
+            .servoshell_preferences
+            .url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty());
+        if !url_given {
+            platform_window.focus_location_bar();
+        }
         let initial_url = self.initial_url.as_url().clone();
         running_state.open_window(
             platform_window,

@@ -15,7 +15,7 @@ use servo::{
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
     InputEventResult, MediaSessionEvent, NavigationType, PermissionRequest, RenderingContext,
-    ScreenGeometry, WebView, WebViewBuilder, WebViewId,
+    ScreenGeometry, ServoUrl, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
@@ -76,6 +76,19 @@ pub(crate) fn view_source_url(url: &Url) -> Option<Url> {
     Url::parse(&format!("{VIEW_SOURCE_SCHEME}:{url}")).ok()
 }
 
+/// The URL loaded for text typed in the location bar: an address, a file or a search.
+fn location_to_url(state: &RunningAppState, location: &str) -> Option<ServoUrl> {
+    let search_url = crate::search::default_search_url().unwrap_or_else(|| {
+        state
+            .servoshell_preferences
+            .search_engines
+            .default_engine()
+            .url
+            .clone()
+    });
+    location_bar_input_to_url(location, &search_url)
+}
+
 // This should vary by zoom level and maybe actual text size (focused or under cursor)
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) const LINE_HEIGHT: f32 = 76.0;
@@ -86,6 +99,9 @@ pub(crate) const LINE_WIDTH: f32 = 76.0;
 /// "A window size of 10x10px shouldn't be supported by any browser."
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 100);
+
+/// How many closed tabs a window remembers for Reopen Closed Tab.
+const MAX_CLOSED_WEBVIEWS: usize = 25;
 
 static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -125,6 +141,14 @@ pub(crate) struct ServoShellWindow {
     /// The active session history entry of each [`WebView`], to update the history when the
     /// next navigation is committed.
     active_entries: RefCell<HashMap<WebViewId, ActiveEntry>>,
+    /// Recently closed tabs, the most recent last.
+    closed_webviews: RefCell<Vec<ClosedWebView>>,
+}
+
+/// A closed tab that [`UserInterfaceCommand::ReopenClosedTab`] opens again.
+struct ClosedWebView {
+    url: Url,
+    index: usize,
 }
 
 pub(crate) enum TopLevelWebViewCreationRequest {
@@ -143,6 +167,7 @@ impl ServoShellWindow {
             pending_favicon_loads: Default::default(),
             pending_commands: Default::default(),
             active_entries: Default::default(),
+            closed_webviews: Default::default(),
         }
     }
 
@@ -285,6 +310,64 @@ impl ServoShellWindow {
             .position(|webview| webview.0 == active_id)
     }
 
+    /// Activates the next tab, or the previous one when `forward` is false, wrapping around.
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    pub(crate) fn activate_adjacent_webview(&self, forward: bool) {
+        let Some(index) = self.get_active_webview_index() else {
+            return;
+        };
+        let len = self.webview_ids().len();
+        let index = if forward {
+            (index + 1) % len
+        } else {
+            (index + len - 1) % len
+        };
+        self.activate_webview_by_index(index);
+    }
+
+    /// Moves the active tab one place right, or left when `forward` is false.
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    pub(crate) fn move_active_webview(&self, forward: bool) {
+        let Some(index) = self.get_active_webview_index() else {
+            return;
+        };
+        let new_index = if forward {
+            index + 1
+        } else if let Some(new_index) = index.checked_sub(1) {
+            new_index
+        } else {
+            return;
+        };
+        let mut webview_collection = self.webview_collection.borrow_mut();
+        if let Some(id) = webview_collection.active_id() &&
+            new_index < webview_collection.creation_order.len()
+        {
+            webview_collection.move_webview(id, new_index);
+            self.set_needs_update();
+        }
+    }
+
+    /// Activates the tab already showing `url`, or opens `url` in a new tab.
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    pub(crate) fn activate_or_open_tab(&self, url: Url) {
+        let shows_url = |webview: &WebView| {
+            webview
+                .url()
+                .is_some_and(|shown| shown.scheme() == url.scheme() && shown.path() == url.path())
+        };
+        if let Some((id, _)) = self
+            .webviews()
+            .into_iter()
+            .find(|(_, webview)| shows_url(webview))
+        {
+            self.activate_webview(id);
+        } else {
+            self.queue_user_interface_command(UserInterfaceCommand::NewWebView(
+                TopLevelWebViewCreationRequest::WithUrl(url),
+            ));
+        }
+    }
+
     pub(crate) fn update_and_request_repaint_if_necessary(&self, state: &RunningAppState) {
         let updated_user_interface = self.needs_update.take() &&
             self.platform_window
@@ -304,8 +387,18 @@ impl ServoShellWindow {
     /// the close notification via the [`WebViewDelegate`] later.
     pub(crate) fn close_webview(&self, webview_id: WebViewId) {
         let mut webview_collection = self.webview_collection.borrow_mut();
-        if webview_collection.remove(webview_id).is_none() {
+        let index = webview_collection.index_of(webview_id);
+        let Some(webview) = webview_collection.remove(webview_id) else {
             return;
+        };
+        if let (Some(url), Some(index)) = (webview.url(), index) &&
+            url != new_tab_url()
+        {
+            let mut closed_webviews = self.closed_webviews.borrow_mut();
+            if closed_webviews.len() == MAX_CLOSED_WEBVIEWS {
+                closed_webviews.remove(0);
+            }
+            closed_webviews.push(ClosedWebView { url, index });
         }
         self.active_entries.borrow_mut().remove(&webview_id);
         self.platform_window
@@ -404,22 +497,24 @@ impl ServoShellWindow {
             match event {
                 UserInterfaceCommand::Go(location) => {
                     self.set_needs_update();
-                    let search_url = crate::search::default_search_url().unwrap_or_else(|| {
-                        state
-                            .servoshell_preferences
-                            .search_engines
-                            .default_engine()
-                            .url
-                            .clone()
-                    });
-                    let Some(url) = location_bar_input_to_url(&location.clone(), &search_url)
-                    else {
+                    let Some(url) = location_to_url(state, &location) else {
                         warn!("failed to parse location");
                         break;
                     };
                     if let Some(active_webview) = self.active_webview() {
                         active_webview.load(url.into_url());
                     }
+                },
+                UserInterfaceCommand::GoInNewTab(location) => {
+                    let Some(url) = location_to_url(state, &location) else {
+                        warn!("failed to parse location");
+                        continue;
+                    };
+                    self.set_needs_update();
+                    self.create_and_activate_toplevel_webview(
+                        state.clone(),
+                        TopLevelWebViewCreationRequest::WithUrl(url.into_url()),
+                    );
                 },
                 UserInterfaceCommand::Back => {
                     if let Some(active_webview) = self.active_webview() {
@@ -460,15 +555,33 @@ impl ServoShellWindow {
                     self.set_needs_update();
                     self.close_webview(id);
                 },
+                UserInterfaceCommand::ReopenClosedTab => {
+                    let Some(closed_webview) = self.closed_webviews.borrow_mut().pop() else {
+                        continue;
+                    };
+                    self.set_needs_update();
+                    let webview = self.create_and_activate_toplevel_webview(
+                        state.clone(),
+                        TopLevelWebViewCreationRequest::WithUrl(closed_webview.url),
+                    );
+                    self.webview_collection
+                        .borrow_mut()
+                        .move_webview(webview.id(), closed_webview.index);
+                },
                 UserInterfaceCommand::NewWindow(creation_request) => {
                     let Some(create_platform_window) = create_platform_window else {
                         continue;
                     };
-                    let url = match &creation_request {
-                        TopLevelWebViewCreationRequest::WithUrl(url) => url.clone(),
-                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => new_window_url(),
+                    let (url, opened_by_user) = match &creation_request {
+                        TopLevelWebViewCreationRequest::WithUrl(url) => (url.clone(), true),
+                        TopLevelWebViewCreationRequest::WithCreateRequest(..) => {
+                            (new_window_url(), false)
+                        },
                     };
                     let platform_window = create_platform_window(url);
+                    if opened_by_user {
+                        platform_window.focus_location_bar();
+                    }
                     state.open_window(platform_window, creation_request);
                 },
             }
@@ -529,6 +642,8 @@ pub(crate) trait PlatformWindow {
         true
     }
 
+    fn focus_location_bar(&self) {}
+
     fn show_embedder_control(&self, _: WebViewId, _: EmbedderControl) {}
     fn hide_embedder_control(&self, _: WebViewId, _: EmbedderControlId) {}
     fn dismiss_embedder_controls_for_webview(&self, _: WebViewId) {}
@@ -543,6 +658,8 @@ pub(crate) trait PlatformWindow {
 
     fn notify_input_event_handled(
         &self,
+        _: &RunningAppState,
+        _: &ServoShellWindow,
         _webview: &WebView,
         _id: InputEventId,
         _result: InputEventResult,
