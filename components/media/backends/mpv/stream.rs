@@ -24,8 +24,9 @@ const LOW_WATER_MARK: usize = 2 * 1024 * 1024;
 /// and must not keep the bridge alive, or neither would ever be freed.
 pub(crate) trait BridgeObserver: Send + Sync {
     /// The queue went down below the low water mark after reaching the high one.
+    /// Must not call the bridge.
     fn need_data(&self);
-    /// The queue went over the high water mark.
+    /// The queue went over the high water mark. Must not call the bridge.
     fn enough_data(&self);
     /// Asks Servo to push the resource from `offset` on, and waits for its answer.
     /// Returns whether the data will come. Must give up once `bridge` is cancelled.
@@ -48,6 +49,9 @@ pub(crate) struct StreamBridge {
     state: Mutex<StreamState>,
     /// Wakes up `read` when it can make progress: new data, end of stream, or cancel.
     changed: Condvar,
+    /// Taken before `state` is released to call `need_data` or `enough_data`, so that
+    /// they reach the observer in the order of the changes they report.
+    notifying: Mutex<()>,
     observer: Box<dyn BridgeObserver>,
 }
 
@@ -88,6 +92,7 @@ impl StreamBridge {
         StreamBridge {
             state: Mutex::default(),
             changed: Condvar::new(),
+            notifying: Mutex::default(),
             observer,
         }
     }
@@ -115,9 +120,10 @@ impl StreamBridge {
         let became_full = !state.full && state.queued > HIGH_WATER_MARK;
         state.full |= became_full;
         self.changed.notify_all();
+        let notifying = became_full.then(|| self.notifying.lock().unwrap());
         drop(state);
 
-        if became_full {
+        if notifying.is_some() {
             self.observer.enough_data();
         }
     }
@@ -182,9 +188,10 @@ impl StreamBridge {
         state.position += copied as u64;
         let needs_data = state.full && state.queued < LOW_WATER_MARK;
         state.full &= !needs_data;
+        let notifying = needs_data.then(|| self.notifying.lock().unwrap());
         drop(state);
 
-        if needs_data {
+        if notifying.is_some() {
             self.observer.need_data();
         }
         ReadResult::Data(copied)
@@ -740,5 +747,63 @@ mod tests {
         assert_eq!(bridge.seek(0), None);
         assert_eq!(bridge.seek(100), None);
         assert!(calls.seeks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn water_marks_reach_the_observer_in_order() {
+        /// Records the calls it gets, and holds `enough_data` until the test lets it go.
+        struct SlowObserver {
+            calls: Arc<Mutex<Vec<&'static str>>>,
+            entered: Mutex<mpsc::Sender<()>>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+
+        impl BridgeObserver for SlowObserver {
+            fn need_data(&self) {
+                self.calls.lock().unwrap().push("need_data");
+            }
+
+            fn enough_data(&self) {
+                self.entered.lock().unwrap().send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                self.calls.lock().unwrap().push("enough_data");
+            }
+
+            fn seek_data(&self, _: u64, _: &StreamBridge) -> bool {
+                unreachable!()
+            }
+        }
+
+        let calls = Arc::new(Mutex::new(vec![]));
+        let (entered_sender, entered) = mpsc::channel();
+        let (release, release_receiver) = mpsc::channel();
+        let bridge = Arc::new(StreamBridge::new(Box::new(SlowObserver {
+            calls: calls.clone(),
+            entered: Mutex::new(entered_sender),
+            release: Mutex::new(release_receiver),
+        })));
+
+        // The producer crosses the high water mark, and is held while it reports it.
+        let producer = thread::spawn({
+            let bridge = bridge.clone();
+            move || bridge.push(vec![0; HIGH_WATER_MARK + 1])
+        });
+        entered.recv_timeout(TIMEOUT).unwrap();
+
+        // Meanwhile, the reader drains the queue below the low water mark.
+        let reader = thread::spawn({
+            let bridge = bridge.clone();
+            move || read_data(&bridge, HIGH_WATER_MARK + 2 - LOW_WATER_MARK)
+        });
+        thread::sleep(SETTLE);
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "need_data overtook enough_data"
+        );
+
+        release.send(()).unwrap();
+        producer.join().unwrap();
+        reader.join().unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["enough_data", "need_data"]);
     }
 }
