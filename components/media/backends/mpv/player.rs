@@ -3,16 +3,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cell::{Cell, OnceCell};
-use std::ops::Range;
+use std::ops::{Deref, Range};
 use std::sync::{Arc, Mutex, Weak};
 
 use log::warn;
+use servo_base::generic_channel::GenericCallback;
 use servo_media::MediaInstanceError;
-use servo_media_player::{Player, PlayerError};
+use servo_media_player::{Player, PlayerError, PlayerEvent};
 use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
 use crate::Instances;
+use crate::events::EventThread;
 use crate::handle::{MpvError, MpvHandle, Node};
 
 const DEFAULT_PAUSED: bool = true;
@@ -32,7 +34,9 @@ pub struct MpvPlayer {
     instances: Weak<Mutex<Instances>>,
     /// Options of the libmpv instance, read when it gets created.
     options: Arc<[(&'static str, &'static str)]>,
-    handle: OnceCell<MpvHandle>,
+    /// Where the events of the libmpv instance go, once it exists.
+    sender: GenericCallback<PlayerEvent>,
+    handle: OnceCell<Instance>,
     /// Whether this player was playing when its page got suspended, so `resume` restarts
     /// it. A media paused by the page stays paused when the page is resumed.
     resume_after_suspend: Cell<bool>,
@@ -48,12 +52,14 @@ impl MpvPlayer {
         context_id: ClientContextId,
         instances: Weak<Mutex<Instances>>,
         options: Arc<[(&'static str, &'static str)]>,
+        sender: GenericCallback<PlayerEvent>,
     ) -> MpvPlayer {
         MpvPlayer {
             id,
             context_id,
             instances,
             options,
+            sender,
             handle: OnceCell::new(),
             resume_after_suspend: Cell::new(false),
             muted: Cell::new(DEFAULT_MUTED),
@@ -66,7 +72,7 @@ impl MpvPlayer {
         if let Some(handle) = self.handle.get() {
             return Ok(handle);
         }
-        let handle = MpvHandle::new(&self.options).map_err(backend_error)?;
+        let handle = Arc::new(MpvHandle::new(&self.options).map_err(backend_error)?);
         if self.muted.get() != DEFAULT_MUTED {
             handle
                 .set_flag("mute", self.muted.get())
@@ -77,7 +83,27 @@ impl MpvPlayer {
                 .set_double("volume", html_to_mpv_volume(self.volume.get()))
                 .map_err(backend_error)?;
         }
-        Ok(self.handle.get_or_init(|| handle))
+        let events = EventThread::spawn(&handle, self.sender.clone()).map_err(backend_error)?;
+        Ok(self.handle.get_or_init(|| Instance {
+            _events: events,
+            handle,
+        }))
+    }
+}
+
+/// A libmpv instance with the thread that forwards its events.
+struct Instance {
+    /// Only kept for its `Drop`. Declared first so the thread is stopped and joined
+    /// before `handle` is released, which destroys the instance.
+    _events: EventThread,
+    handle: Arc<MpvHandle>,
+}
+
+impl Deref for Instance {
+    type Target = MpvHandle;
+
+    fn deref(&self) -> &MpvHandle {
+        &self.handle
     }
 }
 
@@ -289,6 +315,9 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use servo_base::generic_channel::GenericReceiver;
+    use servo_media_player::PlaybackState;
+
     use super::*;
 
     /// A player whose libmpv instance never opens an audio output.
@@ -298,18 +327,53 @@ mod tests {
             ClientContextId::build(1, 1),
             Weak::new(),
             Arc::from(options),
+            GenericCallback::new(|_| {}).unwrap(),
         )
     }
 
-    /// A player with the real player options, without an audio output.
-    fn player() -> MpvPlayer {
-        let options: Vec<_> = crate::BASE_OPTIONS
+    /// The real player options, without an audio output.
+    fn options() -> Vec<(&'static str, &'static str)> {
+        crate::BASE_OPTIONS
             .iter()
             .chain(crate::PLAYER_OPTIONS)
             .chain(&[("ao", "null")])
             .copied()
-            .collect();
-        player_with(&options)
+            .collect()
+    }
+
+    fn player() -> MpvPlayer {
+        player_with(&options())
+    }
+
+    /// A player whose events are received by the test.
+    fn player_with_events() -> (MpvPlayer, GenericReceiver<PlayerEvent>) {
+        let (sender, receiver) = GenericCallback::new_blocking().unwrap();
+        let player = MpvPlayer::new(
+            0,
+            ClientContextId::build(1, 1),
+            Weak::new(),
+            Arc::from(options()),
+            sender,
+        );
+        (player, receiver)
+    }
+
+    /// Skips events until one matches, failing the test after a few seconds.
+    fn expect_event(
+        receiver: &GenericReceiver<PlayerEvent>,
+        what: &str,
+        matches: impl Fn(&PlayerEvent) -> bool,
+    ) -> PlayerEvent {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let event = receiver
+                .try_recv_timeout(remaining)
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+            if matches(&event) {
+                return event;
+            }
+        }
     }
 
     #[test]
@@ -526,6 +590,78 @@ mod tests {
         player.set_volume(0.0).unwrap();
         assert_eq!(handle.get_node("volume"), Ok(Node::Double(0.0)));
         assert_eq!(player.volume(), 0.0);
+    }
+
+    #[test]
+    fn loading_a_file_reports_its_metadata_then_its_state() {
+        let (player, events) = player_with_events();
+        load_test_file(&player);
+        let PlayerEvent::MetadataUpdated(metadata) =
+            expect_event(&events, "the metadata", |event| {
+                matches!(event, PlayerEvent::MetadataUpdated(_))
+            })
+        else {
+            unreachable!()
+        };
+        assert!(metadata.duration.is_some());
+        assert!(!metadata.is_live);
+        assert!(metadata.is_seekable);
+        assert_eq!(metadata.audio_tracks.len(), 1);
+        assert!(metadata.video_tracks.is_empty());
+        expect_event(&events, "the paused state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Paused))
+        });
+    }
+
+    #[test]
+    fn playback_reports_its_state_and_position() {
+        let (player, events) = player_with_events();
+        load_test_file(&player);
+        expect_event(&events, "the metadata", |event| {
+            matches!(event, PlayerEvent::MetadataUpdated(_))
+        });
+        player.play().unwrap();
+        expect_event(&events, "the playing state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Playing))
+        });
+        expect_event(
+            &events,
+            "the position to advance",
+            |event| matches!(event, PlayerEvent::PositionChanged(position) if *position > 0.0),
+        );
+    }
+
+    #[test]
+    fn reaching_the_end_reports_end_of_stream_then_paused() {
+        let (player, events) = player_with_events();
+        let handle = load_test_file(&player);
+        let Ok(Node::Double(duration)) = handle.get_node("duration") else {
+            panic!("the test file should have a duration");
+        };
+        handle
+            .command(&["seek", &(duration - 0.2).to_string(), "absolute"])
+            .unwrap();
+        player.play().unwrap();
+        expect_event(&events, "the end of stream", |event| {
+            matches!(event, PlayerEvent::EndOfStream)
+        });
+        // `keep-open=yes` pauses at the end instead of unloading the file.
+        expect_event(&events, "the paused state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Paused))
+        });
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_played_reports_an_error() {
+        let (player, events) = player_with_events();
+        player
+            .handle()
+            .unwrap()
+            .command(&["loadfile", "/nonexistent/aether-media-mpv-test.mp3"])
+            .unwrap();
+        expect_event(&events, "the error", |event| {
+            matches!(event, PlayerEvent::Error(_))
+        });
     }
 
     #[test]

@@ -57,6 +57,47 @@ pub struct mpv_node_list {
     pub keys: *mut *mut c_char,
 }
 
+/// `mpv_event_id`.
+pub type mpv_event_id = c_int;
+pub const MPV_EVENT_NONE: mpv_event_id = 0;
+pub const MPV_EVENT_SHUTDOWN: mpv_event_id = 1;
+pub const MPV_EVENT_END_FILE: mpv_event_id = 7;
+pub const MPV_EVENT_FILE_LOADED: mpv_event_id = 8;
+pub const MPV_EVENT_PROPERTY_CHANGE: mpv_event_id = 22;
+
+/// `mpv_end_file_reason`.
+pub type mpv_end_file_reason = c_int;
+pub const MPV_END_FILE_REASON_EOF: mpv_end_file_reason = 0;
+pub const MPV_END_FILE_REASON_ERROR: mpv_end_file_reason = 4;
+
+/// `mpv_event`: `data` points to a struct that depends on `event_id`.
+#[repr(C)]
+pub struct mpv_event {
+    pub event_id: mpv_event_id,
+    pub error: c_int,
+    pub reply_userdata: u64,
+    pub data: *mut c_void,
+}
+
+/// `mpv_event_property`, the `data` of `MPV_EVENT_PROPERTY_CHANGE`. `format` is
+/// `MPV_FORMAT_NONE` (and `data` NULL) when the property is unavailable.
+#[repr(C)]
+pub struct mpv_event_property {
+    pub name: *const c_char,
+    pub format: mpv_format,
+    pub data: *mut c_void,
+}
+
+/// `mpv_event_end_file`, the `data` of `MPV_EVENT_END_FILE`.
+#[repr(C)]
+pub struct mpv_event_end_file {
+    pub reason: mpv_end_file_reason,
+    pub error: c_int,
+    pub playlist_entry_id: i64,
+    pub playlist_insert_id: i64,
+    pub playlist_insert_num_entries: c_int,
+}
+
 unsafe extern "C" {
     pub fn mpv_client_api_version() -> c_ulong;
     pub fn mpv_error_string(error: c_int) -> *const c_char;
@@ -85,4 +126,13 @@ unsafe extern "C" {
     ) -> c_int;
 
     pub fn mpv_free_node_contents(node: *mut mpv_node);
+
+    pub fn mpv_observe_property(
+        ctx: *mut mpv_handle,
+        reply_userdata: u64,
+        name: *const c_char,
+        format: mpv_format,
+    ) -> c_int;
+    pub fn mpv_wait_event(ctx: *mut mpv_handle, timeout: f64) -> *mut mpv_event;
+    pub fn mpv_wakeup(ctx: *mut mpv_handle);
 }

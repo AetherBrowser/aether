@@ -8,6 +8,7 @@
 //! capture, media streams) is delegated to a fallback backend.
 
 mod capabilities;
+mod events;
 #[expect(non_camel_case_types, reason = "Mirrors the C names of mpv/client.h")]
 mod ffi;
 mod handle;
@@ -51,7 +52,9 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 ///   starts playing as soon as a file is loaded.
 /// - `vid=no`: video is not rendered yet, so do not spend CPU decoding it. The audio of a
 ///   video file still plays.
-const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no")];
+/// - `keep-open=yes`: pause at the end of the file instead of unloading it, so it can be
+///   played again: the stream bridge does not keep the bytes mpv already read.
+const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no"), ("keep-open", "yes")];
 
 /// Media instances per client context (a pipeline), weakly referenced.
 type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstance>>)>>;
@@ -138,7 +141,7 @@ impl Backend for MpvBackend {
         &self,
         id: &ClientContextId,
         _stream_type: StreamType,
-        _sender: GenericCallback<PlayerEvent>,
+        sender: GenericCallback<PlayerEvent>,
         _video_renderer: Option<Arc<Mutex<dyn VideoFrameRenderer>>>,
         _audio_renderer: Option<Arc<Mutex<dyn AudioRenderer>>>,
         _gl_context: Box<dyn PlayerGLContext>,
@@ -149,6 +152,7 @@ impl Backend for MpvBackend {
             *id,
             Arc::downgrade(&self.instances),
             self.player_options.clone(),
+            sender,
         )));
         let instance: Arc<Mutex<dyn MediaInstance>> = player.clone();
         self.instances
