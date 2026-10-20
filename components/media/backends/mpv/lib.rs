@@ -52,7 +52,9 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 ///   starts playing as soon as a file is loaded.
 /// - `vid=no`: video is not rendered yet, so do not spend CPU decoding it. The audio of a
 ///   video file still plays.
-const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no")];
+/// - `keep-open=yes`: pause at the end of the file instead of unloading it, so it can be
+///   played again: the stream bridge does not keep the bytes mpv already read.
+const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no"), ("keep-open", "yes")];
 
 /// Media instances per client context (a pipeline), weakly referenced.
 type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstance>>)>>;

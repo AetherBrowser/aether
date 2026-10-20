@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn reaching_the_end_reports_end_of_stream_then_stopped() {
+    fn reaching_the_end_reports_end_of_stream_then_paused() {
         let (player, events) = player_with_events();
         let handle = load_test_file(&player);
         let Ok(Node::Double(duration)) = handle.get_node("duration") else {
@@ -645,8 +645,9 @@ mod tests {
         expect_event(&events, "the end of stream", |event| {
             matches!(event, PlayerEvent::EndOfStream)
         });
-        expect_event(&events, "the stopped state", |event| {
-            matches!(event, PlayerEvent::StateChanged(PlaybackState::Stopped))
+        // `keep-open=yes` pauses at the end instead of unloading the file.
+        expect_event(&events, "the paused state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Paused))
         });
     }
 

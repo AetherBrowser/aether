@@ -18,7 +18,13 @@ use servo_media_player::{PlaybackState, PlayerEvent};
 use crate::handle::{EndFileReason, Event, EventQueue, MpvError, MpvHandle, Node};
 
 /// The properties whose changes are turned into `PlayerEvent`s.
-const OBSERVED_PROPERTIES: &[&str] = &["time-pos", "duration", "pause", "idle-active"];
+const OBSERVED_PROPERTIES: &[&str] = &[
+    "time-pos",
+    "duration",
+    "pause",
+    "idle-active",
+    "eof-reached",
+];
 
 /// mpv reports `time-pos` on every frame: only forward it this often, like the GStreamer
 /// backend does.
@@ -122,14 +128,14 @@ impl EventTranslator {
                 }
                 events
             },
+            // With `keep-open=yes`, the end of the file is reported by `eof-reached`.
             Event::EndFile(reason) => {
                 self.file_loaded = false;
                 match reason {
-                    EndFileReason::Eof => vec![PlayerEvent::EndOfStream],
                     EndFileReason::Error(error) => {
                         vec![PlayerEvent::Error(format!("MPV backend: {error}"))]
                     },
-                    EndFileReason::Other => vec![],
+                    EndFileReason::Eof | EndFileReason::Other => vec![],
                 }
             },
             Event::PropertyChange { name, value } => self
@@ -170,6 +176,7 @@ impl EventTranslator {
                 Duration::try_from_secs_f64(duration).ok(),
             )),
             ("duration", Node::None) => Some(PlayerEvent::DurationChanged(None)),
+            ("eof-reached", Node::Flag(true)) => Some(PlayerEvent::EndOfStream),
             _ => None,
         }
     }
@@ -303,6 +310,16 @@ mod tests {
     }
 
     #[test]
+    fn reaching_the_end_is_end_of_stream() {
+        let mut translator = loaded();
+        assert!(change(&mut translator, "eof-reached", Node::Flag(false)).is_none());
+        assert!(matches!(
+            change(&mut translator, "eof-reached", Node::Flag(true)),
+            Some(PlayerEvent::EndOfStream)
+        ));
+    }
+
+    #[test]
     fn end_of_file_reasons_are_mapped() {
         let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
         let end = |reason| {
@@ -311,10 +328,7 @@ mod tests {
             assert!(!translator.file_loaded);
             events
         };
-        assert!(matches!(
-            end(EndFileReason::Eof).as_slice(),
-            [PlayerEvent::EndOfStream]
-        ));
+        assert!(end(EndFileReason::Eof).is_empty());
         assert!(matches!(
             end(EndFileReason::Error("boom".to_owned())).as_slice(),
             [PlayerEvent::Error(error)] if error == "MPV backend: boom"
