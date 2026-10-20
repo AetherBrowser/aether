@@ -13,7 +13,24 @@
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
-use log::warn;
+use log::{debug, warn};
+
+/// Above this many queued bytes, the bridge has enough data.
+const HIGH_WATER_MARK: usize = 8 * 1024 * 1024;
+/// Once it had enough, the bridge needs data again below this many queued bytes.
+const LOW_WATER_MARK: usize = 2 * 1024 * 1024;
+
+/// How the bridge asks the player for data. It is called without the bridge's lock held,
+/// and must not keep the bridge alive, or neither would ever be freed.
+pub(crate) trait BridgeObserver: Send + Sync {
+    /// The queue went down below the low water mark after reaching the high one.
+    fn need_data(&self);
+    /// The queue went over the high water mark.
+    fn enough_data(&self);
+    /// Asks Servo to push the resource from `offset` on, and waits for its answer.
+    /// Returns whether the data will come. Must give up once `bridge` is cancelled.
+    fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> bool;
+}
 
 /// What a [`StreamBridge::read`] did.
 #[derive(Debug, PartialEq)]
@@ -21,17 +38,17 @@ pub(crate) enum ReadResult {
     /// This many bytes, at least one, were copied into the buffer.
     Data(usize),
     EndOfStream,
-    /// The player is gone: the stream will not return anything anymore.
+    /// The player is gone, or a seek failed: the stream will not return anything anymore.
     Cancelled,
 }
 
 /// A byte stream filled by Servo with [`push`](Self::push) and drained by libmpv with
 /// [`read`](Self::read), which blocks until there is something to return.
-#[derive(Default)]
 pub(crate) struct StreamBridge {
     state: Mutex<StreamState>,
     /// Wakes up `read` when it can make progress: new data, end of stream, or cancel.
     changed: Condvar,
+    observer: Box<dyn BridgeObserver>,
 }
 
 /// Everything the lock protects. `queued` is the length of `chunks` minus `offset`, and
@@ -46,14 +63,33 @@ struct StreamState {
     /// Offset in the resource of the next byte `read` returns.
     position: u64,
     size: Option<u64>,
+    seekable: bool,
+    /// Whether a seek waits for Servo: what it pushes until then comes from the old offset.
+    seeking: bool,
+    /// Whether the queue went over the high water mark, and not back below the low one.
+    full: bool,
     end_of_stream: bool,
-    /// Set for good when the player is gone.
+    /// Set for good when the player is gone, or a seek failed.
     cancelled: bool,
 }
 
+impl StreamState {
+    /// Drops what is queued, freeing its memory.
+    fn clear(&mut self) {
+        self.chunks = VecDeque::new();
+        self.offset = 0;
+        self.queued = 0;
+        self.full = false;
+    }
+}
+
 impl StreamBridge {
-    pub(crate) fn new() -> StreamBridge {
-        StreamBridge::default()
+    pub(crate) fn new(observer: Box<dyn BridgeObserver>) -> StreamBridge {
+        StreamBridge {
+            state: Mutex::default(),
+            changed: Condvar::new(),
+            observer,
+        }
     }
 
     pub(crate) fn push(&self, data: Vec<u8>) {
@@ -66,17 +102,33 @@ impl StreamBridge {
         if state.cancelled {
             return;
         }
+        if state.seeking {
+            debug!("MPV backend: dropping data pushed from before a seek");
+            return;
+        }
         if state.end_of_stream {
             warn!("MPV backend: dropping data pushed after the end of the stream");
             return;
         }
         state.queued += data.len();
         state.chunks.push_back(data);
+        let became_full = !state.full && state.queued > HIGH_WATER_MARK;
+        state.full |= became_full;
         self.changed.notify_all();
+        drop(state);
+
+        if became_full {
+            self.observer.enough_data();
+        }
     }
 
     pub(crate) fn end_of_stream(&self) {
-        self.state.lock().unwrap().end_of_stream = true;
+        let mut state = self.state.lock().unwrap();
+        // The end of the fetch that a seek replaces.
+        if state.seeking {
+            return;
+        }
+        state.end_of_stream = true;
         self.changed.notify_all();
     }
 
@@ -86,6 +138,10 @@ impl StreamBridge {
 
     pub(crate) fn size(&self) -> Option<u64> {
         self.state.lock().unwrap().size
+    }
+
+    pub(crate) fn set_seekable(&self, seekable: bool) {
+        self.state.lock().unwrap().seekable = seekable;
     }
 
     /// Waits until something is queued, then copies as much of it as fits into `buf`.
@@ -124,28 +180,117 @@ impl StreamBridge {
         }
         state.queued -= copied;
         state.position += copied as u64;
+        let needs_data = state.full && state.queued < LOW_WATER_MARK;
+        state.full &= !needs_data;
+        drop(state);
+
+        if needs_data {
+            self.observer.need_data();
+        }
         ReadResult::Data(copied)
+    }
+
+    /// Moves the stream to `offset`, asking Servo for the data from there if needed.
+    /// Returns the new position, or `None` if the stream cannot get there.
+    pub(crate) fn seek(&self, offset: u64) -> Option<u64> {
+        let mut state = self.state.lock().unwrap();
+        if state.cancelled || !state.seekable {
+            return None;
+        }
+        // libmpv seeks to 0 right after opening a stream, and only treats the stream as
+        // seekable if that works (stream_cb.c). Servo already pushes from there.
+        if offset == state.position {
+            return Some(offset);
+        }
+        state.clear();
+        state.position = offset;
+        state.end_of_stream = false;
+        state.seeking = true;
+        drop(state);
+
+        let found = self.observer.seek_data(offset, self);
+
+        let mut state = self.state.lock().unwrap();
+        state.seeking = false;
+        if !found {
+            // The queue was dropped and the old fetch may go on: the stream cannot be
+            // trusted anymore.
+            state.cancelled = true;
+            state.clear();
+            self.changed.notify_all();
+        }
+        (!state.cancelled).then_some(offset)
     }
 
     /// Fails current and future reads, and frees what is queued.
     pub(crate) fn cancel(&self) {
         let mut state = self.state.lock().unwrap();
         state.cancelled = true;
-        state.chunks = VecDeque::new();
-        state.offset = 0;
-        state.queued = 0;
+        state.clear();
         self.changed.notify_all();
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.state.lock().unwrap().cancelled
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{self, RecvTimeoutError};
     use std::thread;
     use std::time::Duration;
 
     use super::*;
+
+    /// What a [`TestObserver`] was told.
+    #[derive(Default)]
+    struct Calls {
+        need_data: AtomicUsize,
+        enough_data: AtomicUsize,
+        seeks: Mutex<Vec<u64>>,
+    }
+
+    type SeekAnswer = Box<dyn Fn(u64, &StreamBridge) -> bool + Send + Sync>;
+
+    struct TestObserver {
+        calls: Arc<Calls>,
+        seek_answer: SeekAnswer,
+    }
+
+    impl BridgeObserver for TestObserver {
+        fn need_data(&self) {
+            self.calls.need_data.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn enough_data(&self) {
+            self.calls.enough_data.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> bool {
+            self.calls.seeks.lock().unwrap().push(offset);
+            (self.seek_answer)(offset, bridge)
+        }
+    }
+
+    /// A bridge whose observer records calls, and answers seeks with `seek_answer`.
+    fn observed_bridge(
+        seek_answer: impl Fn(u64, &StreamBridge) -> bool + Send + Sync + 'static,
+    ) -> (StreamBridge, Arc<Calls>) {
+        let calls = Arc::new(Calls::default());
+        let observer = TestObserver {
+            calls: calls.clone(),
+            seek_answer: Box::new(seek_answer),
+        };
+        (StreamBridge::new(Box::new(observer)), calls)
+    }
+
+    /// A bridge for tests that do not look at its observer.
+    fn bridge() -> StreamBridge {
+        observed_bridge(|_, _| true).0
+    }
 
     /// Long enough for a reader that is not blocked to have returned.
     const SETTLE: Duration = Duration::from_millis(50);
@@ -200,7 +345,7 @@ mod tests {
 
     #[test]
     fn pushed_bytes_are_read_in_order() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1, 2, 3]);
         bridge.push(vec![4]);
         bridge.push(vec![5, 6]);
@@ -209,7 +354,7 @@ mod tests {
 
     #[test]
     fn a_read_spans_several_chunks() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1, 2, 3]);
         bridge.push(vec![4, 5]);
         let mut buf = [0; 5];
@@ -219,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_short_read_leaves_the_rest_queued() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1, 2, 3, 4, 5]);
         assert_eq!(read_data(&bridge, 2), [1, 2]);
         assert_eq!(read_data(&bridge, 2), [3, 4]);
@@ -228,7 +373,7 @@ mod tests {
 
     #[test]
     fn reads_keep_the_queue_and_position_consistent() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![0; 3]);
         bridge.push(vec![0; 4]);
         read_data(&bridge, 2);
@@ -244,7 +389,7 @@ mod tests {
 
     #[test]
     fn a_read_waits_for_data() {
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
         let result = read_in_background(&bridge, 4);
         assert_waiting(&result);
 
@@ -256,7 +401,7 @@ mod tests {
 
     #[test]
     fn the_end_of_the_stream_wakes_up_a_waiting_read() {
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
         let result = read_in_background(&bridge, 4);
         assert_waiting(&result);
 
@@ -267,7 +412,7 @@ mod tests {
 
     #[test]
     fn cancel_wakes_up_a_waiting_read() {
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
         let result = read_in_background(&bridge, 4);
         assert_waiting(&result);
 
@@ -278,7 +423,7 @@ mod tests {
 
     #[test]
     fn queued_data_is_read_before_the_end_of_the_stream() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1, 2]);
         bridge.end_of_stream();
         assert_eq!(read_data(&bridge, 4), [1, 2]);
@@ -289,7 +434,7 @@ mod tests {
 
     #[test]
     fn empty_pushes_are_ignored() {
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
         let result = read_in_background(&bridge, 4);
         bridge.push(vec![]);
         assert_waiting(&result);
@@ -302,7 +447,7 @@ mod tests {
 
     #[test]
     fn pushes_after_the_end_of_the_stream_are_ignored() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1]);
         bridge.end_of_stream();
         bridge.push(vec![2]);
@@ -312,7 +457,7 @@ mod tests {
 
     #[test]
     fn cancel_is_final_and_frees_the_queue() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         bridge.push(vec![1, 2, 3]);
         read_data(&bridge, 1);
         bridge.cancel();
@@ -330,7 +475,7 @@ mod tests {
 
     #[test]
     fn the_size_is_unknown_until_set() {
-        let bridge = StreamBridge::new();
+        let bridge = bridge();
         assert_eq!(bridge.size(), None);
         bridge.set_size(1234);
         assert_eq!(bridge.size(), Some(1234));
@@ -340,7 +485,7 @@ mod tests {
     fn a_megabyte_streams_through_in_order() {
         const LEN: usize = 1 << 20;
         let expected: Vec<u8> = (0..LEN).map(|i| (i % 251) as u8).collect();
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
 
         let producer = thread::spawn({
             let bridge = bridge.clone();
@@ -378,7 +523,7 @@ mod tests {
     fn a_flood_from_several_threads_loses_nothing() {
         const PRODUCERS: u8 = 4;
         const CHUNKS: u64 = 50_000;
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
 
         let producers: Vec<_> = (0..PRODUCERS)
             .map(|producer| {
@@ -424,7 +569,7 @@ mod tests {
     #[test]
     fn cancel_during_a_flood_stops_everything() {
         const PRODUCERS: u8 = 4;
-        let bridge = Arc::new(StreamBridge::new());
+        let bridge = Arc::new(bridge());
 
         let producers: Vec<_> = (0..PRODUCERS)
             .map(|producer| {
@@ -467,5 +612,133 @@ mod tests {
             "threads did not stop after cancel"
         );
         assert_eq!(bridge.state.lock().unwrap().queued, 0);
+    }
+
+    #[test]
+    fn water_marks_are_reported_once_per_crossing() {
+        let (bridge, calls) = observed_bridge(|_, _| true);
+        let need = || calls.need_data.load(Ordering::SeqCst);
+        let enough = || calls.enough_data.load(Ordering::SeqCst);
+
+        bridge.push(vec![0; HIGH_WATER_MARK]);
+        assert_eq!(enough(), 0, "reached, not crossed");
+        bridge.push(vec![0; 1]);
+        bridge.push(vec![0; 1]);
+        assert_eq!(enough(), 1);
+
+        // Read down to just above the low water mark, then below it.
+        read_data(&bridge, HIGH_WATER_MARK + 2 - LOW_WATER_MARK);
+        assert_eq!(need(), 0);
+        read_data(&bridge, 1);
+        read_data(&bridge, 1);
+        assert_eq!(need(), 1);
+
+        // Back above the high water mark: reported again.
+        bridge.push(vec![0; HIGH_WATER_MARK]);
+        assert_eq!(enough(), 2);
+    }
+
+    #[test]
+    fn data_is_not_needed_before_the_queue_was_full() {
+        let (bridge, calls) = observed_bridge(|_, _| true);
+        bridge.push(vec![0; 10]);
+        read_data(&bridge, 10);
+        assert_eq!(calls.need_data.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn seeking_to_the_current_position_asks_nothing() {
+        let (bridge, calls) = observed_bridge(|_, _| panic!("unexpected seek"));
+        bridge.set_seekable(true);
+        // libmpv's check right after opening.
+        assert_eq!(bridge.seek(0), Some(0));
+        bridge.push(vec![1, 2, 3, 4]);
+        read_data(&bridge, 3);
+        assert_eq!(bridge.seek(3), Some(3));
+        assert_eq!(read_data(&bridge, 4), [4]);
+        assert!(calls.seeks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_stream_that_is_not_seekable_stays_where_it_is() {
+        let (bridge, calls) = observed_bridge(|_, _| panic!("unexpected seek"));
+        bridge.push(vec![1, 2, 3]);
+        // libmpv's check right after opening must fail, for it to read linearly.
+        assert_eq!(bridge.seek(0), None);
+        assert_eq!(bridge.seek(100), None);
+        assert_eq!(read_data(&bridge, 4), [1, 2, 3]);
+        assert!(calls.seeks.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_seek_asks_servo_for_data_from_the_new_offset() {
+        let (bridge, calls) = observed_bridge(|_, bridge| {
+            // Pushed by the fetch the seek replaces, before Servo handles the seek.
+            bridge.push(vec![9, 9]);
+            bridge.end_of_stream();
+            true
+        });
+        bridge.set_seekable(true);
+        bridge.push(vec![1, 2, 3, 4]);
+        read_data(&bridge, 2);
+
+        assert_eq!(bridge.seek(100), Some(100));
+        assert_eq!(*calls.seeks.lock().unwrap(), [100]);
+        {
+            let state = bridge.state.lock().unwrap();
+            assert_eq!(state.position, 100);
+            assert_eq!(state.queued, 0, "old and stale data must be dropped");
+            assert!(!state.end_of_stream, "the old fetch's end must be dropped");
+        }
+
+        bridge.push(vec![100, 101]);
+        bridge.end_of_stream();
+        assert_eq!(read_data(&bridge, 4), [100, 101]);
+        assert_eq!(bridge.read(&mut [0; 4]), ReadResult::EndOfStream);
+    }
+
+    #[test]
+    fn a_failed_seek_breaks_the_stream() {
+        let (bridge, _) = observed_bridge(|_, _| false);
+        bridge.set_seekable(true);
+        bridge.push(vec![1, 2, 3]);
+        assert_eq!(bridge.seek(100), None);
+        // Data of the old fetch must not be mistaken for data at the new offset.
+        bridge.push(vec![4]);
+        assert_eq!(bridge.read(&mut [0; 4]), ReadResult::Cancelled);
+        assert_eq!(bridge.state.lock().unwrap().queued, 0);
+    }
+
+    #[test]
+    fn cancel_ends_a_seek_waiting_for_servo() {
+        let (bridge, _) = observed_bridge(|_, bridge| {
+            while !bridge.is_cancelled() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            false
+        });
+        bridge.set_seekable(true);
+        let bridge = Arc::new(bridge);
+
+        let (sender, result) = mpsc::channel();
+        thread::spawn({
+            let bridge = bridge.clone();
+            move || {
+                let _ = sender.send(bridge.seek(100));
+            }
+        });
+        assert_eq!(result.recv_timeout(SETTLE), Err(RecvTimeoutError::Timeout));
+        bridge.cancel();
+        assert_eq!(result.recv_timeout(TIMEOUT), Ok(None));
+    }
+
+    #[test]
+    fn a_cancelled_stream_cannot_seek() {
+        let (bridge, calls) = observed_bridge(|_, _| panic!("unexpected seek"));
+        bridge.set_seekable(true);
+        bridge.cancel();
+        assert_eq!(bridge.seek(0), None);
+        assert_eq!(bridge.seek(100), None);
+        assert!(calls.seeks.lock().unwrap().is_empty());
     }
 }
