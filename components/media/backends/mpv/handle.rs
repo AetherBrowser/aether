@@ -445,6 +445,9 @@ impl EventQueue {
 
 impl MpvHandle {
     /// Makes `aether-media://` URLs read from `bridge`. Can only be done once per instance.
+    ///
+    /// The bridge serves a single stream: once libmpv cancels it, when it unloads the
+    /// file, the bytes already read are gone and the stream cannot be opened again.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "MpvPlayer does not use the bridge yet")
@@ -490,6 +493,9 @@ unsafe extern "C" fn open_stream(
     info: *mut ffi::mpv_stream_cb_info,
 ) -> c_int {
     catch_panic(ffi::MPV_ERROR_LOADING_FAILED, || {
+        if unsafe { bridge(user_data) }.is_cancelled() {
+            return ffi::MPV_ERROR_LOADING_FAILED;
+        }
         // Every stream of the instance reads from the same bridge, which outlives them.
         let info = unsafe { &mut *info };
         info.cookie = user_data;
@@ -742,5 +748,33 @@ mod tests {
             "mpv_terminate_destroy waited forever for the read"
         );
         assert!(bridge.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancelled_bridge_cannot_be_opened_again() {
+        let bridge = bridge_with_test_file(true);
+        let handle = Arc::new(play_from(bridge.clone()));
+        let mut events = handle.events().unwrap();
+        // What libmpv does when it unloads the file.
+        bridge.cancel();
+        handle.command(&["loadfile", "aether-media://0"]).unwrap();
+
+        // The first file ends as it is replaced, then the second one fails to open,
+        // instead of failing to read as a file of an "unrecognized format".
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ends = vec![];
+        while ends.len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the files to end"
+            );
+            if let Event::EndFile(reason) = events.wait(1.0) {
+                ends.push(reason);
+            }
+        }
+        assert_eq!(
+            ends[1],
+            EndFileReason::Error(error_string(ffi::MPV_ERROR_LOADING_FAILED))
+        );
     }
 }
