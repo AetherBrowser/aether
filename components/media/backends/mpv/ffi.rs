@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Hand-written bindings to the subset of libmpv's `client.h` used by this crate.
+//! Hand-written bindings to the subset of libmpv's `client.h` and `stream_cb.h` used by
+//! this crate.
 //!
-//! Layouts and values are checked against `mpv/client.h` for client API 2.5. The mpv
+//! Layouts and values are checked against `mpv/client.h` and `mpv/stream_cb.h` for client
+//! API 2.5. The mpv
 //! public headers are ISC licensed (Copyright (C) the mpv developers). Linking is set up
 //! by `build.rs`.
 //!
@@ -31,6 +33,9 @@ pub const MPV_FORMAT_NODE_MAP: mpv_format = 8;
 
 /// `mpv_error`. Negative values are errors.
 pub const MPV_ERROR_SUCCESS: c_int = 0;
+pub const MPV_ERROR_LOADING_FAILED: c_int = -13;
+pub const MPV_ERROR_UNSUPPORTED: c_int = -18;
+pub const MPV_ERROR_GENERIC: c_int = -20;
 
 /// `mpv_node`: a tagged union, `format` says which member of `u` is valid.
 #[repr(C)]
@@ -135,4 +140,40 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn mpv_wait_event(ctx: *mut mpv_handle, timeout: f64) -> *mut mpv_event;
     pub fn mpv_wakeup(ctx: *mut mpv_handle);
+
+    pub fn mpv_stream_cb_add_ro(
+        ctx: *mut mpv_handle,
+        protocol: *const c_char,
+        user_data: *mut c_void,
+        open_fn: mpv_stream_cb_open_ro_fn,
+    ) -> c_int;
 }
+
+// stream_cb.h. Every callback may be NULL except `read_fn` and `close_fn`.
+
+pub type mpv_stream_cb_read_fn =
+    Option<unsafe extern "C" fn(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64>;
+pub type mpv_stream_cb_seek_fn =
+    Option<unsafe extern "C" fn(cookie: *mut c_void, offset: i64) -> i64>;
+pub type mpv_stream_cb_size_fn = Option<unsafe extern "C" fn(cookie: *mut c_void) -> i64>;
+pub type mpv_stream_cb_close_fn = Option<unsafe extern "C" fn(cookie: *mut c_void)>;
+pub type mpv_stream_cb_cancel_fn = Option<unsafe extern "C" fn(cookie: *mut c_void)>;
+
+/// `mpv_stream_cb_info`, filled by the open callback.
+#[repr(C)]
+pub struct mpv_stream_cb_info {
+    pub cookie: *mut c_void,
+    pub read_fn: mpv_stream_cb_read_fn,
+    pub seek_fn: mpv_stream_cb_seek_fn,
+    pub size_fn: mpv_stream_cb_size_fn,
+    pub close_fn: mpv_stream_cb_close_fn,
+    pub cancel_fn: mpv_stream_cb_cancel_fn,
+}
+
+pub type mpv_stream_cb_open_ro_fn = Option<
+    unsafe extern "C" fn(
+        user_data: *mut c_void,
+        uri: *mut c_char,
+        info: *mut mpv_stream_cb_info,
+    ) -> c_int,
+>;
