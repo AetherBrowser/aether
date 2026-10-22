@@ -4,14 +4,16 @@
 
 //! Safe wrapper around an `mpv_handle`. This is the only module allowed to call into `ffi`.
 
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::mem::MaybeUninit;
+use std::panic::{self, AssertUnwindSafe};
 use std::ptr::{self, NonNull};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::{fmt, slice};
 
 use crate::ffi;
+use crate::stream::{ReadResult, StreamBridge};
 
 /// Major version of the client API that `ffi.rs` is written against.
 const SUPPORTED_API_MAJOR: u32 = 2;
@@ -244,6 +246,9 @@ pub struct MpvHandle {
     ctx: NonNull<ffi::mpv_handle>,
     /// Whether the [`EventQueue`] of this instance was handed out.
     events_taken: AtomicBool,
+    /// The bridge behind the `aether-media` protocol. libmpv only borrows it, so it is
+    /// dropped with the handle, after `mpv_terminate_destroy` closed every stream.
+    _stream_bridge: OnceLock<Arc<StreamBridge>>,
 }
 
 // client.h: "The client API is generally fully thread-safe, unless otherwise noted."
@@ -267,6 +272,7 @@ impl MpvHandle {
         let handle = MpvHandle {
             ctx,
             events_taken: AtomicBool::new(false),
+            _stream_bridge: OnceLock::new(),
         };
         for (name, value) in options {
             handle.set_option(name, value)?;
@@ -435,6 +441,113 @@ impl EventQueue {
     }
 }
 
+// Custom streams: `aether-media://` URLs read from a StreamBridge.
+
+impl MpvHandle {
+    /// Makes `aether-media://` URLs read from `bridge`. Can only be done once per instance.
+    ///
+    /// The bridge serves a single stream: once libmpv cancels it, when it unloads the
+    /// file, the bytes already read are gone and the stream cannot be opened again.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "MpvPlayer does not use the bridge yet")
+    )]
+    pub fn add_stream_protocol(&self, bridge: Arc<StreamBridge>) -> Result<(), MpvError> {
+        // libmpv keeps the protocol, and calls into the bridge, until the instance is
+        // destroyed (stream_cb.h): the handle keeps the bridge alive until then.
+        let user_data = Arc::as_ptr(&bridge).cast_mut().cast::<c_void>();
+        check(
+            unsafe {
+                ffi::mpv_stream_cb_add_ro(
+                    self.ctx.as_ptr(),
+                    c"aether-media".as_ptr(),
+                    user_data,
+                    Some(open_stream),
+                )
+            },
+            || "mpv_stream_cb_add_ro(aether-media)".to_owned(),
+        )?;
+        // libmpv refuses a protocol registered twice, so this is the first bridge.
+        let _ = self._stream_bridge.set(bridge);
+        Ok(())
+    }
+}
+
+/// The bridge behind a stream's cookie.
+///
+/// # Safety
+/// `cookie` must come from [`MpvHandle::add_stream_protocol`], whose handle is not
+/// destroyed yet.
+unsafe fn bridge<'a>(cookie: *mut c_void) -> &'a StreamBridge {
+    unsafe { &*cookie.cast::<StreamBridge>() }
+}
+
+/// Runs `callback`, returning `on_panic` if it panics: a panic must not unwind into C.
+fn catch_panic<T>(on_panic: T, callback: impl FnOnce() -> T) -> T {
+    panic::catch_unwind(AssertUnwindSafe(callback)).unwrap_or(on_panic)
+}
+
+unsafe extern "C" fn open_stream(
+    user_data: *mut c_void,
+    _uri: *mut c_char,
+    info: *mut ffi::mpv_stream_cb_info,
+) -> c_int {
+    catch_panic(ffi::MPV_ERROR_LOADING_FAILED, || {
+        if unsafe { bridge(user_data) }.is_cancelled() {
+            return ffi::MPV_ERROR_LOADING_FAILED;
+        }
+        // Every stream of the instance reads from the same bridge, which outlives them.
+        let info = unsafe { &mut *info };
+        info.cookie = user_data;
+        info.read_fn = Some(read_stream);
+        info.seek_fn = Some(seek_stream);
+        info.size_fn = Some(stream_size);
+        info.close_fn = Some(close_stream);
+        info.cancel_fn = Some(cancel_stream);
+        0
+    })
+}
+
+unsafe extern "C" fn read_stream(cookie: *mut c_void, buf: *mut c_char, nbytes: u64) -> i64 {
+    catch_panic(-1, || {
+        let len = usize::try_from(nbytes).unwrap_or(usize::MAX);
+        let buf = unsafe { slice::from_raw_parts_mut(buf.cast::<u8>(), len) };
+        match unsafe { bridge(cookie) }.read(buf) {
+            ReadResult::Data(count) => i64::try_from(count).unwrap_or(-1),
+            ReadResult::EndOfStream => 0,
+            ReadResult::Cancelled => -1,
+        }
+    })
+}
+
+unsafe extern "C" fn seek_stream(cookie: *mut c_void, offset: i64) -> i64 {
+    let unsupported = i64::from(ffi::MPV_ERROR_UNSUPPORTED);
+    catch_panic(i64::from(ffi::MPV_ERROR_GENERIC), || {
+        u64::try_from(offset)
+            .ok()
+            .and_then(|offset| unsafe { bridge(cookie) }.seek(offset))
+            .and_then(|position| i64::try_from(position).ok())
+            .unwrap_or(unsupported)
+    })
+}
+
+unsafe extern "C" fn stream_size(cookie: *mut c_void) -> i64 {
+    let unsupported = i64::from(ffi::MPV_ERROR_UNSUPPORTED);
+    catch_panic(unsupported, || {
+        unsafe { bridge(cookie) }
+            .size()
+            .and_then(|size| i64::try_from(size).ok())
+            .unwrap_or(unsupported)
+    })
+}
+
+/// The bridge belongs to the handle: closing a stream releases nothing.
+unsafe extern "C" fn close_stream(_cookie: *mut c_void) {}
+
+unsafe extern "C" fn cancel_stream(cookie: *mut c_void) {
+    catch_panic((), || unsafe { bridge(cookie) }.cancel());
+}
+
 impl Drop for MpvHandle {
     fn drop(&mut self) {
         // Blocks until the core has shut down (audio output closed, threads joined).
@@ -444,7 +557,67 @@ impl Drop for MpvHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use super::*;
+    use crate::stream::BridgeObserver;
+
+    /// An observer for streams that never need Servo to seek.
+    struct NoSeek;
+
+    impl BridgeObserver for NoSeek {
+        fn need_data(&self) {}
+        fn enough_data(&self) {}
+        fn seek_data(&self, _: u64, _: &StreamBridge) -> bool {
+            false
+        }
+    }
+
+    /// A bridge holding a whole test file, as Servo would push it.
+    fn bridge_with_test_file(seekable: bool) -> Arc<StreamBridge> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tests/wpt/tests/media/sine440.mp3");
+        let data = std::fs::read(path).unwrap();
+        let bridge = Arc::new(StreamBridge::new(Box::new(NoSeek)));
+        bridge.set_seekable(seekable);
+        bridge.set_size(data.len() as u64);
+        for chunk in data.chunks(64 * 1024) {
+            bridge.push(chunk.to_vec());
+        }
+        bridge.end_of_stream();
+        bridge
+    }
+
+    /// Waits until `condition` holds, failing the test after a few seconds.
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn time_pos(handle: &MpvHandle) -> f64 {
+        match handle.get_node("time-pos") {
+            Ok(Node::Double(seconds)) => seconds,
+            _ => 0.0,
+        }
+    }
+
+    /// Plays `aether-media://0` from `bridge`, checking that it gets loaded and plays.
+    fn play_from(bridge: Arc<StreamBridge>) -> MpvHandle {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.add_stream_protocol(bridge).unwrap();
+        handle.command(&["loadfile", "aether-media://0"]).unwrap();
+        wait_until("the stream to load", || {
+            matches!(handle.get_node("duration"), Ok(Node::Double(_)))
+        });
+        wait_until("playback to advance", || time_pos(&handle) > 0.1);
+        handle
+    }
 
     #[test]
     fn linked_libmpv_speaks_the_supported_api() {
@@ -522,5 +695,86 @@ mod tests {
             handle.get_node("not-a-property"),
             Err(MpvError::Api { .. })
         ));
+    }
+
+    #[test]
+    fn a_seekable_stream_is_played_from_the_bridge() {
+        let handle = play_from(bridge_with_test_file(true));
+        assert_eq!(handle.get_node("seekable"), Ok(Node::Flag(true)));
+    }
+
+    #[test]
+    fn a_stream_that_is_not_seekable_is_played_linearly() {
+        let handle = play_from(bridge_with_test_file(false));
+        assert_eq!(handle.get_node("seekable"), Ok(Node::Flag(false)));
+    }
+
+    #[test]
+    fn the_stream_size_comes_from_the_bridge() {
+        let bridge = bridge_with_test_file(true);
+        let size = bridge.size().unwrap();
+        let handle = play_from(bridge);
+        assert_eq!(handle.get_node("stream-end"), Ok(Node::Int64(size as i64)));
+    }
+
+    #[test]
+    fn the_stream_protocol_is_registered_once() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        let bridge = || Arc::new(StreamBridge::new(Box::new(NoSeek)));
+        handle.add_stream_protocol(bridge()).unwrap();
+        assert!(matches!(
+            handle.add_stream_protocol(bridge()),
+            Err(MpvError::Api { .. })
+        ));
+    }
+
+    #[test]
+    fn destroying_the_handle_cancels_a_waiting_read() {
+        // Nothing is pushed: libmpv's demuxer waits in `read` while it opens the stream.
+        let bridge = Arc::new(StreamBridge::new(Box::new(NoSeek)));
+        bridge.set_seekable(true);
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        handle.add_stream_protocol(bridge.clone()).unwrap();
+        handle.command(&["loadfile", "aether-media://0"]).unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let (done, destroyed) = mpsc::channel();
+        thread::spawn(move || {
+            drop(handle);
+            let _ = done.send(());
+        });
+        assert!(
+            destroyed.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "mpv_terminate_destroy waited forever for the read"
+        );
+        assert!(bridge.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancelled_bridge_cannot_be_opened_again() {
+        let bridge = bridge_with_test_file(true);
+        let handle = Arc::new(play_from(bridge.clone()));
+        let mut events = handle.events().unwrap();
+        // What libmpv does when it unloads the file.
+        bridge.cancel();
+        handle.command(&["loadfile", "aether-media://0"]).unwrap();
+
+        // The first file ends as it is replaced, then the second one fails to open,
+        // instead of failing to read as a file of an "unrecognized format".
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut ends = vec![];
+        while ends.len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the files to end"
+            );
+            if let Event::EndFile(reason) = events.wait(1.0) {
+                ends.push(reason);
+            }
+        }
+        assert_eq!(
+            ends[1],
+            EndFileReason::Error(error_string(ffi::MPV_ERROR_LOADING_FAILED))
+        );
     }
 }
