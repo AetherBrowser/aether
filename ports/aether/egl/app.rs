@@ -317,7 +317,7 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.search_engines.clone(),
         );
-        let history = open_history(&init.opts);
+        let (history, _) = open_history(&init.opts);
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("servo", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
