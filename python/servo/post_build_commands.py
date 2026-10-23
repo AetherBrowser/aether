@@ -285,6 +285,6 @@ class PostBuildCommands(CommandBase):
         if returncode:
             return returncode
 
-        static = path.join(self.context.topdir, "etc", "doc.servo.org")
+        static = path.join(self.context.topdir, "etc", "doc.aetherbrowser.org")
         for name in os.listdir(static):
             copy2(path.join(static, name), path.join(docs, name))
