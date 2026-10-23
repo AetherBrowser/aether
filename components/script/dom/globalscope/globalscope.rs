@@ -65,7 +65,7 @@ use servo_config::pref;
 use servo_constellation_traits::{
     BlobData, BlobImpl, BroadcastChannelMsg, ConstellationInterest, FileBlob, MessagePortImpl,
     PortMessageTask, ScriptToConstellationChan, ScriptToConstellationMessage,
-    ScriptToConstellationSender,
+    ScriptToConstellationSender, ServiceWorkerState,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
 use storage_traits::StorageThreads;
@@ -101,7 +101,7 @@ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::settings_stack::{entry_global, incumbent_global};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues, RootedTraceableBox};
+use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues};
 use crate::dom::bindings::weakref::{DOMTracker, WeakRef};
 use crate::dom::blob::Blob;
 use crate::dom::dedicatedworkerglobalscope::{
@@ -336,8 +336,7 @@ pub(crate) struct GlobalScope {
     resolved_module_set: DomRefCell<HashSet<ResolvedModule>>,
 
     /// <https://fetch.spec.whatwg.org/#environment-settings-object-fetch-group>
-    #[no_trace]
-    fetch_group: RefCell<FetchGroup>,
+    fetch_group: DomRefCell<FetchGroup>,
 }
 
 impl GlobalScope {
@@ -399,7 +398,7 @@ impl GlobalScope {
         inherited_secure_context: Option<bool>,
         unminify_js: bool,
     ) -> Self {
-        let fetch_group = RefCell::new(FetchGroup::new(resource_threads.sender()));
+        let resource_threads_sender = resource_threads.sender();
         Self {
             message_port_state: DomRefCell::new(MessagePortState::UnManaged),
             broadcast_channel_state: DomRefCell::new(BroadcastChannelState::UnManaged),
@@ -441,7 +440,7 @@ impl GlobalScope {
             notification_permission_request_callback_map: Default::default(),
             import_map: Default::default(),
             resolved_module_set: Default::default(),
-            fetch_group,
+            fetch_group: DomRefCell::new(FetchGroup::new(resource_threads_sender)),
         }
     }
 
@@ -527,6 +526,29 @@ impl GlobalScope {
 
         // Step 3
         new_registration
+    }
+
+    /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
+    pub(crate) fn update_service_worker_state(
+        &self,
+        cx: &mut js::context::JSContext,
+        state: ServiceWorkerState,
+        worker_id: ServiceWorkerId,
+    ) {
+        // Step 4.1: Let objectMap be settingsObject’s service worker object map.
+        let object_map = self.worker_map.borrow();
+
+        // Step 4.3: Let workerObj be objectMap[worker].
+        let Some(worker) = object_map.get(&worker_id) else {
+            // Step 4.2: If objectMap[worker] does not exist, then abort these steps.
+            return;
+        };
+
+        // Step 4.4: Set workerObj’s state to state.
+        worker.set_state(state);
+
+        // Step 4.5: Fire an event named statechange at workerObj.
+        worker.upcast().fire_event(cx, atom!("statechange"));
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
@@ -3017,7 +3039,7 @@ impl GlobalScope {
             options
                 .transfer
                 .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .map(|js| js.get())
                 .collect::<Vec<_>>());
 
         let data = structuredclone::write(cx, value, Some(guard))?;
@@ -3035,7 +3057,8 @@ impl GlobalScope {
     ) {
         self.fetch_group_mut().fetch(
             request_builder,
-            NetworkListener::new(context, task_source, self),
+            NetworkListener::new(context, task_source),
+            None, /* state */
         );
     }
 

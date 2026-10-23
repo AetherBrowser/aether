@@ -15,6 +15,7 @@ use std::str::FromStr;
 use std::sync::{Arc as StdArc, LazyLock};
 use std::time::Duration;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell};
 use bitflags::bitflags;
 use chrono::Local;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
@@ -60,6 +61,7 @@ use regex::bytes::Regex;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::callback::{RootedCallback, ThisReflector};
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::interfaces::DocumentHelpers;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::trace::CustomTraceable;
@@ -181,7 +183,7 @@ use crate::dom::html::htmlheadelement::HTMLHeadElement;
 use crate::dom::html::htmlhtmlelement::HTMLHtmlElement;
 use crate::dom::html::htmliframeelement::HTMLIFrameElement;
 use crate::dom::html::htmlimageelement::HTMLImageElement;
-use crate::dom::html::htmlscriptelement::{HTMLScriptElement, ScriptResult};
+use crate::dom::html::htmlscriptelement::{HTMLScriptElement, ScriptResult, TracedScriptResult};
 use crate::dom::html::htmltitleelement::HTMLTitleElement;
 use crate::dom::htmldetailselement::DetailsNameGroups;
 use crate::dom::intersectionobserver::IntersectionObserver;
@@ -443,7 +445,6 @@ pub(crate) struct Document {
     document_or_shadow_root: DocumentOrShadowRoot,
     window: Dom<Window>,
     implementation: MutNullableDom<DOMImplementation>,
-    #[ignore_malloc_size_of = "type from external crate"]
     #[no_trace]
     content_type: Mime,
     last_modified: Option<String>,
@@ -455,7 +456,7 @@ pub(crate) struct Document {
     activity: Cell<DocumentActivity>,
     /// <https://html.spec.whatwg.org/multipage/#the-document%27s-address>
     #[no_trace]
-    url: DomRefCell<ServoUrl>,
+    url: AtomicRefCell<ServoUrl>,
     /// <https://html.spec.whatwg.org/multipage/#concept-document-about-base-url>
     #[no_trace]
     about_base_url: DomRefCell<Option<ServoUrl>>,
@@ -798,7 +799,8 @@ pub(crate) struct Document {
     theme_override: Cell<Option<Theme>>,
 
     /// Language specific for this document, set by a meta element
-    default_language: DomRefCell<Option<String>>,
+    #[no_trace]
+    default_language: AtomicRefCell<Option<String>>,
 
     /// True if this document is no longer the active document of its associated
     /// window.
@@ -1501,13 +1503,13 @@ impl Document {
         // > For an HTML document document, its indicated part is the result of
         // > selecting the indicated part given document and document's URL.
         let Some(indicated_part) = self.select_indicated_part(cx, fragment) else {
-            self.set_target_element(None);
+            self.set_target_element(cx.no_gc(), None);
             return;
         };
         // Step 2. Otherwise, if document's indicated part is top of the document, then:
         if *indicated_part == *self.upcast() {
             // Step 2.1. Set document's target element to null.
-            self.set_target_element(None);
+            self.set_target_element(cx.no_gc(), None);
             // Step 2.2. Scroll to the beginning of the document for document. [CSSOMVIEW]
             //
             // FIXME(stshine): this should be the origin of the stacking context space,
@@ -1523,7 +1525,7 @@ impl Document {
             unreachable!("Indicated part should always be an element");
         };
         // Step 3.3. Set document's target element to target.
-        self.set_target_element(Some(target));
+        self.set_target_element(cx.no_gc(), Some(target));
         // Step 3.4. Run the ancestor revealing algorithm on target.
         // TODO
         // Step 3.5. Scroll target into view, with behavior set to "auto", block set to "start", and inline set to "nearest". [CSSOMVIEW]
@@ -4019,9 +4021,8 @@ impl<'dom> LayoutDom<'dom, Document> {
         self.unsafe_get().id_map.get_all_for_layout(id)
     }
 
-    #[expect(unsafe_code)]
     pub(crate) fn url_for_layout(self) -> ServoUrl {
-        unsafe { self.unsafe_get().url.borrow_for_layout() }.clone()
+        self.unsafe_get().url.borrow().clone()
     }
 
     #[expect(unsafe_code)]
@@ -4029,9 +4030,8 @@ impl<'dom> LayoutDom<'dom, Document> {
         unsafe { self.unsafe_get().selection.to_layout() }
     }
 
-    #[expect(unsafe_code)]
-    pub(crate) fn default_language_for_layout(&self) -> Option<&'dom str> {
-        unsafe { self.unsafe_get().default_language.borrow_for_layout() }.as_deref()
+    pub(crate) fn default_language_for_layout(&self) -> AtomicRef<'dom, Option<String>> {
+        self.unsafe_get().default_language.borrow()
     }
 }
 
@@ -4171,7 +4171,7 @@ impl Document {
             implementation: Default::default(),
             content_type,
             last_modified,
-            url: DomRefCell::new(url),
+            url: AtomicRefCell::new(url),
             about_base_url: DomRefCell::new(about_base_url),
             quirks_mode: Cell::new(quirks_mode),
             event_handler: DocumentEventHandler::new(window),
@@ -4582,30 +4582,31 @@ impl Document {
         })
     }
 
-    pub(crate) fn elements_by_name_count(&self, name: &DOMString) -> u32 {
+    pub(crate) fn elements_by_name_count(&self, name: &TracedDOMString) -> u32 {
         if name.is_empty() {
             return 0;
         }
         self.count_node_list(|n| Document::is_element_in_get_by_name(n, name))
     }
 
-    pub(crate) fn nth_element_by_name<'a>(
+    pub(crate) fn elements_by_name_iter<'a>(
         &self,
         no_gc: &'a NoGC,
-        index: u32,
-        name: &DOMString,
-    ) -> Option<UnrootedDom<'a, Node>> {
-        if name.is_empty() {
-            return None;
-        }
-        self.nth_in_node_list(no_gc, index, |n| {
-            Document::is_element_in_get_by_name(n, name)
-        })
+        name: &'a TracedDOMString,
+    ) -> impl Iterator<Item = UnrootedDom<'a, Node>> + 'a {
+        self.get_document_element_unrooted(no_gc)
+            .into_iter()
+            .flat_map(|element| {
+                element
+                    .upcast::<Node>()
+                    .traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
+            })
+            .filter(move |node| Document::is_element_in_get_by_name(node, name))
     }
 
     // Note that document.getByName does not match on the same conditions
     // as the document named getter.
-    fn is_element_in_get_by_name(node: &Node, name: &DOMString) -> bool {
+    fn is_element_in_get_by_name(node: &Node, name: &TracedDOMString) -> bool {
         let element = match node.downcast::<Element>() {
             Some(element) => element,
             None => return false,
@@ -4624,19 +4625,6 @@ impl Document {
             .flat_map(|node| node.traverse_preorder(ShadowIncluding::No))
             .filter(|node| callback(node))
             .count() as u32
-    }
-
-    fn nth_in_node_list<'a, F: Fn(&Node) -> bool>(
-        &self,
-        no_gc: &'a NoGC,
-        index: u32,
-        callback: F,
-    ) -> Option<UnrootedDom<'a, Node>> {
-        let doc = self.get_document_element_unrooted(no_gc)?;
-        doc.upcast::<Node>()
-            .traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
-            .filter(|node| callback(node))
-            .nth(index as usize)
     }
 
     fn get_html_element(&self) -> Option<DomRoot<HTMLHtmlElement>> {
@@ -4739,6 +4727,13 @@ impl Document {
     }
 
     pub(crate) fn element_attr_will_change(&self, el: &Element, attr: AttrRef<'_>) {
+        if !el.upcast::<Node>().is_connected() {
+            // Disconnected elements don’t need styling, and will get a full restyle when/if
+            // connected later. For elements created by scripts, it is common to set attributes
+            // before inserting them.
+            return;
+        }
+
         // FIXME(emilio): Kind of a shame we have to duplicate this.
         //
         // I'm getting rid of the whole hashtable soon anyway, since all it does
@@ -4800,15 +4795,15 @@ impl Document {
         self.policy_container.borrow().get_referrer_policy()
     }
 
-    pub(crate) fn set_target_element(&self, node: Option<&Element>) {
+    pub(crate) fn set_target_element(&self, no_gc: &NoGC, node: Option<&Element>) {
         if let Some(ref element) = self.target_element.get() {
-            element.set_target_state(false);
+            element.set_target_state(no_gc, false);
         }
 
         self.target_element.set(node);
 
         if let Some(ref element) = self.target_element.get() {
-            element.set_target_state(true);
+            element.set_target_state(no_gc, true);
         }
     }
 
@@ -5272,6 +5267,12 @@ impl Document {
 
         // Step 6 Run any page visibility change steps which may be defined in other specifications, with visibility
         // state and document. Any other specs' visibility steps will go here.
+
+        // <https://www.w3.org/TR/geolocation/#dfn-request-a-position>
+        // Position requests made while the document was hidden resume once it becomes visible.
+        if let Some(geolocation) = self.window.maybe_geolocation() {
+            geolocation.handle_visibility_change(visibility_state);
+        }
 
         // <https://www.w3.org/TR/gamepad/#handling-visibility-change>
         #[cfg(feature = "gamepad")]
@@ -7067,11 +7068,17 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         target: DOMString,
         features: DOMString,
     ) -> Fallible<Option<DomRoot<WindowProxy>>> {
-        self.browsing_context()
-            .ok_or(Error::InvalidAccess(Some(
+        if self.is_fully_active() {
+            self.browsing_context()
+                .ok_or(Error::InvalidAccess(Some(
+                    "Failed to get browsing context".into(),
+                )))?
+                .open(cx, url, target, features)
+        } else {
+            Err(Error::InvalidAccess(Some(
                 "Document is not fully active".into(),
-            )))?
-            .open(cx, url, target, features)
+            )))
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-document-write>
@@ -7137,7 +7144,9 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             )?
         } else {
             match value {
-                TrustedHTMLOrString::TrustedHTML(trusted_html) => trusted_html.data().clone(),
+                TrustedHTMLOrString::TrustedHTML(trusted_html) => {
+                    trusted_html.data().clone().root()
+                },
                 TrustedHTMLOrString::String(value) => value,
             }
         };
@@ -7397,8 +7406,7 @@ impl PendingInOrderScriptVec {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct PendingScript {
     element: Dom<HTMLScriptElement>,
-    // TODO(sagudev): could this be all no_trace?
-    load: Option<ScriptResult>,
+    load: Option<TracedScriptResult>,
 }
 
 impl PendingScript {
@@ -7412,19 +7420,19 @@ impl PendingScript {
     fn new_with_load(element: &HTMLScriptElement, load: Option<ScriptResult>) -> Self {
         Self {
             element: Dom::from_ref(element),
-            load,
+            load: load.map(|result| result.map(Into::into)),
         }
     }
 
     fn loaded(&mut self, result: ScriptResult) {
         assert!(self.load.is_none());
-        self.load = Some(result);
+        self.load = Some(result.map(Into::into));
     }
 
     fn take_result(&mut self) -> Option<(DomRoot<HTMLScriptElement>, ScriptResult)> {
         self.load
             .take()
-            .map(|result| (DomRoot::from_ref(&*self.element), result))
+            .map(|result| (DomRoot::from_ref(&*self.element), result.map(Into::into)))
     }
 }
 

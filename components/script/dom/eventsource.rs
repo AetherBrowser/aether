@@ -23,6 +23,7 @@ use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::request::{CacheMode, CorsSettings, Destination, RequestBuilder, RequestId};
 use net_traits::{FetchMetadata, Metadata, NetworkError, ResourceFetchTiming};
 use script_bindings::cell::DomRefCell;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto;
 use servo_url::ServoUrl;
 use stylo_atoms::Atom;
@@ -96,7 +97,7 @@ pub(crate) struct EventSource {
     url: ServoUrl,
     #[no_trace]
     request: DomRefCell<Option<RequestBuilder>>,
-    last_event_id: DomRefCell<DOMString>,
+    last_event_id: DomRefCell<TracedDOMString>,
     reconnection_time: Cell<Duration>,
     generation_id: Cell<GenerationId>,
 
@@ -259,7 +260,7 @@ impl EventSourceContext {
         let event_source = self.event_source.root();
         // Step 1
         *event_source.last_event_id.safe_borrow_mut(cx.no_gc()) =
-            DOMString::from(self.last_event_id.clone());
+            DOMString::from(self.last_event_id.clone()).traced();
         // Step 2
         if self.data.is_empty() {
             self.data.clear();
@@ -293,7 +294,7 @@ impl EventSourceContext {
                 data.handle(),
                 DOMString::from(self.origin.clone()),
                 None,
-                event_source.last_event_id.borrow().clone(),
+                event_source.last_event_id.borrow().clone().root(),
                 Vec::with_capacity(0),
             )
         };
@@ -386,13 +387,14 @@ impl FetchResponseListener for EventSourceContext {
         self.event_source.root().generation_id.get() == self.gen_id
     }
 
-    fn process_request_body(&mut self, _: RequestId) {
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {
         // TODO
     }
 
     fn process_response(
         &mut self,
         _: &mut JSContext,
+        _: &GlobalScope,
         _: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -435,7 +437,13 @@ impl FetchResponseListener for EventSourceContext {
         }
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        cx: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        chunk: Bytes,
+    ) {
         let mut output = String::with_capacity(chunk.len());
         let mut input = &chunk[..];
 
@@ -469,6 +477,7 @@ impl FetchResponseListener for EventSourceContext {
     fn process_response_eof(
         mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -487,16 +496,16 @@ impl FetchResponseListener for EventSourceContext {
             self.reestablish_the_connection();
         }
 
-        network_listener::submit_timing(cx, &self, &response, &timing);
+        network_listener::submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 }
@@ -504,10 +513,6 @@ impl FetchResponseListener for EventSourceContext {
 impl ResourceTimingListener for EventSourceContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Other, self.event_source.root().url().clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.event_source.root().global()
     }
 }
 
@@ -517,7 +522,7 @@ impl EventSource {
             eventtarget: EventTarget::new_inherited(),
             url,
             request: DomRefCell::new(None),
-            last_event_id: DomRefCell::new(DOMString::new()),
+            last_event_id: DomRefCell::new(DOMString::new().traced()),
             reconnection_time: Cell::new(DEFAULT_RECONNECTION_TIME),
             generation_id: Cell::new(GenerationId(0)),
 

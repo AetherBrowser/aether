@@ -14,7 +14,7 @@ use script::layout_dom::ServoLayoutNode;
 use servo_arc::Arc as ServoArc;
 use style::Zero;
 use style::computed_values::clear::T as StyleClear;
-use style::context::SharedStyleContext;
+use style::context::{QuirksMode, SharedStyleContext};
 use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
 use style::servo::selector_parser::PseudoElement;
@@ -260,9 +260,16 @@ impl BlockLevelBox {
         });
 
         let tentative_block_size = content_box_sizes.block.resolve_extrinsic(
-            Size::FitContent,
+            automatic_block_size(layout_context, &same_formatting_context_block.base),
             Au::zero(),
             available_block_size,
+        );
+        let tentative_block_size = adjust_block_size_for_percentage_quirk(
+            layout_context,
+            tentative_block_size,
+            containing_block,
+            &same_formatting_context_block.base,
+            None,
         );
 
         let get_inline_content_sizes = || {
@@ -1072,6 +1079,7 @@ impl IndependentFormattingContext {
                 sequential_layout_state,
                 ignore_block_margins_for_stretch,
                 has_inline_parent,
+                self,
             );
         }
 
@@ -1088,11 +1096,14 @@ impl IndependentFormattingContext {
             available_block_size,
             justify_self,
             preferred_aspect_ratio,
+            automatic_block_size,
         } = solve_containing_block_padding_and_border_for_in_flow_box(
+            layout_context,
             containing_block,
             &layout_style,
             get_inline_content_sizes,
             ignore_block_margins_for_stretch,
+            &self.base,
             Some(self),
             has_inline_parent,
         );
@@ -1100,7 +1111,7 @@ impl IndependentFormattingContext {
         let lazy_block_size = LazySize::new(
             &block_sizes,
             LogicalAxis::Block,
-            Size::FitContent,
+            automatic_block_size,
             Au::zero,
             available_block_size,
             layout_style.is_table(),
@@ -1164,6 +1175,7 @@ impl IndependentFormattingContext {
     /// Lay out a normal in flow non-replaced block that establishes an independent
     /// formatting context in its containing formatting context but handling sequential
     /// layout concerns, such clearing and placing the content next to floats.
+    #[expect(clippy::too_many_arguments)]
     fn layout_in_flow_block_level_sequentially(
         &self,
         layout_context: &LayoutContext<'_>,
@@ -1172,6 +1184,7 @@ impl IndependentFormattingContext {
         sequential_layout_state: &mut SequentialLayoutState,
         ignore_block_margins_for_stretch: LogicalSides1D<bool>,
         has_inline_parent: bool,
+        context: &IndependentFormattingContext,
     ) -> BoxFragment {
         let style = &self.base.style;
         let containing_block_writing_mode = containing_block.style.writing_mode;
@@ -1220,6 +1233,7 @@ impl IndependentFormattingContext {
             .block
             .to_definite()
             .map(|block_size| Au::zero().max(block_size - pbm_sums.block));
+        let automatic_block_size = automatic_block_size(layout_context, &self.base);
         let is_table = self.is_table();
         let preferred_aspect_ratio = self.preferred_aspect_ratio(&pbm.padding_border_sums);
 
@@ -1242,7 +1256,7 @@ impl IndependentFormattingContext {
                 if let Some(result) = tentative_block_content_size {
                     let (block_content_size, depends_on_stretch_size) = result;
                     let (preferred, min, max) = content_box_sizes.block.resolve_each(
-                        Size::FitContent,
+                        automatic_block_size,
                         Au::zero,
                         available_block_size,
                         || block_content_size,
@@ -1251,7 +1265,7 @@ impl IndependentFormattingContext {
                     (Some(preferred), min, max, depends_on_stretch_size)
                 } else {
                     let (preferred, min, max) = content_box_sizes.block.resolve_each_extrinsic(
-                        Size::FitContent,
+                        automatic_block_size,
                         Au::zero(),
                         available_block_size,
                     );
@@ -1259,8 +1273,13 @@ impl IndependentFormattingContext {
                 };
             cache.min_block_size = min_block_size;
             cache.max_block_size = max_block_size;
-            cache.tentative_block_size =
-                SizeConstraint::new(preferred_block_size, min_block_size, max_block_size);
+            cache.tentative_block_size = adjust_block_size_for_percentage_quirk(
+                layout_context,
+                SizeConstraint::new(preferred_block_size, min_block_size, max_block_size),
+                containing_block,
+                &context.base,
+                Some(context),
+            );
             cache.depends_on_stretch_size = depends_on_stretch_size;
         };
 
@@ -1292,7 +1311,7 @@ impl IndependentFormattingContext {
             LazySize::new(
                 &content_box_sizes.block,
                 LogicalAxis::Block,
-                Size::FitContent,
+                automatic_block_size,
                 Au::zero,
                 available_block_size,
                 is_table,
@@ -1521,6 +1540,7 @@ struct ContainingBlockPaddingAndBorder<'a> {
     available_block_size: Option<Au>,
     justify_self: AlignFlags,
     preferred_aspect_ratio: Option<AspectRatio>,
+    automatic_block_size: Size<Au>,
 }
 
 struct ResolvedMargins {
@@ -1541,11 +1561,14 @@ struct ResolvedMargins {
 /// Note that in the presence of floats, this shouldn't be used for a block-level box
 /// that establishes an independent formatting context (or is replaced), since the
 /// inline size could then be incorrect.
+#[expect(clippy::too_many_arguments)]
 fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
+    layout_context: &LayoutContext,
     containing_block: &ContainingBlock<'_>,
     layout_style: &'a LayoutStyle,
     get_inline_content_sizes: impl FnOnce(&ConstraintSpace) -> ContentSizes,
     ignore_block_margins_for_stretch: LogicalSides1D<bool>,
+    base: &LayoutBoxBase,
     context: Option<&IndependentFormattingContext>,
     has_inline_parent: bool,
 ) -> ContainingBlockPaddingAndBorder<'a> {
@@ -1575,6 +1598,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
             // This is being discussed in <https://github.com/w3c/csswg-drafts/issues/11461>.
             justify_self: AlignFlags::NORMAL,
             preferred_aspect_ratio: None,
+            automatic_block_size: Size::FitContent,
         };
     }
 
@@ -1592,6 +1616,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         .block
         .to_definite()
         .map(|block_size| Au::zero().max(block_size - pbm_sums.block));
+    let automatic_block_size = automatic_block_size(layout_context, base);
 
     // TODO: support preferred aspect ratios on boxes that don't establish an independent
     // formatting context.
@@ -1607,7 +1632,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
     let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
         SizeConstraint::Definite(content_box_sizes.block.resolve(
             LogicalAxis::Block,
-            Size::FitContent,
+            automatic_block_size,
             Au::zero,
             available_block_size,
             || block_content_size,
@@ -1615,11 +1640,18 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         ))
     } else {
         content_box_sizes.block.resolve_extrinsic(
-            Size::FitContent,
+            automatic_block_size,
             Au::zero(),
             available_block_size,
         )
     };
+    let tentative_block_size = adjust_block_size_for_percentage_quirk(
+        layout_context,
+        tentative_block_size,
+        containing_block,
+        base,
+        context,
+    );
 
     // https://drafts.csswg.org/css2/#the-width-property
     // https://drafts.csswg.org/css2/visudet.html#min-max-widths
@@ -1664,6 +1696,7 @@ fn solve_containing_block_padding_and_border_for_in_flow_box<'a>(
         available_block_size,
         justify_self,
         preferred_aspect_ratio,
+        automatic_block_size,
     }
 }
 
@@ -1739,7 +1772,7 @@ fn resolve_justify_self(
     alignment.flags() | alignment_value
 }
 
-/// Determines the automatic size for the inline axis of a block-level box.
+/// Determines the automatic size for the inline axis of an in-flow block-level box.
 /// <https://drafts.csswg.org/css-sizing-3/#automatic-size>
 #[inline]
 fn automatic_inline_size<T>(
@@ -1760,6 +1793,30 @@ fn automatic_inline_size<T>(
         AlignFlags::STRETCH => Size::Stretch,
         AlignFlags::NORMAL if normal_stretches() => Size::Stretch,
         _ => Size::FitContent,
+    }
+}
+
+/// Determines the automatic size for the block axis of an in-flow block-level box.
+/// <https://drafts.csswg.org/css-sizing-3/#automatic-size>
+#[inline]
+fn automatic_block_size<T>(layout_context: &LayoutContext, base: &LayoutBoxBase) -> Size<T> {
+    // https://quirks.spec.whatwg.org/#the-html-element-fills-the-viewport-quirk
+    // The spec says to only apply it if the root element is an `html` element,
+    // but Blink and WebKit ignore that, so do we.
+    //
+    // https://quirks.spec.whatwg.org/#the-body-element-fills-the-html-element-quirk
+    // The spec says to only apply it to the document's body element, so we differ
+    // from Blink and WebKit which stretch every body element.
+    //
+    // Note that Gecko doesn't have these quirks, but then it needs other replacements.
+    if layout_context.style_context.quirks_mode() == QuirksMode::Quirks &&
+        base.base_fragment_info.flags.intersects(
+            FragmentFlags::IS_ROOT_ELEMENT | FragmentFlags::IS_BODY_ELEMENT_OF_HTML_ELEMENT_ROOT,
+        )
+    {
+        Size::QuirkyStretch
+    } else {
+        Size::FitContent
     }
 }
 
@@ -2164,12 +2221,13 @@ impl IndependentFormattingContext {
             .to_definite()
             .map(|block_size| Au::zero().max(block_size - pbm_sums.block_sum()));
 
+        let automatic_block_size = Size::FitContent;
         let tentative_block_content_size =
             self.tentative_block_content_size(preferred_aspect_ratio, available_inline_size);
         let tentative_block_size = if let Some(block_content_size) = tentative_block_content_size {
             SizeConstraint::Definite(content_box_sizes_and_pbm.content_box_sizes.block.resolve(
                 LogicalAxis::Block,
-                Size::FitContent,
+                automatic_block_size,
                 Au::zero,
                 available_block_size,
                 || block_content_size,
@@ -2179,8 +2237,15 @@ impl IndependentFormattingContext {
             content_box_sizes_and_pbm
                 .content_box_sizes
                 .block
-                .resolve_extrinsic(Size::FitContent, Au::zero(), available_block_size)
+                .resolve_extrinsic(automatic_block_size, Au::zero(), available_block_size)
         };
+        let tentative_block_size = adjust_block_size_for_percentage_quirk(
+            layout_context,
+            tentative_block_size,
+            containing_block,
+            &self.base,
+            Some(self),
+        );
 
         let get_content_size = || {
             let constraint_space =
@@ -2191,7 +2256,7 @@ impl IndependentFormattingContext {
 
         let inline_size = content_box_sizes_and_pbm.content_box_sizes.inline.resolve(
             LogicalAxis::Inline,
-            Size::FitContent,
+            automatic_block_size,
             Au::zero,
             Some(available_inline_size),
             get_content_size,
@@ -2214,7 +2279,7 @@ impl IndependentFormattingContext {
         let lazy_block_size = LazySize::new(
             &content_box_sizes_and_pbm.content_box_sizes.block,
             LogicalAxis::Block,
-            Size::FitContent,
+            automatic_block_size,
             Au::zero,
             available_block_size,
             is_table,
@@ -2269,5 +2334,29 @@ impl IndependentFormattingContext {
             baselines,
             pbm_sums,
         }
+    }
+}
+
+// <https://quirks.spec.whatwg.org/#the-percentage-height-calculation-quirk>
+fn adjust_block_size_for_percentage_quirk(
+    layout_context: &LayoutContext,
+    tentative_block_size: SizeConstraint,
+    containing_block: &ContainingBlock,
+    base: &LayoutBoxBase,
+    context: Option<&IndependentFormattingContext>,
+) -> SizeConstraint {
+    // This logic doesn't match the algorithm in the spec, but it should be roughly
+    // equivalent to the desired behavior. The spec is written with a CSS2 mindset
+    // that ignores modern features, and browsers aren't fully interoperable.
+    if layout_context.style_context.quirks_mode() != QuirksMode::Quirks ||
+        tentative_block_size.is_definite() ||
+        base.base_fragment_info
+            .flags
+            .contains(FragmentFlags::IS_WIDGET) ||
+        context.is_some_and(|context| !context.is_block_container())
+    {
+        tentative_block_size
+    } else {
+        containing_block.size.block
     }
 }

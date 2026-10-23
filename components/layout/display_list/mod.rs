@@ -62,9 +62,9 @@ use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler, TraversalState};
 use crate::fragment_tree::{
-    BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle, ContainingBlockCalculation,
-    Fragment, FragmentFlags, FragmentStatus, FragmentTree, IFrameFragment, ImageFragment,
-    PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
+    BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
+    CumulativeContentRectCalculation, Fragment, FragmentFlags, FragmentStatus, FragmentTree,
+    IFrameFragment, ImageFragment, PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -152,6 +152,10 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// Whether or not the `WebView` this display list is being rendered for has system focus
     /// and is the focused frame in the frame tree.
     frame_focused: bool,
+
+    /// Glyphs of the text fragment being built, reused across fragments to avoid
+    /// an allocation per fragment.
+    glyph_buffer: Vec<GlyphInstance>,
 }
 
 struct InspectorHighlight {
@@ -249,6 +253,7 @@ impl DisplayListBuilder<'_> {
             container_timing_enabled: pref!(container_timing_enabled),
             shell_background_color,
             frame_focused,
+            glyph_buffer: Vec::new(),
         };
 
         // Clear any caret color from previous display list constructions.
@@ -517,6 +522,7 @@ impl DisplayListBuilder<'_> {
                 // actually need to create a stacking context, just avoid creating one.
                 if !is_blend_container &&
                     effects.filter.0.is_empty() &&
+                    effects.backdrop_filter.0.is_empty() &&
                     effects.opacity == 1.0 &&
                     effects.mix_blend_mode == ComputedMixBlendMode::Normal &&
                     style.get_svg().clip_path == ComputedClipPath::None
@@ -657,9 +663,9 @@ impl DisplayListBuilder<'_> {
                     }
 
                     let bounds = box_fragment
-                        .offset_by_containing_block(
+                        .offset_by_cumulative_content_offset(
                             &fragment_relative_bounds,
-                            ContainingBlockCalculation::AlreadyDoneWithStackingContextTree,
+                            CumulativeContentRectCalculation::AlreadyDoneWithStackingContextTree,
                         )
                         .to_webrender();
 
@@ -1174,13 +1180,14 @@ impl Fragment {
         let mut baseline_origin = rect.origin;
         baseline_origin.y += fragment.font_metrics.ascent;
 
-        let (glyphs, largest_advance, entirely_white_space) = glyphs(
+        let (largest_advance, entirely_white_space) = collect_glyphs(
+            &mut builder.glyph_buffer,
             &fragment.glyphs,
             baseline_origin,
             fragment.justification_adjustment,
         );
 
-        if glyphs.is_empty() && !fragment.is_empty_for_text_cursor {
+        if builder.glyph_buffer.is_empty() && !fragment.is_empty_for_text_cursor {
             return;
         }
 
@@ -1284,10 +1291,10 @@ impl Fragment {
             }
         }
 
-        builder.wr().push_text(
+        builder.webrender_display_list_builder.push_text(
             &common,
             glyph_bounds,
-            &glyphs,
+            &builder.glyph_buffer,
             fragment.font_key,
             rgba(color),
             None,
@@ -1752,6 +1759,7 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
 
+        self.build_backdrop_filter(builder, state);
         self.build_background(builder, state);
         self.build_box_shadow(builder, state);
         if !self.fragment.is_table_grid_with_collapsed_borders() {
@@ -1837,6 +1845,40 @@ impl<'a> BuilderForBoxFragment<'a> {
         }
 
         self.build_background_image(builder, state, painter);
+    }
+
+    fn build_backdrop_filter(&mut self, builder: &mut DisplayListBuilder, state: &TraversalState) {
+        // https://drafts.fxtf.org/filter-effects-2/#BackdropFilterProperty
+        // > ... unless the element it applies to is a document root element in
+        // > the current browsing context.
+        if self
+            .fragment
+            .base
+            .flags
+            .contains(FragmentFlags::IS_ROOT_ELEMENT)
+        {
+            return;
+        }
+
+        let style = self.fragment.style();
+        let effects = style.get_effects();
+        if effects.backdrop_filter.0.is_empty() {
+            return;
+        }
+
+        let current_color = style.get_color();
+        let filters: Vec<_> = effects
+            .backdrop_filter
+            .0
+            .iter()
+            .map(|filter| FilterToWebRender::to_webrender(filter, current_color))
+            .collect();
+
+        let mut common = builder.common_properties(state, self.border_rect, style);
+        if let Some(clip_chain_id) = self.border_edge_clip(builder, state, false) {
+            common.clip_chain_id = clip_chain_id;
+        }
+        builder.wr().push_backdrop_filter(&common, &filters, &[]);
     }
 
     fn build_background(&mut self, builder: &mut DisplayListBuilder, state: &TraversalState) {
@@ -2470,17 +2512,18 @@ fn rgba(color: AbsoluteColor) -> wr::ColorF {
     )
 }
 
-/// Return a tuple for the given `shaped_text_slices` that contains:
+/// Clear `glyphs` and fill it with a [`GlyphInstance`] for every glyph in the given
+/// `shaped_text_slices`. Return a tuple that contains:
 ///
-/// - A vector of [`GlyphInstance`] for every glyph in the slices.
 /// - The measure of the largest advance
 /// - A boolean which is true if the slices only contained white space.
-fn glyphs(
+fn collect_glyphs(
+    glyphs: &mut Vec<GlyphInstance>,
     shaped_text_slices: &[Arc<ShapedTextSlice>],
     mut baseline_origin: PhysicalPoint<Au>,
     justification_adjustment: Au,
-) -> (Vec<GlyphInstance>, Au, bool) {
-    let mut glyphs = vec![];
+) -> (Au, bool) {
+    glyphs.clear();
     let mut largest_advance = Au::zero();
     let mut entirely_white_space = true;
 
@@ -2507,7 +2550,7 @@ fn glyphs(
             largest_advance.max_assign(advance);
         }
     }
-    (glyphs, largest_advance, entirely_white_space)
+    (largest_advance, entirely_white_space)
 }
 
 /// Given a set of corner radii for a rectangle, this function returns the corresponding radii

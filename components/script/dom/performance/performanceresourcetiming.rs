@@ -5,10 +5,12 @@
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use net_traits::ResourceFetchTiming;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::reflect_dom_object;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_url::ServoUrl;
 use time::Duration;
+use xml5ever::LocalName;
 
 use super::performanceentry::{EntryType, PerformanceEntry};
 use crate::dom::bindings::codegen::Bindings::PerformanceBinding::DOMHighResTimeStamp;
@@ -29,7 +31,7 @@ use crate::dom::globalscope::GlobalScope;
 pub(crate) enum InitiatorType {
     Beacon,
     Css,
-    LocalName(String),
+    LocalName(#[no_trace] LocalName),
     Navigation,
     XMLHttpRequest,
     Fetch,
@@ -41,7 +43,7 @@ pub(crate) enum InitiatorType {
 pub(crate) struct PerformanceResourceTiming {
     entry: PerformanceEntry,
     initiator_type: InitiatorType,
-    next_hop: Option<DOMString>,
+    next_hop: Option<TracedDOMString>,
     #[no_trace]
     worker_start: Option<CrossProcessInstant>,
     #[no_trace]
@@ -87,7 +89,7 @@ impl PerformanceResourceTiming {
         };
         PerformanceResourceTiming {
             entry: PerformanceEntry::new_inherited(
-                DOMString::from(url.into_string()),
+                url.into(),
                 entry_type,
                 start_time,
                 Duration::ZERO, // duration is calculated dynamically in PerformanceEntry::Duration
@@ -151,7 +153,7 @@ impl PerformanceResourceTimingMethods<crate::DomTypeHolder> for PerformanceResou
         match self.initiator_type {
             InitiatorType::Beacon => DOMString::from_static("beacon"),
             InitiatorType::Css => DOMString::from_static("css"),
-            InitiatorType::LocalName(ref n) => DOMString::from(n.clone()),
+            InitiatorType::LocalName(ref n) => n.as_str().into(),
             InitiatorType::Navigation => DOMString::from_static("navigation"),
             InitiatorType::XMLHttpRequest => DOMString::from_static("xmlhttprequest"),
             InitiatorType::Fetch => DOMString::from_static("fetch"),
@@ -165,7 +167,7 @@ impl PerformanceResourceTimingMethods<crate::DomTypeHolder> for PerformanceResou
     // when a proxy is configured
     fn NextHopProtocol(&self) -> DOMString {
         match self.next_hop {
-            Some(ref protocol) => protocol.clone(),
+            Some(ref protocol) => protocol.clone().root(),
             None => DOMString::new(),
         }
     }

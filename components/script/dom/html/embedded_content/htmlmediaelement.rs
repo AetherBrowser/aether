@@ -9,6 +9,7 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use atomic_refcell::AtomicRefCell;
 use bytes::Bytes;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use dom_struct::dom_struct;
@@ -42,6 +43,8 @@ use uuid::Uuid;
 
 use crate::dom::audio::audiotrack::AudioTrack;
 use crate::dom::audio::audiotracklist::AudioTrackList;
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
+use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLMediaElementBinding::{
     CanPlayTypeResult, HTMLMediaElementConstants, HTMLMediaElementMethods,
 };
@@ -186,7 +189,8 @@ pub(crate) struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-media-srcobject>
     src_object: DomRefCell<Option<SrcObject>>,
     /// <https://html.spec.whatwg.org/multipage/#dom-media-currentsrc>
-    current_src: DomRefCell<String>,
+    #[no_trace]
+    current_src: AtomicRefCell<String>,
     /// Incremented whenever tasks associated with this element are cancelled.
     generation_id: Cell<u32>,
     /// <https://html.spec.whatwg.org/multipage/#fire-loadeddata>
@@ -264,7 +268,6 @@ pub(crate) struct HTMLMediaElement {
     /// <https://html.spec.whatwg.org/multipage/#list-of-text-tracks>
     text_tracks_list: MutNullableDom<TextTrackList>,
     /// Time of last timeupdate notification.
-    #[ignore_malloc_size_of = "Defined in std::time"]
     next_timeupdate_event: Cell<Instant>,
     /// Latest fetch request context.
     current_fetch_context: RefCell<Option<HTMLMediaElementFetchContext>>,
@@ -329,11 +332,24 @@ enum PlaybackPositionWasMoved {
 #[derive(Clone, JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 struct ShadowTree {
-    // TODO(22314): add cue element here
+    cue_container: Dom<Element>,
 }
 
 impl UAShadowRoot<ShadowTree> for HTMLMediaElement {
     fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
+        let root = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        root.SetClassName(cx, DOMString::from_static("root"));
+        shadow_root
+            .upcast::<Node>()
+            .AppendChild(cx, root.upcast::<Node>())
+            .unwrap();
+
+        let cue_container = self.create_element_in_ua_shadowroot(cx, local_name!("div"));
+        cue_container.SetClassName(cx, DOMString::from_static("cue-container"));
+        root.upcast::<Node>()
+            .AppendChild(cx, cue_container.upcast::<Node>())
+            .unwrap();
+
         let script = self.create_element_in_ua_shadowroot(cx, local_name!("script"));
         // This is our hacky way to temporarily workaround the lack of a privileged
         // JS context.
@@ -369,7 +385,9 @@ impl UAShadowRoot<ShadowTree> for HTMLMediaElement {
             warn!("Could not render media controls {:?}", e);
         }
 
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {});
+        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
+            cue_container: cue_container.as_traced(),
+        });
     }
 
     fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
@@ -504,6 +522,10 @@ impl HTMLMediaElement {
         } else {
             LoadBlocker::terminate(cx, blocker);
         }
+    }
+
+    pub(crate) fn cue_container(&self, cx: &mut JSContext) -> DomRoot<Element> {
+        self.shadow_tree(cx).cue_container.as_rooted()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#time-marches-on>
@@ -1218,7 +1240,7 @@ impl HTMLMediaElement {
         self.load_state.set(LoadState::LoadingFromSrcObject);
 
         // Step 9.object.1. Set the currentSrc attribute to the empty string.
-        "".clone_into(&mut self.current_src.borrow_mut());
+        "".clone_into(&mut self.current_src.safe_borrow_mut(cx.no_gc()));
 
         // Step 9.object.3. Run the resource fetch algorithm with the assigned media
         // provider object. If that algorithm returns without aborting this one, then the
@@ -1249,7 +1271,7 @@ impl HTMLMediaElement {
 
         // Step 9.attribute.3. If urlRecord is not failure, then set the currentSrc
         // attribute to the result of applying the URL serializer to urlRecord.
-        *self.current_src.borrow_mut() = url_record.as_str().into();
+        *self.current_src.safe_borrow_mut(cx.no_gc()) = url_record.as_str().into();
 
         // Step 9.attribute.5. If urlRecord is not failure, then run the resource fetch
         // algorithm with urlRecord. If that algorithm returns without aborting this one,
@@ -1323,7 +1345,7 @@ impl HTMLMediaElement {
 
         // Step 9.children.7. Set the currentSrc attribute to the result of applying the URL
         // serializer to urlRecord.
-        *self.current_src.borrow_mut() = url_record.as_str().into();
+        *self.current_src.safe_borrow_mut(cx.no_gc()) = url_record.as_str().into();
 
         // Step 9.children.9. Run the resource fetch algorithm with urlRecord. If that
         // algorithm returns without aborting this one, then the load failed.
@@ -2999,9 +3021,8 @@ impl HTMLMediaElement {
         self.show_poster.get()
     }
 
-    #[expect(unsafe_code)]
-    pub(crate) unsafe fn current_src_url(&self) -> Option<ServoUrl> {
-        ServoUrl::parse(unsafe { self.current_src.borrow_for_layout() }).ok()
+    pub(crate) fn current_src_url(&self) -> Option<ServoUrl> {
+        ServoUrl::parse(&self.current_src.borrow()).ok()
     }
 
     /// By default the audio is rendered through the audio sink automatically
@@ -3975,11 +3996,12 @@ struct HTMLMediaElementFetchListener {
 }
 
 impl FetchResponseListener for HTMLMediaElementFetchListener {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         cx: &mut JSContext,
+        _: &GlobalScope,
         _: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -4066,7 +4088,13 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
         }
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        chunk: Bytes,
+    ) {
         let element = self.element.root();
 
         self.fetched_content_length += chunk.len() as u64;
@@ -4123,6 +4151,7 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _: RequestId,
         status: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -4184,16 +4213,16 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
             element.media_data_processing_failure_steps(cx);
         }
 
-        network_listener::submit_timing(cx, &self, &status, &timing);
+        network_listener::submit_timing(cx, global, &self, &status, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -4227,18 +4256,9 @@ impl FetchResponseListener for HTMLMediaElementFetchListener {
 
 impl ResourceTimingListener for HTMLMediaElementFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
-        let initiator_type = InitiatorType::LocalName(
-            self.element
-                .root()
-                .upcast::<Element>()
-                .local_name()
-                .to_string(),
-        );
+        let initiator_type =
+            InitiatorType::LocalName(self.element.root().upcast::<Element>().local_name().clone());
         (initiator_type, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.element.root().owner_document().global()
     }
 }
 

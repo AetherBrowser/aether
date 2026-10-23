@@ -11,8 +11,8 @@ use std::rc::Rc;
 use js::context::{JSContext, RawJSContext};
 use js::error::throw_type_error;
 use js::jsapi::{
-    CallArgs, GetFunctionNativeReserved, Heap, JS_GetFunctionObject, JSObject, JSScript,
-    ModuleType, SetFunctionNativeReserved,
+    CallArgs, GetFunctionNativeReserved, Heap, JS_GetFunctionObject, JS_GetGlobalFromScript,
+    JSObject, JSScript, ModuleType, SetFunctionNativeReserved,
 };
 use js::jsval::{JSVal, ObjectValue, PrivateValue, UndefinedValue};
 use js::realm::CurrentRealm;
@@ -40,7 +40,7 @@ use crate::dom::window::Window;
 use crate::realms::enter_auto_realm;
 use crate::runtime::script_runtime::IntroductionType;
 use crate::scripting::fetching_options::ScriptFetchOptions;
-use crate::scripting::import_map::ImportMap;
+use crate::scripting::import_map::{ImportMap, ReferringScript};
 use crate::scripting::script_module::{
     ModuleHandler, ModuleObject, ModuleTree, RethrowError, fetch_a_single_module_script,
     module_script_from_reference_private,
@@ -109,21 +109,18 @@ unsafe extern "C" fn on_load_requested_modules_resolved(
     let on_complete = state.on_complete.safe_borrow_mut(cx).take().unwrap();
     let module_script = state.module_script.safe_borrow_mut(cx).take().unwrap();
 
-    let record = module_script
-        .get_record()
-        .map(|module| module.handle())
-        .unwrap();
+    let record = module_script.record().unwrap();
 
     // https://html.spec.whatwg.org/multipage/#fetch-the-descendants-of-and-link-a-module-script
     // Step 6. Upon fulfillment of loadingPromise, run the following steps:
 
     // Step 6.1. Perform record.Link().
-    let link = unsafe { ModuleLink(cx, record) };
+    let link = unsafe { ModuleLink(cx, record.handle()) };
 
     // If this throws an exception, catch it, and set moduleScript's error to rethrow to that exception.
     if !link {
         let exception = RethrowError::from_pending_exception(cx);
-        module_script.set_rethrow_error(exception);
+        module_script.set_rethrow_error(exception.handle());
     }
 
     // Step 6.2. Run onComplete given moduleScript.
@@ -157,7 +154,7 @@ unsafe extern "C" fn on_load_requested_modules_rejected(
     // Step 7.1. If state.[[ErrorToRethrow]] is not null, set moduleScript's error to rethrow to
     // state.[[ErrorToRethrow]] and run onComplete given moduleScript.
     if !error.is_undefined() {
-        module_script.set_rethrow_error(RethrowError::new(Heap::boxed(*error.as_ref(cx))));
+        module_script.set_rethrow_error(error);
         on_complete(cx, Some(module_script));
     } else {
         // Step 7.2. Otherwise, run onComplete given null.
@@ -393,35 +390,36 @@ pub(crate) fn host_load_imported_module(
     // Step 3. Let referencingScript be null.
     rooted!(&in(cx) let mut script_private = UndefinedValue());
 
-    // Step 6.1. Set referencingScript to referrer.[[HostDefined]].
-    unsafe { JS_GetScriptPrivate(*referrer.as_ref(cx), script_private.handle_mut()) };
-    let referencing_script =
-        unsafe { module_script_from_reference_private(script_private.handle()) };
+    // Step 4. Let originalFetchOptions be the default script fetch options.
+    let mut original_fetch_options = ScriptFetchOptions::default_classic_script();
+
+    // Step 5. Let fetchReferrer be "client".
+    let mut fetch_referrer = global_scope.get_referrer();
 
     // Step 6. If referrer is a Script Record or a Cyclic Module Record, then:
-    let (original_fetch_options, fetch_referrer) = match referencing_script {
-        Some(module) => (
-            // Step 6.4. Set originalFetchOptions to referencingScript's fetch options.
-            module.options.clone(),
-            // Step 6.3. Set fetchReferrer to referencingScript's base URL.
-            Referrer::ReferrerUrl(module.base_url.clone()),
-        ),
-        None => (
-            // Step 4. Let originalFetchOptions be the default script fetch options.
-            ScriptFetchOptions::default_classic_script(),
-            // Step 5. Let fetchReferrer be "client".
-            global_scope.get_referrer(),
-        ),
-    };
 
-    let script_owner = referencing_script.and_then(|script| script.owner.clone());
-
-    // Step 6.2. Set settingsObject to referencingScript's settings object.
-    if let Some(ref owner) = script_owner {
-        global_scope = owner.root();
+    // Step 6.1. Set referencingScript to referrer.[[HostDefined]].
+    unsafe { JS_GetScriptPrivate(*referrer.as_ref(cx), script_private.handle_mut()) };
+    let referencing_script = unsafe {
+        module_script_from_reference_private(script_private.handle())
+    }
+    .map(|script| ReferringScript {
+        script,
+        settings_object: unsafe {
+            GlobalScope::from_object(JS_GetGlobalFromScript(referrer.get()))
+        },
+    });
+    if let Some(referencing_script) = &referencing_script {
+        // Step 6.2. Set settingsObject to referencingScript's settings object.
+        global_scope = referencing_script.settings_object.clone();
+        // Step 6.3. Set fetchReferrer to referencingScript's base URL.
+        fetch_referrer = Referrer::ReferrerUrl(referencing_script.script.base_url.clone());
+        // Step 6.4. Set originalFetchOptions to referencingScript's fetch options.
+        original_fetch_options = referencing_script.script.options.clone();
     }
 
-    // Step 7. If referrer is a Cyclic Module Record and moduleRequest is equal to the first element of referrer.[[RequestedModules]], then:
+    // Step 7. If referrer is a Cyclic Module Record and moduleRequest is equal to the first element
+    // of referrer.[[RequestedModules]], then:
     // Note: Spidermonkey removed the API for iterating through a module's requested modules,
     // preventing upfront validation.
     // Additionally, we skip step 7.1.1 (handled internally by Spidermonkey in `InnerModuleLoading`),
@@ -448,7 +446,8 @@ pub(crate) fn host_load_imported_module(
 
     // Step 8. Let url be the result of resolving a module specifier given referencingScript and moduleRequest.[[Specifier]],
     // catching any exceptions. If they throw an exception, let resolutionError be the thrown exception.
-    let url = ImportMap::resolve_module_specifier(&global_scope, referencing_script, specifier);
+    let url =
+        ImportMap::resolve_module_specifier(&global_scope, referencing_script.as_ref(), specifier);
 
     // Step 9. If the previous step threw an exception, then:
     if let Err(resolution_error) = url {
@@ -527,7 +526,7 @@ pub(crate) fn host_load_imported_module(
                 Some(module_tree) => {
                     // Step 3. Otherwise, if moduleScript's parse error is not null, then:
                     // Step 3.1. Let parseError be moduleScript's parse error.
-                    if let Some(parse_error) = module_tree.get_parse_error() {
+                    if let Some(parse_error) = module_tree.parse_error() {
                         // Step 3.3. If loadState is not undefined and loadState.[[ErrorToRethrow]]
                         // is null, set loadState.[[ErrorToRethrow]] to parseError.
                         // Note: ErrorToRethrow is retrieved inside the rejection handler of loadingPromise.
@@ -543,10 +542,7 @@ pub(crate) fn host_load_imported_module(
                         };
                     } else {
                         // Step 4. Otherwise, set completion to NormalCompletion(moduleScript's record).
-                        let completion = module_tree
-                            .get_record()
-                            .map(|module| module.handle())
-                            .unwrap();
+                        let completion = module_tree.record().unwrap();
 
                         // Step 5. Perform FinishLoadingImportedModule(referrer, moduleRequest, payload, completion).
                         finish_loading_imported_module(
@@ -554,7 +550,7 @@ pub(crate) fn host_load_imported_module(
                             request.referrer.handle(),
                             request.module_request.handle(),
                             request.payload.handle(),
-                            completion,
+                            completion.handle(),
                         );
                     }
                 },

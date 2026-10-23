@@ -153,13 +153,11 @@ pub(crate) struct DocumentEventHandler {
     window: Dom<Window>,
     /// Pending input events, to be handled at the next rendering opportunity.
     #[no_trace]
-    #[ignore_malloc_size_of = "InputEvent contains data from outside crates"]
     pending_input_events: DomRefCell<Vec<ConstellationInputEvent>>,
     /// The index of the last mouse move event in the pending input events queue.
     mouse_move_event_index: DomRefCell<Option<usize>>,
     /// The [`InputEventId`]s of mousemove events that have been coalesced.
     #[no_trace]
-    #[ignore_malloc_size_of = "InputEventId contains data from outside crates"]
     coalesced_mouse_move_event_ids: DomRefCell<Vec<InputEventId>>,
     /// The index of the last wheel event in the pending input events queue.
     /// This is non-standard behaviour.
@@ -168,7 +166,6 @@ pub(crate) struct DocumentEventHandler {
     wheel_event_index: DomRefCell<Option<usize>>,
     /// The [`InputEventId`]s of wheel events that have been coalesced.
     #[no_trace]
-    #[ignore_malloc_size_of = "InputEventId contains data from outside crates"]
     coalesced_wheel_event_ids: DomRefCell<Vec<InputEventId>>,
     /// <https://w3c.github.io/uievents/#event-type-dblclick>
     click_counting_info: DomRefCell<ClickCountingInfo>,
@@ -477,7 +474,7 @@ impl DocumentEventHandler {
                 .inclusive_ancestors(ShadowIncluding::Yes)
                 .filter_map(DomRoot::downcast::<Element>)
             {
-                element.set_hover_state(false);
+                element.set_hover_state(cx.no_gc(), false);
             }
 
             if let Some(hit_test_result) =
@@ -693,7 +690,7 @@ impl DocumentEventHandler {
                         .inclusive_ancestors(ShadowIncluding::Yes)
                         .filter_map(DomRoot::downcast::<Element>)
                     {
-                        element.set_hover_state(false);
+                        element.set_hover_state(cx.no_gc(), false);
                     }
                 }
 
@@ -742,7 +739,7 @@ impl DocumentEventHandler {
                 .inclusive_ancestors(ShadowIncluding::Yes)
                 .filter_map(DomRoot::downcast::<Element>)
             {
-                element.set_hover_state(true);
+                element.set_hover_state(cx.no_gc(), true);
             }
 
             if !capture_is_active {
@@ -916,17 +913,17 @@ impl DocumentEventHandler {
             if currently_active_element == element_for_activation {
                 return;
             }
-            self.unset_active_element();
+            self.unset_active_element(no_gc);
         }
 
-        element_for_activation.set_active_state(true);
+        element_for_activation.set_active_state(no_gc, true);
         self.current_active_element
             .set(Some(&*element_for_activation));
     }
 
-    fn unset_active_element(&self) {
+    fn unset_active_element(&self, no_gc: &NoGC) {
         if let Some(active_element) = self.current_active_element.take() {
-            active_element.set_active_state(false);
+            active_element.set_active_state(no_gc, false);
         }
     }
 
@@ -997,7 +994,7 @@ impl DocumentEventHandler {
                 self.set_active_element(cx.no_gc(), &element);
             }
             if mouse_button_event.action == MouseButtonAction::Up {
-                self.unset_active_element();
+                self.unset_active_element(cx.no_gc());
             }
         }
 
@@ -1563,7 +1560,7 @@ impl DocumentEventHandler {
                     TouchEventType::Up | TouchEventType::Cancel => {
                         active_touch_points.swap_remove(index);
                         self.remove_pointer_id_for_touch(identifier);
-                        self.unset_active_element();
+                        self.unset_active_element(cx.no_gc());
                     },
                     TouchEventType::Down => unreachable!("Should have been handled above"),
                 }

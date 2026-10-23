@@ -36,6 +36,7 @@ use profile_traits::mem::{ProcessReports, perform_memory_report};
 use script_bindings::callback::RootedCallback;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::conversions::root_from_handlevalue;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::reflector::DomObject;
 use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
@@ -67,7 +68,6 @@ use crate::dom::bindings::codegen::UnionTypes::{
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::trace::HashMapTracedValues;
@@ -166,7 +166,6 @@ pub(crate) fn prepare_workerscope_init(
 }
 
 pub(crate) struct ScriptFetchContext {
-    scope: Trusted<WorkerGlobalScope>,
     response: Option<Metadata>,
     body_bytes: BytesMut,
     url: ServoUrl,
@@ -174,13 +173,8 @@ pub(crate) struct ScriptFetchContext {
 }
 
 impl ScriptFetchContext {
-    pub(crate) fn new(
-        scope: Trusted<WorkerGlobalScope>,
-        url: ServoUrl,
-        policy_container: Arc<PolicyContainer>,
-    ) -> ScriptFetchContext {
+    pub(crate) fn new(url: ServoUrl, policy_container: Arc<PolicyContainer>) -> ScriptFetchContext {
         ScriptFetchContext {
-            scope,
             response: None,
             body_bytes: BytesMut::new(),
             url,
@@ -190,30 +184,39 @@ impl ScriptFetchContext {
 }
 
 impl FetchResponseListener for ScriptFetchContext {
-    fn process_request_body(&mut self, _request_id: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _request_id: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut JSContext,
+        _: &GlobalScope,
         _request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
         self.response = metadata.ok().map(Into::into);
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, _: RequestId, chunk: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        chunk: Bytes,
+    ) {
         self.body_bytes.extend_from_slice(&chunk);
     }
 
     fn process_response_eof(
         mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        let scope = self.scope.root();
-
+        let scope = global
+            .downcast::<WorkerGlobalScope>()
+            .expect("Should always be a WorkerGlobalScope here");
         if response
             .as_ref()
             .inspect_err(|e| error!("error loading script {} ({:?})", self.url, e))
@@ -259,11 +262,9 @@ impl FetchResponseListener for ScriptFetchContext {
         // Step 4 Let sourceText be the result of UTF-8 decoding bodyBytes.
         let (source, _) = UTF_8.decode_with_bom_removal(&self.body_bytes);
 
-        let global_scope = scope.upcast::<GlobalScope>();
-
         // Step 5 Let script be the result of creating a classic script using
         // sourceText, settingsObject, response's URL, and the default script fetch options.
-        let script = global_scope.create_a_classic_script(
+        let script = global.create_a_classic_script(
             cx,
             source,
             scope.worker_url.borrow().clone(),
@@ -276,20 +277,19 @@ impl FetchResponseListener for ScriptFetchContext {
         // Step 6 Run onComplete given script.
         scope.on_complete(cx, Some(Script::Classic(script)));
 
-        submit_timing(cx, &self, &response, &timing);
+        submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         _cx: &mut JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<content_security_policy::Violation>,
     ) {
-        let scope = self.scope.root();
-
-        if let Some(worker_scope) = scope.downcast::<DedicatedWorkerGlobalScope>() {
+        if let Some(worker_scope) = global.downcast::<DedicatedWorkerGlobalScope>() {
             worker_scope.report_csp_violations(violations);
-        } else if let Some(worker_scope) = scope.downcast::<SharedWorkerGlobalScope>() {
+        } else if let Some(worker_scope) = global.downcast::<SharedWorkerGlobalScope>() {
             worker_scope.report_csp_violations(violations);
         }
     }
@@ -304,10 +304,6 @@ impl ResourceTimingListener for ScriptFetchContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Other, self.url.clone())
     }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.scope.root().global()
-    }
 }
 
 /// <https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface>
@@ -315,7 +311,7 @@ impl ResourceTimingListener for ScriptFetchContext {
 pub(crate) struct WorkerGlobalScope {
     globalscope: GlobalScope,
 
-    worker_name: DOMString,
+    worker_name: TracedDOMString,
     worker_type: WorkerType,
 
     #[no_trace]
@@ -336,14 +332,12 @@ pub(crate) struct WorkerGlobalScope {
     #[conditional_malloc_size_of]
     policy_container: DomRefCell<Arc<PolicyContainer>>,
 
-    #[ignore_malloc_size_of = "Defined in base"]
     #[no_trace]
     /// A `Sender` for sending messages to devtools. This is unused but is stored here to
     /// keep the channel alive.
     #[cfg(feature = "devtools")]
     _devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
 
-    #[ignore_malloc_size_of = "Defined in base"]
     #[no_trace]
     /// A `Receiver` for receiving messages from devtools.
     #[cfg(feature = "devtools")]
@@ -450,7 +444,7 @@ impl WorkerGlobalScope {
             ),
             caches: Default::default(),
             worker_id: init.worker_id,
-            worker_name,
+            worker_name: worker_name.traced(),
             worker_type,
             worker_url: DomRefCell::new(worker_url),
             closing: closing.clone(),
@@ -564,7 +558,7 @@ impl WorkerGlobalScope {
     }
 
     pub(crate) fn worker_name(&self) -> DOMString {
-        self.worker_name.clone()
+        self.worker_name.clone().root()
     }
 
     pub(crate) fn worker_id(&self) -> WorkerId {
@@ -686,12 +680,8 @@ impl WorkerGlobalScope {
     pub(crate) fn on_complete(&self, cx: &mut JSContext, script: Option<Script>) {
         // Step 1. If script is null or if script's error to rethrow is non-null, then:
         let script = match script {
-            Some(Script::Classic(script)) if script.record.is_ok() => Script::Classic(script),
-            Some(Script::Module(module_tree))
-                if module_tree.get_rethrow_error().borrow().is_none() =>
-            {
-                Script::Module(module_tree)
-            },
+            Some(Script::Classic(script)) if !script.has_rethrow_error() => Script::Classic(script),
+            Some(Script::Module(module)) if !module.has_rethrow_error() => Script::Module(module),
             _ => {
                 // Step 1.1. Queue a global task on the DOM manipulation task source given
                 // worker's relevant global object to fire an event named error at worker.
@@ -1169,6 +1159,10 @@ impl WorkerGlobalScope {
         if self.is_closing() {
             return false;
         }
+
+        let mut realm = enter_auto_realm(cx, self);
+        let cx = &mut realm;
+
         match msg {
             CommonScriptMsg::Task(_, task, _, _) => task.run_box(cx),
             CommonScriptMsg::CollectReports(reports_chan) => {

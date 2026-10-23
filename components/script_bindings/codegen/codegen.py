@@ -907,7 +907,7 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
     if type.isSequence() or type.isRecord():
         innerInfo = getJSToNativeConversionInfo(innerContainerType(type),
                                                 descriptorProvider,
-                                                isMember="Sequence",
+                                                isMember=isMember,
                                                 isAutoRooted=isAutoRooted)
         assert innerInfo.declType is not None
         declType = wrapInNativeContainerType(type, innerInfo.declType)
@@ -1333,9 +1333,6 @@ def getJSToNativeConversionInfo(type: IDLType, descriptorProvider: DescriptorPro
                               handleDefault(default))
 
     if type.isDictionary():
-        # There are no nullable dictionaries
-        assert not type.nullable() or (isMember and isMember != "Dictionary")
-
         # pyrefly: ignore  # missing-attribute
         typeName = f"{CGDictionary.makeModuleName(type.inner)}::{CGDictionary.makeDictionaryName(type.inner)}"
         if containsDomInterface(type):
@@ -4023,7 +4020,7 @@ assert!((*cache)[PrototypeList::Constructor::{properties['id']} as usize].is_nul
                         """
                         assert!(JS_GetProperty(cx, prototype.handle(), ${prop}, aliasedVal.handle_mut()));
                         """,
-                        prop=str_to_cstr_ptr(m.identifier.name)))
+                        prop=str_to_cstr(m.identifier.name)))
                 ] + [defineAlias(alias) for alias in sorted(m.aliases)])
 
             defineAliases = CGList([
@@ -4944,7 +4941,7 @@ class CGSpecializedForwardingSetter(CGSpecializedSetter):
 let mut cx = JSContext::from_ptr(ptr::NonNull::new(cx).unwrap());
 let cx = &mut cx;
 rooted!(&in(cx) let mut v = UndefinedValue());
-if !JS_GetProperty(cx, HandleObject::from_raw(obj), {str_to_cstr_ptr(attrName)}, v.handle_mut()) {{
+if !JS_GetProperty(cx, HandleObject::from_raw(obj), {str_to_cstr(attrName)}, v.handle_mut()) {{
     return false;
 }}
 if !v.is_object() {{
@@ -6927,12 +6924,27 @@ class CGDOMJSProxyHandler_getPrototype(CGAbstractExternMethod):
 
 class CGDOMJSProxyHandler_className(CGAbstractExternMethod):
     def __init__(self, descriptor: Descriptor) -> None:
-        args = [Argument('*mut RawJSContext', 'cx'), Argument('RawHandleObject', '_proxy')]
+        args = [Argument('*mut RawJSContext', 'cx'), Argument('RawHandleObject', 'proxy')]
         CGAbstractExternMethod.__init__(self, descriptor, "className", "*const libc::c_char", args, doesNotPanic=True)
         self.descriptor = descriptor
 
     def getBody(self) -> str:
-        return str_to_cstr_ptr(self.descriptor.name)
+        if self.descriptor.isMaybeCrossOriginObject():
+            crossOrigin = dedent(
+                f"""
+                let mut cx = JSContext::from_ptr(ptr::NonNull::new(cx).unwrap());
+                let mut cx = CurrentRealm::assert(&mut cx);
+                let cx = &mut cx;
+
+                let proxy = Handle::from_raw(proxy);
+                if !is_platform_object_same_origin(cx, proxy) {{
+                    return {str_to_cstr_ptr("Object")};
+                }}
+                """)
+        else:
+            crossOrigin = ""
+
+        return f"{crossOrigin}{str_to_cstr_ptr(self.descriptor.name)}"
 
     def definition_body(self) -> CGThing:
         return CGGeneric(self.getBody())
@@ -7862,7 +7874,7 @@ impl{self.generic} Clone for {self.makeClassName(self.dictionary)}{self.genericS
             "\n"
             f"impl{self.generic} ToJSValConvertible for {selfName}{self.genericSuffix} {{\n"
             "    fn to_jsval(&self, cx: &mut JSContext, mut rval: MutableHandleValue) {\n"
-            "        rooted!(&in(cx) let mut obj = unsafe { JS_NewObject(cx, ptr::null()) });\n"
+            "        rooted!(&in(cx) let mut obj = JS_NewObject(cx, None));\n"
             "        self.to_jsobject(cx, obj.handle_mut());\n"
             "        rval.set(ObjectOrNullValue(obj.get()))\n"
             "    }\n"

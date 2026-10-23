@@ -822,7 +822,7 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
         }
 
         if self.is_form_associated_custom_element() {
-            self.element.init_state_for_internals();
+            self.element.init_state_for_internals(cx.no_gc());
         }
 
         // Step 6-7: Set this's attached internals to a new ElementInternals instance
@@ -1308,8 +1308,8 @@ impl VirtualMethods for HTMLElement {
             (&local_name!("disabled"), AttributeMutation::Set(_))
                 if self.is_form_associated_custom_element() && element.enabled_state() =>
             {
-                element.set_disabled_state(true);
-                element.set_enabled_state(false);
+                element.set_disabled_state(cx.no_gc(), true);
+                element.set_enabled_state(cx.no_gc(), false);
                 ScriptThread::enqueue_callback_reaction(
                     cx,
                     element,
@@ -1322,8 +1322,8 @@ impl VirtualMethods for HTMLElement {
             (&local_name!("disabled"), AttributeMutation::Removed)
                 if self.is_form_associated_custom_element() && element.disabled_state() =>
             {
-                element.set_disabled_state(false);
-                element.set_enabled_state(true);
+                element.set_disabled_state(cx.no_gc(), false);
+                element.set_enabled_state(cx.no_gc(), true);
                 element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                 if element.enabled_state() {
                     ScriptThread::enqueue_callback_reaction(
@@ -1337,10 +1337,10 @@ impl VirtualMethods for HTMLElement {
             (&local_name!("readonly"), mutation) if self.is_form_associated_custom_element() => {
                 match mutation {
                     AttributeMutation::Set(_) => {
-                        element.set_read_write_state(true);
+                        element.set_read_write_state(cx.no_gc(), true);
                     },
                     AttributeMutation::Removed => {
-                        element.set_read_write_state(false);
+                        element.set_read_write_state(cx.no_gc(), false);
                     },
                 }
             },
@@ -1393,7 +1393,7 @@ impl VirtualMethods for HTMLElement {
     /// TODO: These are the node removal steps, so this should be done for all Nodes.
     fn unbind_from_tree(&self, cx: &mut js::context::JSContext, context: &UnbindContext) {
         // 1. Let document be removedNode's node document.
-        let document = self.owner_document();
+        let document = self.owner_document_unrooted(cx.no_gc());
 
         // 2. If document's focused area is removedNode, then set document's focused area to
         // document's viewport, and set document's relevant global object's navigation API's focus
@@ -1413,7 +1413,7 @@ impl VirtualMethods for HTMLElement {
         {
             document
                 .focus_handler()
-                .set_focused_area(FocusableArea::Viewport);
+                .set_focused_area(cx.no_gc(), FocusableArea::Viewport);
         }
 
         // 3. If removedNode is an element whose namespace is the HTML namespace, and this standard
@@ -1435,7 +1435,7 @@ impl VirtualMethods for HTMLElement {
         //
         // TODO: This should likely just call reset on form owner.
         if self.is_form_associated_custom_element() && element.disabled_state() {
-            element.check_disabled_attribute();
+            element.check_disabled_attribute(cx.no_gc());
             element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
             if element.enabled_state() {
                 ScriptThread::enqueue_callback_reaction(

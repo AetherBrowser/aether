@@ -587,7 +587,9 @@ impl HTMLLinkElement {
         let options = self.processing_options();
 
         // Step 2. Let request be the result of creating a link request given options.
-        let Some(request) = options.create_link_request(self.owner_window().webview_id()) else {
+        let Some(request) =
+            options.create_link_request(self.owner_window().webview_id(), &self.owner_global())
+        else {
             // Step 3. If request is null, then return.
             return None;
         };
@@ -661,7 +663,9 @@ impl HTMLLinkElement {
         options.destination = Destination::None;
 
         // Step 4. Let request be the result of creating a link request given options.
-        let Some(request) = options.create_link_request(self.owner_window().webview_id()) else {
+        let Some(request) =
+            options.create_link_request(self.owner_window().webview_id(), &self.owner_global())
+        else {
             // Step 5. If request is null, then return.
             return;
         };
@@ -677,7 +681,6 @@ impl HTMLLinkElement {
         let fetch_context = LinkFetchContext {
             url,
             link: Some(Trusted::new(self)),
-            global: Trusted::new(&document.global()),
             type_: LinkFetchContextType::Prefetch,
             response_body: BytesMut::new(),
         };
@@ -822,7 +825,6 @@ impl HTMLLinkElement {
                     url: self.owner_document().base_url(),
                     image_cache: window.image_cache(),
                     id,
-                    link: Trusted::new(self),
                 };
                 document.fetch_background(request, fetch_context);
             },
@@ -1299,8 +1301,6 @@ impl HTMLLinkElementMethods<crate::DomTypeHolder> for HTMLLinkElement {
 }
 
 struct FaviconFetchContext {
-    /// The `<link>` element that caused this fetch operation
-    link: Trusted<HTMLLinkElement>,
     image_cache: std::sync::Arc<dyn ImageCache>,
     id: PendingImageId,
 
@@ -1309,11 +1309,12 @@ struct FaviconFetchContext {
 }
 
 impl FetchResponseListener for FaviconFetchContext {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -1326,6 +1327,7 @@ impl FetchResponseListener for FaviconFetchContext {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         chunk: Bytes,
     ) {
@@ -1338,6 +1340,7 @@ impl FetchResponseListener for FaviconFetchContext {
     fn process_response_eof(
         self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -1346,16 +1349,16 @@ impl FetchResponseListener for FaviconFetchContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        submit_timing(cx, &self, &response, &timing);
+        submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -1369,13 +1372,6 @@ impl FetchResponseListener for FaviconFetchContext {
 
 impl ResourceTimingListener for FaviconFetchContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
-        (
-            InitiatorType::LocalName("link".to_string()),
-            self.url.clone(),
-        )
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.link.root().upcast::<Node>().owner_doc().global()
+        (InitiatorType::LocalName("link".into()), self.url.clone())
     }
 }

@@ -20,8 +20,7 @@ use js::jsapi::{HandleValueArray, JSITER_OWNONLY, JSType, PropertyDescriptor};
 use js::jsval::UndefinedValue;
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
-    GetPropertyKeys, IsArgumentsObject, JS_CallFunctionName, JS_GetOwnPropertyDescriptorById,
-    JS_GetProperty, JS_GetPropertyById, JS_HasOwnProperty, JS_TypeOfValue,
+    IsArgumentsObject, JS_CallFunctionName, JS_HasOwnProperty, JS_TypeOfValue,
 };
 use js::rust::{HandleObject, HandleValue, IdVector};
 use net_traits::CookieSource::{HTTP, NonHTTP};
@@ -31,7 +30,10 @@ use script_bindings::codegen::GenericBindings::PermissionStatusBinding::{
 };
 use script_bindings::codegen::GenericBindings::ShadowRootBinding::ShadowRootMethods;
 use script_bindings::conversions::is_array_like;
-use script_bindings::js::JS_IsExceptionPending;
+use script_bindings::js::{
+    GetPropertyKeys, JS_GetOwnPropertyDescriptorById, JS_GetProperty, JS_GetPropertyById,
+    JS_IsExceptionPending,
+};
 use script_bindings::num::Finite;
 use script_bindings::reflector::DomObject;
 use script_bindings::settings_stack::run_a_script;
@@ -345,7 +347,7 @@ fn object_has_to_json_property(
     let mut found = false;
     if unsafe { JS_HasOwnProperty(cx, object, name.as_ptr(), &mut found) } && found {
         rooted!(&in(cx) let mut value = UndefinedValue());
-        let result = unsafe { JS_GetProperty(cx, object, name.as_ptr(), value.handle_mut()) };
+        let result = JS_GetProperty(cx, object, &name, value.handle_mut());
         if !result {
             throw_dom_exception(cx, global_scope, Error::JSFailed);
             false
@@ -493,7 +495,6 @@ fn jsval_to_webdriver_inner(
     }
 }
 
-#[expect(unsafe_code)]
 /// <https://w3c.github.io/webdriver/#dfn-clone-an-object>
 fn clone_an_object(
     cx: &mut CurrentRealm,
@@ -561,8 +562,7 @@ fn clone_an_object(
         let mut result = HashMap::new();
 
         let mut ids = IdVector::new(cx);
-        let succeeded =
-            unsafe { GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut()) };
+        let succeeded = GetPropertyKeys(cx, object_handle, JSITER_OWNONLY, ids.handle_mut());
         if !succeeded {
             return Err(JavaScriptEvaluationError::SerializationError(
                 JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -573,15 +573,13 @@ fn clone_an_object(
             rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
 
             let mut is_none = false;
-            let succeeded = unsafe {
-                JS_GetOwnPropertyDescriptorById(
-                    cx,
-                    object_handle,
-                    id.handle(),
-                    desc.handle_mut(),
-                    &mut is_none,
-                )
-            };
+            let succeeded = JS_GetOwnPropertyDescriptorById(
+                cx,
+                object_handle,
+                id.handle(),
+                desc.handle_mut(),
+                &mut is_none,
+            );
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,
@@ -589,9 +587,8 @@ fn clone_an_object(
             }
 
             rooted!(&in(cx) let mut property = UndefinedValue());
-            let succeeded = unsafe {
-                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut())
-            };
+            let succeeded =
+                JS_GetPropertyById(cx, object_handle, id.handle(), property.handle_mut());
             if !succeeded {
                 return Err(JavaScriptEvaluationError::SerializationError(
                     JavaScriptEvaluationResultSerializationError::OtherJavaScriptError,

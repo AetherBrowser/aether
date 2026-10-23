@@ -12,6 +12,7 @@ use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
+use script_bindings::domstring::TracedDOMString;
 use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use style::attr::AttrValue;
 use stylo_dom::ElementState;
@@ -53,7 +54,7 @@ pub(crate) struct HTMLTextAreaElement {
     htmlelement: HTMLElement,
     #[no_trace]
     text_input: DomRefCell<TextInput<EmbedderClipboardProvider>>,
-    placeholder: RefCell<DOMString>,
+    placeholder: RefCell<TracedDOMString>,
     // https://html.spec.whatwg.org/multipage/#concept-textarea-dirty
     value_dirty: Cell<bool>,
     form_owner: MutNullableDom<HTMLFormElement>,
@@ -302,7 +303,7 @@ impl TextControlElement for HTMLTextAreaElement {
         }
     }
 
-    fn placeholder_text<'a>(&'a self) -> Ref<'a, DOMString> {
+    fn placeholder_text<'a>(&'a self) -> Ref<'a, TracedDOMString> {
         self.placeholder.borrow()
     }
 
@@ -321,7 +322,7 @@ impl TextControlElement for HTMLTextAreaElement {
         let placeholder_shown =
             self.text_input.borrow().is_empty() && !self.placeholder.borrow().is_empty();
         self.upcast::<Element>()
-            .set_placeholder_shown_state(placeholder_shown);
+            .set_placeholder_shown_state(cx.no_gc(), placeholder_shown);
 
         self.text_input_widget.borrow().update_shadow_tree(cx, self);
         self.text_input_widget
@@ -455,7 +456,9 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
         let old_api_value = self.Value();
 
         // Step 2:  Set this element's raw value to the new value.
-        self.text_input.borrow_mut().set_content(value);
+        self.text_input
+            .safe_borrow_mut(cx.no_gc())
+            .set_content(value);
 
         // Step 3: Set this element's dirty value flag to true.
         self.value_dirty.set(true);
@@ -465,7 +468,9 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
         // unselecting any selected text and resetting the selection direction to
         // "none".
         if old_api_value != self.Value() {
-            self.text_input.borrow_mut().clear_selection_to_end();
+            self.text_input
+                .safe_borrow_mut(cx.no_gc())
+                .clear_selection_to_end();
             self.handle_text_content_changed(cx);
         }
     }
@@ -527,19 +532,21 @@ impl HTMLTextAreaElementMethods<crate::DomTypeHolder> for HTMLTextAreaElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
-    fn SetRangeText(&self, replacement: DOMString) -> ErrorResult {
-        self.set_dom_range_text(replacement, None, None, Default::default())
+    fn SetRangeText(&self, cx: &mut JSContext, replacement: DOMString) -> ErrorResult {
+        self.set_dom_range_text(cx, replacement, None, None, Default::default())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn SetRangeText_(
         &self,
+        cx: &mut JSContext,
         replacement: DOMString,
         start: u32,
         end: u32,
         selection_mode: SelectionMode,
     ) -> ErrorResult {
         self.set_dom_range_text(
+            cx,
             replacement,
             Some(Utf16CodeUnits::from(start)),
             Some(Utf16CodeUnits::from(end)),
@@ -590,7 +597,7 @@ impl HTMLTextAreaElement {
         // https://html.spec.whatwg.org/multipage/#the-textarea-element:concept-form-reset-control
         self.value_dirty.set(false);
         self.text_input
-            .borrow_mut()
+            .safe_borrow_mut(cx.no_gc())
             .set_content(self.DefaultValue());
         self.handle_text_content_changed(cx);
     }
@@ -615,25 +622,25 @@ impl VirtualMethods for HTMLTextAreaElement {
                 let el = self.upcast::<Element>();
                 match mutation {
                     AttributeMutation::Set(_) => {
-                        el.set_disabled_state(true);
-                        el.set_enabled_state(false);
+                        el.set_disabled_state(cx.no_gc(), true);
+                        el.set_enabled_state(cx.no_gc(), false);
 
-                        el.set_read_write_state(false);
+                        el.set_read_write_state(cx.no_gc(), false);
                     },
                     AttributeMutation::Removed => {
-                        el.set_disabled_state(false);
-                        el.set_enabled_state(true);
+                        el.set_disabled_state(cx.no_gc(), false);
+                        el.set_enabled_state(cx.no_gc(), true);
                         el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
 
                         if !el.disabled_state() && !el.read_write_state() {
-                            el.set_read_write_state(true);
+                            el.set_read_write_state(cx.no_gc(), true);
                         }
                     },
                 }
             },
             local_name!("maxlength") => match *attr.value() {
                 AttrValue::Int(_, value) => {
-                    let mut text_input = self.text_input.borrow_mut();
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
 
                     if value < 0 {
                         text_input.set_max_length(None);
@@ -645,7 +652,7 @@ impl VirtualMethods for HTMLTextAreaElement {
             },
             local_name!("minlength") => match *attr.value() {
                 AttrValue::Int(_, value) => {
-                    let mut text_input = self.text_input.borrow_mut();
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
 
                     if value < 0 {
                         text_input.set_min_length(None);
@@ -674,10 +681,10 @@ impl VirtualMethods for HTMLTextAreaElement {
                 let el = self.upcast::<Element>();
                 match mutation {
                     AttributeMutation::Set(_) => {
-                        el.set_read_write_state(false);
+                        el.set_read_write_state(cx.no_gc(), false);
                     },
                     AttributeMutation::Removed => {
-                        el.set_read_write_state(!el.disabled_state());
+                        el.set_read_write_state(cx.no_gc(), !el.disabled_state());
                     },
                 }
             },
@@ -735,7 +742,7 @@ impl VirtualMethods for HTMLTextAreaElement {
         {
             el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
-            el.check_disabled_attribute();
+            el.check_disabled_attribute(cx.no_gc());
         }
 
         self.validity_state(cx)
@@ -757,7 +764,7 @@ impl VirtualMethods for HTMLTextAreaElement {
         let el = copy.downcast::<HTMLTextAreaElement>().unwrap();
         el.value_dirty.set(self.value_dirty.get());
         {
-            let mut text_input = el.text_input.borrow_mut();
+            let mut text_input = el.text_input.safe_borrow_mut(cx.no_gc());
             text_input.set_content(self.text_input.borrow().get_content());
         }
         el.validity_state(cx)

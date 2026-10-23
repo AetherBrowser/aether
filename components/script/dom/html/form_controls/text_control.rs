@@ -12,6 +12,7 @@ use std::cell::{Ref, RefMut};
 use embedder_traits::EditingAction;
 use js::context::JSContext;
 use layout_api::QueryMsg;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::inheritance::Castable;
 use script_bindings::refcounted::Trusted;
 use servo_base::text::Utf16CodeUnits;
@@ -44,7 +45,7 @@ pub(crate) trait TextControlElement {
     fn is_password_field(&self) -> bool {
         false
     }
-    fn placeholder_text<'a>(&'a self) -> Ref<'a, DOMString>;
+    fn placeholder_text<'a>(&'a self) -> Ref<'a, TracedDOMString>;
     fn value_text(&self) -> DOMString;
     fn read_only_or_disabled(&self) -> bool;
     fn handle_text_content_changed(&self, cx: &mut JSContext);
@@ -329,6 +330,7 @@ pub(crate) trait TextControlElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn set_dom_range_text(
         &self,
+        cx: &mut JSContext,
         replacement: DOMString,
         start: Option<Utf16CodeUnits>,
         end: Option<Utf16CodeUnits>,
@@ -474,6 +476,7 @@ pub(crate) trait TextControlElement {
             None,
             Some(original_selection_state),
         );
+        self.handle_text_content_changed(cx);
         Ok(())
     }
 

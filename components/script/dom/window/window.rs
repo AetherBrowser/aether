@@ -38,7 +38,7 @@ use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
 use js::jsapi::{
-    GCReason, GetObjectRealmOrNull, Heap, JSContext as RawJSContext, JSObject, SetRealmPrincipals,
+    GCReason, GetObjectRealmOrNull, JSContext as RawJSContext, JSObject, SetRealmPrincipals,
 };
 use js::jsval::{NullValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
@@ -70,6 +70,7 @@ use profile_traits::time::ProfilerChan as TimeProfilerChan;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
 use script_bindings::js::{JS_DefineProperty, PropertyFlags};
 use script_bindings::like::Setlike;
@@ -140,9 +141,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::{
-    CustomTraceable, HashMapTracedValues, JSTraceable, RootedTraceableBox,
-};
+use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues, JSTraceable};
 use crate::dom::bindings::utils::GlobalStaticData;
 use crate::dom::bindings::weakref::DOMTracker;
 #[cfg(feature = "bluetooth")]
@@ -161,6 +160,7 @@ use crate::dom::element::Element;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::fetchlaterresult::FetchLaterResult;
+use crate::dom::geolocation::Geolocation;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::history::History;
 use crate::dom::html::htmlcollection::{CollectionFilter, HTMLCollection};
@@ -315,7 +315,7 @@ pub(crate) struct Window {
     local_storage: MutNullableDom<Storage>,
     /// <https://cookiestore.spec.whatwg.org/#globals>
     cookie_store: MutNullableDom<CookieStore>,
-    status: DomRefCell<DOMString>,
+    status: DomRefCell<TracedDOMString>,
     trusted_types: MutNullableDom<TrustedTypePolicyFactory>,
 
     /// The start of something resembling
@@ -554,6 +554,7 @@ impl Window {
 
     #[expect(unsafe_code)]
     pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+        self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
         unsafe {
@@ -564,6 +565,19 @@ impl Window {
                 .task_manager()
                 .cancel_all_tasks_and_ignore_future_tasks();
         }
+    }
+
+    /// Tell the embedder to stop producing position updates for this `Window`, so that a
+    /// location subscription does not outlive the pipeline that asked for it.
+    fn stop_geolocation_watches(&self) {
+        if let Some(geolocation) = self.maybe_geolocation() {
+            geolocation.stop_all_watches();
+        }
+    }
+
+    /// The `Geolocation` object of this `Window`'s `Navigator`.
+    pub(crate) fn maybe_geolocation(&self) -> Option<DomRoot<Geolocation>> {
+        self.navigator.get()?.maybe_geolocation()
     }
 
     /// A convenience method for
@@ -970,20 +984,15 @@ impl Window {
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
-        let target_global = Trusted::new(global);
         let document = self.document_unrooted(no_gc);
         WebFontDocumentContext {
             policy_container: document.policy_container().clone(),
             request_client: self.request_client(Some(no_gc)),
             document_url: document.base_url(),
             csp_handler: Box::new(FontCspHandler {
-                global: target_global.clone(),
                 task_source: task_source.clone(),
             }),
-            network_timing_handler: Box::new(FontNetworkTimingHandler {
-                global: target_global,
-                task_source,
-            }),
+            network_timing_handler: Box::new(FontNetworkTimingHandler { task_source }),
         }
     }
 
@@ -1039,21 +1048,20 @@ impl Window {
 
 #[derive(Debug, MallocSizeOf)]
 struct FontCspHandler {
-    global: Trusted<GlobalScope>,
     task_source: SendableTaskSource,
 }
 
 impl CspViolationHandler for FontCspHandler {
     fn process_violations(&self, violations: Vec<Violation>) {
-        let global = self.global.clone();
         self.task_source.queue(task!(csp_violation: move |cx| {
-            global.root().report_csp_violations(cx, violations, None, None);
+            if let Some(global) = GlobalScope::current() {
+                global.report_csp_violations(cx, violations, None, None);
+            }
         }));
     }
 
     fn clone(&self) -> Box<dyn CspViolationHandler> {
         Box::new(Self {
-            global: self.global.clone(),
             task_source: self.task_source.clone(),
         })
     }
@@ -1061,19 +1069,21 @@ impl CspViolationHandler for FontCspHandler {
 
 #[derive(Debug, MallocSizeOf)]
 struct FontNetworkTimingHandler {
-    global: Trusted<GlobalScope>,
     task_source: SendableTaskSource,
 }
 
 impl NetworkTimingHandler for FontNetworkTimingHandler {
     fn submit_timing(&self, url: ServoUrl, response: ResourceFetchTiming) {
-        let global = self.global.clone();
         self.task_source.queue(task!(network_timing: move |cx| {
+            let Some(global) = GlobalScope::current() else {
+                return
+            };
+
             submit_timing(
                 cx,
+                &global,
                 &FontFetchListener {
                     url,
-                    global
                 },
                 &Ok(()),
                 &response,
@@ -1083,7 +1093,6 @@ impl NetworkTimingHandler for FontNetworkTimingHandler {
 
     fn clone(&self) -> Box<dyn NetworkTimingHandler> {
         Box::new(Self {
-            global: self.global.clone(),
             task_source: self.task_source.clone(),
         })
     }
@@ -1091,17 +1100,12 @@ impl NetworkTimingHandler for FontNetworkTimingHandler {
 
 #[derive(Debug)]
 struct FontFetchListener {
-    global: Trusted<GlobalScope>,
     url: ServoUrl,
 }
 
 impl ResourceTimingListener for FontFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Css, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.global.root()
     }
 }
 
@@ -1895,7 +1899,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
                 .parent
                 .transfer
                 .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .map(|js| js.get())
                 .collect::<Vec<_>>());
 
         let incumbent = GlobalScope::incumbent().expect("no incumbent global?");
@@ -2224,12 +2228,12 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-status>
     fn Status(&self) -> DOMString {
-        self.status.borrow().clone()
+        self.status.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-status>
     fn SetStatus(&self, status: DOMString) {
-        *self.status.borrow_mut() = status
+        *self.status.borrow_mut() = status.traced()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-matchmedia>
@@ -2481,6 +2485,7 @@ impl Window {
     }
 
     pub(crate) fn clear_js_runtime(&self) {
+        self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
 
@@ -3062,7 +3067,7 @@ impl Window {
     /// This is used for things like `ResizeObserver` which should observe the value
     /// from the most recent reflow, but do not need it to reflect the current state of
     /// the DOM / style.
-    pub(crate) fn padding_query_without_reflow(&self, node: &Node) -> Option<PhysicalSides> {
+    pub(crate) fn padding_query_without_reflow(&self, node: &Node) -> Option<PhysicalSides<Au>> {
         let layout = self.layout.borrow();
         layout.query_padding(node.to_trusted_node_address())
     }
@@ -4074,7 +4079,7 @@ impl Window {
             session_storage: Default::default(),
             local_storage: Default::default(),
             cookie_store: Default::default(),
-            status: DomRefCell::new(DOMString::new()),
+            status: DomRefCell::new(DOMString::new().traced()),
             parent_info,
             dom_static: GlobalStaticData::new(),
             js_runtime: DomRefCell::new(Some(runtime)),

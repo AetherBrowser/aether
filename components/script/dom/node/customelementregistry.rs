@@ -17,11 +17,12 @@ use js::glue::UnwrapObjectStatic;
 use js::jsapi::{HandleValueArray, Heap, IsCallable, IsConstructor, JSObject};
 use js::jsval::{BooleanValue, JSVal, NullValue, ObjectValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
-use js::rust::wrappers2::{Construct1, JS_GetProperty, SameValue};
+use js::rust::wrappers2::{Construct1, SameValue};
 use js::rust::{HandleObject, MutableHandleValue};
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use script_bindings::callback::HasCallbackHolder;
 use script_bindings::cell::DomRefCell;
+use script_bindings::js::JS_GetProperty;
 use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
 use script_bindings::settings_stack::{run_a_callback, run_a_script};
 use style::attr::AttrValue;
@@ -221,25 +222,22 @@ impl CustomElementRegistry {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-customelementregistry-define>
     /// Steps 10.1, 10.2
-    #[expect(unsafe_code)]
     fn check_prototype(
         &self,
         cx: &mut JSContext,
         constructor: HandleObject,
         mut prototype: MutableHandleValue,
     ) -> ErrorResult {
-        unsafe {
-            // Step 10.1
-            if !JS_GetProperty(cx, constructor, c"prototype".as_ptr(), prototype.reborrow()) {
-                return Err(Error::JSFailed);
-            }
+        // Step 10.1
+        if !JS_GetProperty(cx, constructor, c"prototype", prototype.reborrow()) {
+            return Err(Error::JSFailed);
+        }
 
-            // Step 10.2
-            if !prototype.is_object() {
-                return Err(Error::Type(
-                    c"constructor.prototype is not an object".to_owned(),
-                ));
-            }
+        // Step 10.2
+        if !prototype.is_object() {
+            return Err(Error::Type(
+                c"constructor.prototype is not an object".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -348,7 +346,7 @@ fn get_callback(
     rooted!(&in(cx) let mut callback = UndefinedValue());
     unsafe {
         // Step 10.4.1
-        if !JS_GetProperty(cx, prototype, name.as_ptr(), callback.handle_mut()) {
+        if !JS_GetProperty(cx, prototype, name, callback.handle_mut()) {
             return Err(Error::JSFailed);
         }
 
@@ -1119,9 +1117,9 @@ pub(crate) fn upgrade_element(
         // a fact that's true or false about a node at a given time,
         // not a flag that belongs to the node and is updated,
         // so it doesn't describe this check as an action.)
-        element.check_disabled_attribute();
+        element.check_disabled_attribute(cx.no_gc());
         element.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-        element.update_read_write_state_from_readonly_attribute();
+        element.update_read_write_state_from_readonly_attribute(cx.no_gc());
 
         // Step 9.2: If element is disabled, then enqueue a custom element callback reaction
         // with element.
@@ -1225,7 +1223,9 @@ pub(crate) fn try_upgrade_element(cx: &JSContext, element: &Element) {
         {
             registry
         } else {
-            element.owner_document().custom_element_registry()
+            element
+                .owner_document_unrooted(cx.no_gc())
+                .custom_element_registry()
         }
     };
     if let Some(definition) = CustomElementRegistry::lookup_custom_element_definition(

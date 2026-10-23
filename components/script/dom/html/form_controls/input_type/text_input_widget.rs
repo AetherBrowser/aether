@@ -186,8 +186,8 @@ impl TextInputWidgetShadowTree {
     pub(crate) fn update_placeholder(&self, cx: &mut JSContext, element: &impl TextControlElement) {
         if let Some(character_data) = self.placeholder_character_data(cx, element) {
             let placeholder_value = element.placeholder_text();
-            if character_data.Data() != *placeholder_value {
-                character_data.SetData(cx, placeholder_value.clone());
+            if *character_data.Data() != *placeholder_value {
+                character_data.SetData(cx, placeholder_value.clone().root());
             }
         }
     }
@@ -273,7 +273,7 @@ impl<Element: TextControlElement> SpecificShadowTree<Element, TextInputWidget>
 
 impl UAShadowRoot<TextInputWidgetShadowTree> for TextInputWidget {
     fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
-        *self.shadow_tree.borrow_mut() =
+        *self.shadow_tree.safe_borrow_mut(cx.no_gc()) =
             Some(TextInputWidgetShadowTree::new(cx, shadow_root.upcast()));
     }
 

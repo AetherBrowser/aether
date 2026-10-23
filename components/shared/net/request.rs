@@ -305,9 +305,10 @@ pub enum BodyChunkResponse {
     Error,
 }
 
-/// Messages used to implement <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
-/// which are sent from net to script
-/// (with the exception of Done, which is sent from script to script).
+/// Messages used to implement [request body transmission] which are sent from
+/// net to script.
+///
+/// [request body transmission]: <https://fetch.spec.whatwg.org/#concept-request-transmit-body>
 #[derive(Debug, Deserialize, Serialize)]
 pub enum BodyChunkRequest {
     /// Connect a fetch in `net`, with a stream of bytes from `script`.
@@ -316,10 +317,6 @@ pub enum BodyChunkRequest {
     Extract(IpcReceiver<BodyChunkRequest>),
     /// Ask for another chunk.
     Chunk,
-    /// Signal the stream is done(sent from script to script).
-    Done,
-    /// Signal the stream has errored(sent from script to script).
-    Error,
 }
 
 /// A process local view into <https://fetch.spec.whatwg.org/#bodies>.
@@ -508,7 +505,7 @@ pub struct RequestBuilder {
     pub cryptographic_nonce_metadata: String,
 
     /// <https://fetch.spec.whatwg.org/#concept-request-url-list>
-    pub url_list: Vec<ServoUrl>,
+    pub url_list: Vec<UrlWithBlobClaim>,
 
     /// <https://fetch.spec.whatwg.org/#concept-request-parser-metadata>
     pub parser_metadata: ParserMetadata,
@@ -657,7 +654,7 @@ impl RequestBuilder {
     }
 
     /// <https://fetch.spec.whatwg.org/#concept-request-url-list>
-    pub fn url_list(mut self, url_list: Vec<ServoUrl>) -> RequestBuilder {
+    pub fn url_list(mut self, url_list: Vec<UrlWithBlobClaim>) -> RequestBuilder {
         self.url_list = url_list;
         self
     }
@@ -766,11 +763,7 @@ impl RequestBuilder {
         request.cache_mode = self.cache_mode;
         request.referrer_policy = self.referrer_policy;
         request.redirect_mode = self.redirect_mode;
-        let mut url_list: Vec<_> = self
-            .url_list
-            .into_iter()
-            .map(UrlWithBlobClaim::from_url_without_having_claimed_blob)
-            .collect();
+        let mut url_list = self.url_list;
         if url_list.is_empty() {
             url_list.push(self.url);
         }

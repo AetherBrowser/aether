@@ -28,6 +28,7 @@ use net_traits::request::{
 };
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
+use script_bindings::trace::RootedTraceableBox;
 use servo_base::generic_channel::{GenericReceiver, RoutedReceiver};
 use servo_base::id::{BrowsingContextId, ScriptEventLoopId, WebViewId};
 use servo_constellation_traits::{MessagePortImpl, WorkerGlobalScopeInit, WorkerScriptLoadOrigin};
@@ -69,6 +70,7 @@ use crate::scripting::script_module::fetch_a_module_script_graph;
 use crate::tasks::task_queue::{QueuedTask, QueuedTaskConversion, TaskQueue};
 use crate::tasks::task_source::TaskSourceName;
 
+#[derive(MallocSizeOf)]
 pub(crate) enum SharedWorkerScriptMsg {
     CommonWorker(WorkerScriptMsg),
     Connect(MessagePortImpl),
@@ -100,19 +102,6 @@ impl Drop for SharedWorkerRegistrationCleanup {
 }
 
 impl QueuedTaskConversion for SharedWorkerScriptMsg {
-    fn task_source_name(&self) -> Option<&TaskSourceName> {
-        let script_msg = match self {
-            SharedWorkerScriptMsg::CommonWorker(WorkerScriptMsg::Common(script_msg)) => script_msg,
-            _ => return None,
-        };
-        match script_msg {
-            CommonScriptMsg::Task(_category, _boxed, _pipeline_id, task_source) => {
-                Some(task_source)
-            },
-            _ => None,
-        }
-    }
-
     fn pipeline_id(&self) -> Option<servo_base::id::PipelineId> {
         None
     }
@@ -169,7 +158,6 @@ pub(crate) struct SharedWorkerGlobalScope {
     /// The [`WebViewId`] of the `WebView` that this worker is associated with.
     #[no_trace]
     webview_id: WebViewId,
-    #[ignore_malloc_size_of = "Defined in std"]
     task_queue: TaskQueue<SharedWorkerScriptMsg>,
     own_sender: Sender<SharedWorkerScriptMsg>,
     worker: DomRefCell<Option<TrustedSharedWorkerAddress>>,
@@ -286,7 +274,7 @@ impl SharedWorkerGlobalScope {
                 Some(ScriptEventLoopSender::SharedWorker(own_sender.clone())),
             ),
             webview_id,
-            task_queue: TaskQueue::new(receiver, own_sender.clone()),
+            task_queue: TaskQueue::new(receiver),
             own_sender,
             worker: DomRefCell::new(Some(worker)),
             parent_event_loop_sender,
@@ -580,7 +568,9 @@ impl SharedWorkerGlobalScope {
                             credentials,
                             Some(IntroductionType::WORKER),
                             move |cx, module_tree| {
-                                worker_scope.on_complete(cx, module_tree.map(Script::Module));
+                                let module_script = module_tree
+                                    .map(|module| Script::Module(RootedTraceableBox::new(module)));
+                                worker_scope.on_complete(cx, module_script);
                             },
                         );
                     },

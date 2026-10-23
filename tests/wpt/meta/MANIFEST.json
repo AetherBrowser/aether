@@ -22,6 +22,13 @@
    "core-aam": {
     "aamtests": {
      "attribute": {
+      "aria_autocomplete_inline_list_both.py": [
+       "540f7b8719ed8098a8babc2d931d8fea83aa6e52",
+       [
+        null,
+        {}
+       ]
+      ],
       "aria_braillelabel.py": [
        "2b6dba50a0af1f6250c1932006a49fdf4a6e232f",
        [
@@ -402578,7 +402585,7 @@
        "2d.path.clip.scale.html": [
         "3e23feaa79332270cd50415a1c0c4027054101bf",
         [
-         "html/canvas/element/path-objects/2d.path.clip.scale.html",
+         null,
          [
           [
            "/html/canvas/element/path-objects/2d.path.clip.scale-expected.html",
@@ -406324,7 +406331,7 @@
        "2d.path.clip.scale.html": [
         "024ca718338d8a587e36605b18ee90849bb80518",
         [
-         "html/canvas/offscreen/path-objects/2d.path.clip.scale.html",
+         null,
          [
           [
            "/html/canvas/offscreen/path-objects/2d.path.clip.scale-expected.html",
@@ -409920,6 +409927,32 @@
          {}
         ]
        ],
+       "table-attribute-border-dynamic.html": [
+        "15adbb9e24ba84c2ed65fff4a8916b96093c8ac3",
+        [
+         null,
+         [
+          [
+           "/css/reference/ref-filled-green-200px-square.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ],
+       "table-attribute-cellspacing-dynamic.html": [
+        "05334951ad0220c9da89cca1f4d324f2465b243b",
+        [
+         null,
+         [
+          [
+           "/css/reference/ref-filled-green-200px-square.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ],
        "table-border-1.html": [
         "333881399555a8018be91b9c6053b15be694def3",
         [
@@ -410882,7 +410915,7 @@
        "Document-documentElement-remove-clears-content.html": [
         "7b83a7a403587b713b440485bf0f3eba823a1eb7",
         [
-         "html/rendering/non-replaced-elements/the-page/Document-documentElement-remove-clears-content.html",
+         null,
          [
           [
            "/css/reference/blank.html",
@@ -411211,6 +411244,19 @@
          [
           [
            "/html/rendering/non-replaced-elements/the-page/body_text_00ffff-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ],
+       "body_text_dynamic.html": [
+        "cb8628cffa24f93822587e9c89e7bdd39f959731",
+        [
+         null,
+         [
+          [
+           "/css/reference/ref-filled-green-200px-square.html",
            "=="
           ]
          ],
@@ -411705,6 +411751,21 @@
          [
           [
            "/html/rendering/replaced-elements/images/space-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ]
+      },
+      "the-input-element": {
+       "input-update-while-disconnected.html": [
+        "226b6e755eeb08f735ba1f39915288559d969784",
+        [
+         null,
+         [
+          [
+           "/html/rendering/replaced-elements/the-input-element/input-update-while-disconnected-ref.html",
            "=="
           ]
          ],
@@ -414183,6 +414244,34 @@
         ]
        ]
       },
+      "textfieldselection": {
+       "setRangeText-repaint-input.html": [
+        "9128105316ac2ea3233dc75217a10bfb4bc97b81",
+        [
+         null,
+         [
+          [
+           "/html/semantics/forms/textfieldselection/setRangeText-repaint-input-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ],
+       "setRangeText-repaint-textarea.html": [
+        "1b9506fa4e5d3cb716993152dccc6031d12dfac0",
+        [
+         null,
+         [
+          [
+           "/html/semantics/forms/textfieldselection/setRangeText-repaint-textarea-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
+       ]
+      },
       "the-datalist-element": {
        "input-text-datalist-appearance.html": [
         "c1663de2f2f181305f5d988f1e36a0f54ea4b4c6",
@@ -414631,6 +414720,19 @@
          ],
          {}
         ]
+       ],
+       "meter-widget.html": [
+        "a548a219162cd681dc340a66c84bc794cb9c89dd",
+        [
+         null,
+         [
+          [
+           "/html/semantics/forms/the-meter-element/meter-widget-ref.html",
+           "=="
+          ]
+         ],
+         {}
+        ]
        ]
       },
       "the-option-element": {
@@ -414661,6 +414763,21 @@
            ]
           ]
          }
+        ]
+       ]
+      },
+      "the-progress-element": {
+       "progress-widget.html": [
+        "afd2b8cf7ab05640fc124fe4996a9b939787252e",
+        [
+         null,
+         [
+          [
+           "/html/semantics/forms/the-progress-element/progress-widget-ref.html",
+           "=="
+          ]
+         ],
+         {}
         ]
        ]
       },
@@ -470178,12 +470295,6 @@
       "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
       []
      ],
-     "attribute": {
-      "aria_autocomplete_inline_list_both.py": [
-       "540f7b8719ed8098a8babc2d931d8fea83aa6e52",
-       []
-      ]
-     },
      "conftest.py": [
       "7e7cb00234a294779b1a279ce67dce0434ebf20e",
       []
@@ -564429,6 +564540,12 @@
         []
        ]
       },
+      "the-input-element": {
+       "input-update-while-disconnected-ref.html": [
+        "6353ccd1e64a16b6ef84f77537a7cc4c5f864c3c",
+        []
+       ]
+      },
       "the-option-element": {
        "WEB_FEATURES.yml": [
         "02086acdde94b76455f0bb6335a2fb4ede825cd6",
@@ -566669,6 +566786,14 @@
        "original-id.json": [
         "d9fe4358563fe333bcba5f943eaf151e32aba003",
         []
+       ],
+       "setRangeText-repaint-input-ref.html": [
+        "fcd86b6a478c014fee457c53fc196593cc0d6c6e",
+        []
+       ],
+       "setRangeText-repaint-textarea-ref.html": [
+        "57e327571c8210d078b806112485972fdfee8734",
+        []
        ]
       },
       "the-button-element": {
@@ -566882,6 +567007,10 @@
         "f253945968e49902d1f2c2d60d9d8cd230166c6b",
         []
        ],
+       "meter-widget-ref.html": [
+        "85fdda4985a893f4bf8bf53a026a234ae9756115",
+        []
+       ],
        "reference": {
         "meter-appearance-auto-even-less-good-value-rendering.html": [
          "854ec5d5e750d84b5fcf29e74be482e986e9cce2",
@@ -566930,6 +567059,10 @@
       "the-progress-element": {
        "WEB_FEATURES.yml": [
         "abd5b4016be88ad3f4d79c957718afcd10a8a175",
+        []
+       ],
+       "progress-widget-ref.html": [
+        "388763833ae6acd282d831a9e6e194e07c2ec042",
         []
        ]
       },
@@ -1217318,7 +1217451,7 @@
      ]
     },
     "fetching": {
-     "fetch-resources.sub.html": [
+     "fetch-resources.https.sub.html": [
       "502d521cb907d2dda275ab70e5b584764406dc86",
       [
        null,
@@ -1324564,6 +1324697,13 @@
          {}
         ]
        ],
+       "img-src-encoding-parse.html": [
+        "3b24115dce713af1df99bb8679ab61827cc2a6cb",
+        [
+         null,
+         {}
+        ]
+       ],
        "img-src-in-synthetic-document.html": [
         "24c5567fb854bf278033d9287035734e65996d1e",
         [
@@ -1372243,6 +1372383,20 @@
      [
       null,
       {}
+     ]
+    ],
+    "link-blob-url-revoked.window.js": [
+     "5ad635ff712054ce7a9ff31e772d82d354e74b12",
+     [
+      "preload/link-blob-url-revoked.window.html",
+      {
+       "script_metadata": [
+        [
+         "title",
+         "Link preload and prefetch of a blob URL succeed when the URL is revoked after the link is inserted"
+        ]
+       ]
+      }
      ]
     ],
     "link-header-modulepreload.html": [
