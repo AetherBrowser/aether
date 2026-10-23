@@ -187,7 +187,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 },
                                 onNewTab = {
                                     closeMenu()
-                                    navigator.navigate("about:blank")
+                                    navigator.navigate(newTabUrl())
                                 },
                                 onHistory = {
                                     closeMenu()
@@ -462,18 +462,28 @@ private fun AppMenu(
 }
 
 private fun homeUrl(): String {
-    val value =
-        try {
-            JSONObject(BrowserSettings().home())
-        } catch (_: Exception) {
-            return "about:blank"
-        }
+    val value = homeSettings() ?: return "about:blank"
     return when (value.optString("newWindows", "home")) {
         "blank" -> "about:blank"
         "url" -> value.optString("homepage").ifBlank { "about:blank" }
         else -> "servo:newtab"
     }
 }
+
+private fun newTabUrl(): String {
+    val value = homeSettings() ?: return "servo:newtab"
+    return when (value.optString("newTabs", "home")) {
+        "blank" -> "about:blank"
+        else -> "servo:newtab"
+    }
+}
+
+private fun homeSettings(): JSONObject? =
+    try {
+        JSONObject(BrowserSettings().home())
+    } catch (_: Exception) {
+        null
+    }
 
 @Composable
 private fun AppMenuItem(
