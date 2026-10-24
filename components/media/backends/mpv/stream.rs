@@ -28,9 +28,19 @@ pub(crate) trait BridgeObserver: Send + Sync {
     fn need_data(&self);
     /// The queue went over the high water mark. Must not call the bridge.
     fn enough_data(&self);
-    /// Asks Servo to push the resource from `offset` on, and waits for its answer.
-    /// Returns whether the data will come. Must give up once `bridge` is cancelled.
-    fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> bool;
+    /// Asks Servo to push the resource from `offset` on, and waits for its answer. Must
+    /// give up once `bridge` is cancelled.
+    fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> SeekReply;
+}
+
+/// Servo's answer to a seek, from [`BridgeObserver::seek_data`].
+pub(crate) struct SeekReply {
+    /// Whether Servo will push the resource from the new offset.
+    pub(crate) data_will_come: bool,
+    /// Acknowledges the answer to Servo (its `SeekLock`). The bridge calls this only
+    /// once it is ready to accept data from the new offset, so that Servo never resumes
+    /// pushing before then, as a GStreamer source does (`set_seek_done` before the ack).
+    pub(crate) ack: Box<dyn FnOnce() + Send>,
 }
 
 /// What a [`StreamBridge::read`] did.
@@ -215,18 +225,22 @@ impl StreamBridge {
         state.seeking = true;
         drop(state);
 
-        let found = self.observer.seek_data(offset, self);
+        let reply = self.observer.seek_data(offset, self);
 
         let mut state = self.state.lock().unwrap();
+        // Cleared before acknowledging the answer: see `SeekReply::ack`.
         state.seeking = false;
-        if !found {
+        if !reply.data_will_come {
             // The queue was dropped and the old fetch may go on: the stream cannot be
             // trusted anymore.
             state.cancelled = true;
             state.clear();
             self.changed.notify_all();
         }
-        (!state.cancelled).then_some(offset)
+        let cancelled = state.cancelled;
+        drop(state);
+        (reply.ack)();
+        (!cancelled).then_some(offset)
     }
 
     /// Fails current and future reads, and frees what is queued.
@@ -244,9 +258,9 @@ impl StreamBridge {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::sync::{Arc, OnceLock};
     use std::thread;
     use std::time::Duration;
 
@@ -276,9 +290,12 @@ mod tests {
             self.calls.enough_data.fetch_add(1, Ordering::SeqCst);
         }
 
-        fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> bool {
+        fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> SeekReply {
             self.calls.seeks.lock().unwrap().push(offset);
-            (self.seek_answer)(offset, bridge)
+            SeekReply {
+                data_will_come: (self.seek_answer)(offset, bridge),
+                ack: Box::new(|| {}),
+            }
         }
     }
 
@@ -769,7 +786,7 @@ mod tests {
                 self.calls.lock().unwrap().push("enough_data");
             }
 
-            fn seek_data(&self, _: u64, _: &StreamBridge) -> bool {
+            fn seek_data(&self, _: u64, _: &StreamBridge) -> SeekReply {
                 unreachable!()
             }
         }
@@ -805,5 +822,42 @@ mod tests {
         producer.join().unwrap();
         reader.join().unwrap();
         assert_eq!(*calls.lock().unwrap(), ["enough_data", "need_data"]);
+    }
+
+    #[test]
+    fn seek_accepts_servos_data_as_soon_as_it_is_acknowledged() {
+        // The ack must unblock Servo only once the bridge is ready to accept data from
+        // the new offset, so this push must land, not be dropped as data from the seek
+        // being replaced. A wrongly-ordered bridge would drop it and leave the read
+        // below waiting forever, so this runs the seek on another thread with a timeout
+        // instead of hanging the test suite.
+        struct PushOnAck(Arc<OnceLock<Arc<StreamBridge>>>);
+
+        impl BridgeObserver for PushOnAck {
+            fn need_data(&self) {}
+            fn enough_data(&self) {}
+            fn seek_data(&self, _offset: u64, _bridge: &StreamBridge) -> SeekReply {
+                let bridge = self.0.clone();
+                SeekReply {
+                    data_will_come: true,
+                    // As Servo does: push the new offset's data as soon as it is
+                    // acknowledged, which can run before `seek_data` itself returns.
+                    ack: Box::new(move || bridge.get().unwrap().push(vec![9])),
+                }
+            }
+        }
+
+        let cell = Arc::new(OnceLock::new());
+        let bridge = Arc::new(StreamBridge::new(Box::new(PushOnAck(cell.clone()))));
+        let _ = cell.set(bridge.clone());
+        bridge.set_seekable(true);
+
+        let result = read_in_background(&bridge, 4);
+        assert_eq!(bridge.seek(100), Some(100));
+        let (result, buf) = result
+            .recv_timeout(TIMEOUT)
+            .expect("the pushed data was dropped, so the read never returned");
+        assert_eq!(result, ReadResult::Data(1));
+        assert_eq!(buf[0], 9);
     }
 }
