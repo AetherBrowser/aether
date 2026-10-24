@@ -19,6 +19,7 @@ mod icons;
 mod keyutils;
 mod menu;
 mod protocols;
+pub(crate) mod shortcuts;
 mod tracing;
 #[cfg(feature = "webxr")]
 mod webxr;

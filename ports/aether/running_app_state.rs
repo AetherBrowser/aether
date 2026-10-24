@@ -87,19 +87,40 @@ impl WebViewCollection {
     }
 
     /// Removes a webview from the collection by [`WebViewId`]. If the removed [`WebView`] was the active
-    /// [`WebView`] then the next newest [`WebView`] will be activated.
+    /// [`WebView`] then the tab on its right, or else the last tab, will be activated.
     pub fn remove(&mut self, id: WebViewId) -> Option<WebView> {
+        let index = self.index_of(id);
         self.creation_order.retain(|&webview_id| webview_id != id);
         let removed_webview = self.webviews.remove(&id);
 
         if self.active_webview_id == Some(id) {
             self.active_webview_id = None;
-            if let Some(newest) = self.creation_order.last() {
-                self.activate_webview(*newest);
+            if let Some(next) = index
+                .and_then(|index| self.creation_order.get(index))
+                .or(self.creation_order.last())
+            {
+                self.activate_webview(*next);
             }
         }
 
         removed_webview
+    }
+
+    /// The position of a [`WebView`] in the tab order.
+    pub(crate) fn index_of(&self, id: WebViewId) -> Option<usize> {
+        self.creation_order
+            .iter()
+            .position(|&webview_id| webview_id == id)
+    }
+
+    /// Moves a [`WebView`] to `index` in the tab order, or to the end if `index` is past it.
+    pub(crate) fn move_webview(&mut self, id: WebViewId, index: usize) {
+        let Some(current_index) = self.index_of(id) else {
+            return;
+        };
+        self.creation_order.remove(current_index);
+        let index = index.min(self.creation_order.len());
+        self.creation_order.insert(index, id);
     }
 
     pub fn get(&self, id: WebViewId) -> Option<&WebView> {
@@ -177,6 +198,7 @@ impl WebViewCollection {
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) enum UserInterfaceCommand {
     Go(String),
+    GoInNewTab(String),
     Back,
     Forward,
     Reload,
@@ -184,6 +206,7 @@ pub(crate) enum UserInterfaceCommand {
     Home,
     NewWebView(TopLevelWebViewCreationRequest),
     CloseWebView(WebViewId),
+    ReopenClosedTab,
     NewWindow(TopLevelWebViewCreationRequest),
 }
 
@@ -877,8 +900,10 @@ impl WebViewDelegate for RunningAppState {
         id: InputEventId,
         result: InputEventResult,
     ) {
-        self.platform_window_for_webview(&webview)
-            .notify_input_event_handled(&webview, id, result);
+        let window = self.window_for_webview(&webview);
+        window
+            .platform_window()
+            .notify_input_event_handled(self, &window, &webview, id, result);
         if let Some(response_sender) = self.pending_webdriver_events.borrow_mut().remove(&id) {
             let _ = response_sender.send(());
         }
