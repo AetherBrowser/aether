@@ -448,10 +448,6 @@ impl MpvHandle {
     ///
     /// The bridge serves a single stream: once libmpv cancels it, when it unloads the
     /// file, the bytes already read are gone and the stream cannot be opened again.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "MpvPlayer does not use the bridge yet")
-    )]
     pub fn add_stream_protocol(&self, bridge: Arc<StreamBridge>) -> Result<(), MpvError> {
         // libmpv keeps the protocol, and calls into the bridge, until the instance is
         // destroyed (stream_cb.h): the handle keeps the bridge alive until then.

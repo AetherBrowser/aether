@@ -16,6 +16,7 @@ use servo_media_traits::{ClientContextId, MediaInstance};
 use crate::Instances;
 use crate::events::EventThread;
 use crate::handle::{MpvError, MpvHandle, Node};
+use crate::stream::{BridgeObserver, SeekReply, StreamBridge};
 
 const DEFAULT_PAUSED: bool = true;
 const DEFAULT_MUTED: bool = false;
@@ -24,9 +25,10 @@ const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
 
 /// A media player backed by libmpv.
 ///
-/// Its libmpv instance is only created when first needed, so a media element that never
-/// plays costs no mpv threads. Operations that are not wired to libmpv yet report a
-/// `PlayerError::Backend` instead of silently succeeding.
+/// Its libmpv instance is only created when first needed, usually when Servo pushes the
+/// first bytes of the media, so a media element that never loads costs no mpv threads.
+/// Operations that are not wired to libmpv yet report a `PlayerError::Backend` instead of
+/// silently succeeding.
 pub struct MpvPlayer {
     id: usize,
     context_id: ClientContextId,
@@ -36,6 +38,10 @@ pub struct MpvPlayer {
     options: Arc<[(&'static str, &'static str)]>,
     /// Where the events of the libmpv instance go, once it exists.
     sender: GenericCallback<PlayerEvent>,
+    /// Where Servo pushes the media, read by libmpv as `aether-media://<id>`.
+    bridge: Arc<StreamBridge>,
+    /// Whether libmpv was asked to load the media from the bridge.
+    loading: Cell<bool>,
     handle: OnceCell<Instance>,
     /// Whether this player was playing when its page got suspended, so `resume` restarts
     /// it. A media paused by the page stays paused when the page is resumed.
@@ -59,7 +65,11 @@ impl MpvPlayer {
             context_id,
             instances,
             options,
+            bridge: Arc::new(StreamBridge::new(Box::new(Notifier {
+                sender: sender.clone(),
+            }))),
             sender,
+            loading: Cell::new(false),
             handle: OnceCell::new(),
             resume_after_suspend: Cell::new(false),
             muted: Cell::new(DEFAULT_MUTED),
@@ -83,11 +93,39 @@ impl MpvPlayer {
                 .set_double("volume", html_to_mpv_volume(self.volume.get()))
                 .map_err(backend_error)?;
         }
+        handle
+            .add_stream_protocol(self.bridge.clone())
+            .map_err(backend_error)?;
         let events = EventThread::spawn(&handle, self.sender.clone()).map_err(backend_error)?;
         Ok(self.handle.get_or_init(|| Instance {
             _events: events,
             handle,
         }))
+    }
+}
+
+/// Turns the requests of the bridge into `PlayerEvent`s for Servo.
+struct Notifier {
+    sender: GenericCallback<PlayerEvent>,
+}
+
+impl BridgeObserver for Notifier {
+    fn need_data(&self) {
+        // Fails only once the media element is gone, which drops this player soon.
+        let _ = self.sender.send(PlayerEvent::NeedData);
+    }
+
+    fn enough_data(&self) {
+        let _ = self.sender.send(PlayerEvent::EnoughData);
+    }
+
+    fn seek_data(&self, _offset: u64, _bridge: &StreamBridge) -> SeekReply {
+        // Not reached: the bridge stays unseekable until seeking is wired (see
+        // `set_seekable`), so it answers libmpv's seeks itself.
+        SeekReply {
+            data_will_come: false,
+            ack: Box::new(|| {}),
+        }
     }
 }
 
@@ -213,12 +251,16 @@ impl Player for MpvPlayer {
         }
     }
 
-    fn set_input_size(&self, _size: u64) -> Result<(), PlayerError> {
-        Err(not_implemented("set_input_size"))
+    fn set_input_size(&self, size: u64) -> Result<(), PlayerError> {
+        self.bridge.set_size(size);
+        Ok(())
     }
 
     fn set_seekable(&self, _seekable: bool) -> Result<(), PlayerError> {
-        Err(not_implemented("set_seekable"))
+        // Seeking the stream needs Servo to fetch from another offset (`SeekData`), which
+        // is not wired yet: until then libmpv sees a stream it cannot seek, which it reads
+        // like a pipe, instead of one whose seeks would fail and cancel it.
+        Ok(())
     }
 
     fn set_download_buffering_enabled(&self, _enabled: bool) -> Result<(), PlayerError> {
@@ -234,12 +276,22 @@ impl Player for MpvPlayer {
         DEFAULT_PLAYBACK_RATE
     }
 
-    fn push_data(&self, _data: Vec<u8>) -> Result<(), PlayerError> {
-        Err(not_implemented("push_data"))
+    fn push_data(&self, data: Vec<u8>) -> Result<(), PlayerError> {
+        self.bridge.push(data);
+        // libmpv starts with the first bytes: Servo only calls `play` once it has the
+        // metadata, which libmpv only reports once it loaded the media.
+        if !self.loading.get() {
+            self.handle()?
+                .command(&["loadfile", &format!("aether-media://{}", self.id)])
+                .map_err(backend_error)?;
+            self.loading.set(true);
+        }
+        Ok(())
     }
 
     fn end_of_stream(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("end_of_stream"))
+        self.bridge.end_of_stream();
+        Ok(())
     }
 
     fn buffered(&self) -> Vec<Range<f64>> {
@@ -292,6 +344,10 @@ impl MediaInstance for MpvPlayer {
 
 impl Drop for MpvPlayer {
     fn drop(&mut self) {
+        // libmpv's demuxer may be waiting for data that will never come: wake it up
+        // before the event thread and the instance are torn down.
+        self.bridge.cancel();
+
         // The backend never holds the table lock while a player can be dropped (see
         // `MpvBackend::live_instances`), so this cannot deadlock.
         let Some(instances) = self.instances.upgrade() else {
@@ -347,15 +403,38 @@ mod tests {
 
     /// A player whose events are received by the test.
     fn player_with_events() -> (MpvPlayer, GenericReceiver<PlayerEvent>) {
+        player_with_events_and_options(&options())
+    }
+
+    fn player_with_events_and_options(
+        options: &[(&'static str, &'static str)],
+    ) -> (MpvPlayer, GenericReceiver<PlayerEvent>) {
         let (sender, receiver) = GenericCallback::new_blocking().unwrap();
         let player = MpvPlayer::new(
             0,
             ClientContextId::build(1, 1),
             Weak::new(),
-            Arc::from(options()),
+            Arc::from(options),
             sender,
         );
         (player, receiver)
+    }
+
+    fn test_file() -> Vec<u8> {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../tests/wpt/tests/media/sine440.mp3"),
+        )
+        .unwrap()
+    }
+
+    /// Pushes a whole file as Servo does: its size, then chunks of it, then its end.
+    fn push_file(player: &MpvPlayer, data: &[u8]) {
+        player.set_input_size(data.len() as u64).unwrap();
+        for chunk in data.chunks(16 * 1024) {
+            player.push_data(chunk.to_vec()).unwrap();
+        }
+        player.end_of_stream().unwrap();
     }
 
     /// Skips events until one matches, failing the test after a few seconds.
@@ -662,6 +741,81 @@ mod tests {
         expect_event(&events, "the error", |event| {
             matches!(event, PlayerEvent::Error(_))
         });
+    }
+
+    #[test]
+    fn libmpv_starts_with_the_first_pushed_bytes() {
+        let player = player();
+        player.set_input_size(1024).unwrap();
+        assert!(player.handle.get().is_none());
+        player.push_data(test_file()[..1024].to_vec()).unwrap();
+        assert!(player.handle.get().is_some());
+    }
+
+    #[test]
+    fn pushed_media_is_loaded_and_played() {
+        let (player, events) = player_with_events();
+        push_file(&player, &test_file());
+        let PlayerEvent::MetadataUpdated(metadata) =
+            expect_event(&events, "the metadata", |event| {
+                matches!(event, PlayerEvent::MetadataUpdated(_))
+            })
+        else {
+            unreachable!()
+        };
+        assert!(metadata.duration.is_some());
+        assert_eq!(metadata.audio_tracks.len(), 1);
+        player.play().unwrap();
+        expect_event(
+            &events,
+            "the position to advance",
+            |event| matches!(event, PlayerEvent::PositionChanged(position) if *position > 0.0),
+        );
+    }
+
+    #[test]
+    fn pushed_media_plays_to_its_end() {
+        // Decode as fast as possible instead of in real time.
+        let mut options = options();
+        options.push(("ao-null-untimed", "yes"));
+        let (player, events) = player_with_events_and_options(&options);
+        push_file(&player, &test_file());
+        player.play().unwrap();
+        expect_event(&events, "the end of stream", |event| {
+            matches!(event, PlayerEvent::EndOfStream)
+        });
+    }
+
+    #[test]
+    fn a_player_waiting_for_data_is_dropped_without_hanging() {
+        let player = player();
+        // Not enough for libmpv to open the media: its demuxer waits for more.
+        player.push_data(test_file()[..1024].to_vec()).unwrap();
+        thread::sleep(Duration::from_millis(200));
+
+        let (dropped, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(player);
+            dropped.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(5))
+            .expect("dropping the player should not wait for more data");
+    }
+
+    #[test]
+    fn water_marks_are_reported_as_player_events() {
+        // Unbounded, unlike `new_blocking`: both events are sent before any is received.
+        let (events_sender, events) = std::sync::mpsc::channel();
+        let sender = GenericCallback::new(move |event| {
+            let _ = events_sender.send(event.unwrap());
+        })
+        .unwrap();
+        let notifier = Notifier { sender };
+        notifier.enough_data();
+        notifier.need_data();
+        let next = || events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(next(), PlayerEvent::EnoughData));
+        assert!(matches!(next(), PlayerEvent::NeedData));
     }
 
     #[test]

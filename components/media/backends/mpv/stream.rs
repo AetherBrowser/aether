@@ -5,11 +5,6 @@
 //! The bridge between Servo, which pushes media bytes as they are fetched, and libmpv,
 //! which pulls them from its demuxer thread. It knows nothing about libmpv itself.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Wired into MpvPlayer by the data path task")
-)]
-
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 
@@ -156,6 +151,10 @@ impl StreamBridge {
         self.state.lock().unwrap().size
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Wired into MpvPlayer by the seek task")
+    )]
     pub(crate) fn set_seekable(&self, seekable: bool) {
         self.state.lock().unwrap().seekable = seekable;
     }
