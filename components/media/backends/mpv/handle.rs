@@ -563,7 +563,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::stream::BridgeObserver;
+    use crate::stream::{BridgeObserver, SeekReply};
 
     /// An observer for streams that never need Servo to seek.
     struct NoSeek;
@@ -571,8 +571,11 @@ mod tests {
     impl BridgeObserver for NoSeek {
         fn need_data(&self) {}
         fn enough_data(&self) {}
-        fn seek_data(&self, _: u64, _: &StreamBridge) -> bool {
-            false
+        fn seek_data(&self, _: u64, _: &StreamBridge) -> SeekReply {
+            SeekReply {
+                data_will_come: false,
+                ack: Box::new(|| {}),
+            }
         }
     }
 
