@@ -341,7 +341,7 @@ mod tests {
         let player = player.lock().unwrap();
         assert!(matches!(player.seek(1.0), Err(PlayerError::Backend(_))));
         assert!(matches!(
-            player.push_data(vec![0]),
+            player.set_playback_rate(2.0),
             Err(PlayerError::Backend(_))
         ));
         assert!(player.paused());
