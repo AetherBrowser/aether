@@ -151,10 +151,6 @@ impl StreamBridge {
         self.state.lock().unwrap().size
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Wired into MpvPlayer by the seek task")
-    )]
     pub(crate) fn set_seekable(&self, seekable: bool) {
         self.state.lock().unwrap().seekable = seekable;
     }

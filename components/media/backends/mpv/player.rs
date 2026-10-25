@@ -5,11 +5,12 @@
 use std::cell::{Cell, OnceCell};
 use std::ops::{Deref, Range};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use log::warn;
-use servo_base::generic_channel::GenericCallback;
+use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_media::MediaInstanceError;
-use servo_media_player::{Player, PlayerError, PlayerEvent};
+use servo_media_player::{Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg};
 use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
@@ -22,6 +23,9 @@ const DEFAULT_PAUSED: bool = true;
 const DEFAULT_MUTED: bool = false;
 const DEFAULT_VOLUME: f64 = 1.0;
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
+
+/// How often a seek waiting for Servo checks whether the player is gone.
+const SEEK_ANSWER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A media player backed by libmpv.
 ///
@@ -65,9 +69,7 @@ impl MpvPlayer {
             context_id,
             instances,
             options,
-            bridge: Arc::new(StreamBridge::new(Box::new(Notifier {
-                sender: sender.clone(),
-            }))),
+            bridge: Arc::new(StreamBridge::new(Box::new(Notifier::new(sender.clone())))),
             sender,
             loading: Cell::new(false),
             handle: OnceCell::new(),
@@ -107,6 +109,23 @@ impl MpvPlayer {
 /// Turns the requests of the bridge into `PlayerEvent`s for Servo.
 struct Notifier {
     sender: GenericCallback<PlayerEvent>,
+    /// Sent to Servo with each `SeekData`, to answer it.
+    seek_lock: SeekLock,
+    /// Servo's answers to seeks. One channel for the whole life of the player, like the
+    /// GStreamer backend's `SeekChannel`: `SeekLock::unlock` panics if it is gone.
+    seek_answers: Mutex<GenericReceiver<SeekLockMsg>>,
+}
+
+impl Notifier {
+    fn new(sender: GenericCallback<PlayerEvent>) -> Notifier {
+        let (lock_channel, seek_answers) =
+            generic_channel::channel().expect("Couldn't create IPC channel");
+        Notifier {
+            sender,
+            seek_lock: SeekLock { lock_channel },
+            seek_answers: Mutex::new(seek_answers),
+        }
+    }
 }
 
 impl BridgeObserver for Notifier {
@@ -119,12 +138,44 @@ impl BridgeObserver for Notifier {
         let _ = self.sender.send(PlayerEvent::EnoughData);
     }
 
-    fn seek_data(&self, _offset: u64, _bridge: &StreamBridge) -> SeekReply {
-        // Not reached: the bridge stays unseekable until seeking is wired (see
-        // `set_seekable`), so it answers libmpv's seeks itself.
-        SeekReply {
+    fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> SeekReply {
+        let refused = || SeekReply {
             data_will_come: false,
             ack: Box::new(|| {}),
+        };
+        // libmpv seeks a stream from a single demuxer thread: there is one seek at a time.
+        let answers = self.seek_answers.lock().unwrap();
+        if self
+            .sender
+            .send(PlayerEvent::SeekData(offset, self.seek_lock.clone()))
+            .is_err()
+        {
+            return refused();
+        }
+        // Servo answers once it fetches from `offset`, but drops the request if the media
+        // element changed source meanwhile. Wait in slices, so that cancelling the bridge,
+        // which the player does when it goes away, frees libmpv's demuxer thread.
+        loop {
+            match answers.try_recv_timeout(SEEK_ANSWER_POLL_INTERVAL) {
+                Ok((data_will_come, ack)) => {
+                    // The bridge then fails libmpv's reads, which libmpv takes as the end
+                    // of the media: tell Servo it is an error instead.
+                    if !data_will_come {
+                        let _ = self.sender.send(PlayerEvent::Error(format!(
+                            "MPV backend: the media cannot be fetched from byte {offset}"
+                        )));
+                    }
+                    return SeekReply {
+                        data_will_come,
+                        // Servo waits for this before pushing the data from `offset`.
+                        ack: Box::new(move || {
+                            let _ = ack.send(());
+                        }),
+                    };
+                },
+                Err(TryReceiveError::Empty) if !bridge.is_cancelled() => {},
+                Err(_) => return refused(),
+            }
         }
     }
 }
@@ -256,10 +307,10 @@ impl Player for MpvPlayer {
         Ok(())
     }
 
-    fn set_seekable(&self, _seekable: bool) -> Result<(), PlayerError> {
-        // Seeking the stream needs Servo to fetch from another offset (`SeekData`), which
-        // is not wired yet: until then libmpv sees a stream it cannot seek, which it reads
-        // like a pipe, instead of one whose seeks would fail and cancel it.
+    fn set_seekable(&self, seekable: bool) -> Result<(), PlayerError> {
+        // Without it, the bridge answers libmpv's seeks with MPV_ERROR_UNSUPPORTED, without
+        // asking Servo: libmpv then reads the stream like a pipe.
+        self.bridge.set_seekable(seekable);
         Ok(())
     }
 
@@ -368,6 +419,7 @@ impl Drop for MpvPlayer {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -428,6 +480,36 @@ mod tests {
         .unwrap()
     }
 
+    /// Five minutes of a 440 Hz sine as an 8 kHz mono WAV, about 4.8 MB: much more than
+    /// libmpv reads to open it, so that a seek can go past what Servo fetched so far.
+    /// WAV, because FFmpeg seeks it by computing the byte offset of the target time, so a
+    /// seek always reaches the stream, while it may read an MP3 up to the target instead.
+    fn long_test_file() -> Vec<u8> {
+        const RATE: u32 = 8000;
+        let samples = (0..RATE * 300).map(|i| {
+            let time = f64::from(i) / f64::from(RATE);
+            ((time * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16
+        });
+        let data_size = RATE * 300 * 2;
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // Mono
+        wav.extend_from_slice(&RATE.to_le_bytes());
+        wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // Bytes per second
+        wav.extend_from_slice(&2u16.to_le_bytes()); // Bytes per frame
+        wav.extend_from_slice(&16u16.to_le_bytes()); // Bits per sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
+
     /// Pushes a whole file as Servo does: its size, then chunks of it, then its end.
     fn push_file(player: &MpvPlayer, data: &[u8]) {
         player.set_input_size(data.len() as u64).unwrap();
@@ -443,16 +525,164 @@ mod tests {
         what: &str,
         matches: impl Fn(&PlayerEvent) -> bool,
     ) -> PlayerEvent {
+        next_matching(
+            |timeout| receiver.try_recv_timeout(timeout).ok(),
+            what,
+            matches,
+        )
+    }
+
+    fn next_matching(
+        recv: impl Fn(Duration) -> Option<PlayerEvent>,
+        what: &str,
+        matches: impl Fn(&PlayerEvent) -> bool,
+    ) -> PlayerEvent {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let event = receiver
-                .try_recv_timeout(remaining)
-                .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+            let event = recv(remaining).unwrap_or_else(|| panic!("timed out waiting for {what}"));
             if matches(&event) {
                 return event;
             }
         }
+    }
+
+    /// How a [`FakeServo`] answers `SeekData`.
+    #[derive(Clone, Copy)]
+    enum SeekAnswer {
+        /// Unlock, then fetch the file from the requested offset, like Servo.
+        Fetch,
+        /// Unlock with a failure.
+        Refuse,
+        /// Keep the lock without ever answering.
+        Never,
+    }
+
+    /// Plays Servo's part for a player: fetches its media over a slow network, answers its
+    /// `SeekData`, and forwards every event to the test, `SeekData` included once
+    /// answered.
+    struct FakeServo {
+        events: std::sync::mpsc::Receiver<PlayerEvent>,
+        answer: Arc<Mutex<SeekAnswer>>,
+    }
+
+    /// Pushes `data` from `offset` in small chunks, as a network would, until the file
+    /// ends, the player is gone, or a newer fetch replaced this one.
+    fn fetch(
+        bridge: Weak<StreamBridge>,
+        data: Arc<Vec<u8>>,
+        offset: usize,
+        fetches: Arc<AtomicUsize>,
+    ) {
+        let fetch = fetches.fetch_add(1, Ordering::SeqCst) + 1;
+        thread::spawn(move || {
+            for chunk in data[offset..].chunks(16 * 1024) {
+                thread::sleep(Duration::from_millis(10));
+                let Some(bridge) = bridge.upgrade() else {
+                    return;
+                };
+                if fetches.load(Ordering::SeqCst) != fetch {
+                    return;
+                }
+                bridge.push(chunk.to_vec());
+            }
+            if let Some(bridge) = bridge.upgrade() &&
+                fetches.load(Ordering::SeqCst) == fetch
+            {
+                bridge.end_of_stream();
+            }
+        });
+    }
+
+    impl FakeServo {
+        /// Pushes the first bytes of `data` through the player, which starts libmpv, then
+        /// fetches the rest. Seeks are answered with [`SeekAnswer::Fetch`], which libmpv
+        /// needs to open a seekable stream: it looks at the end of the file first.
+        fn load(
+            player: &MpvPlayer,
+            events: GenericReceiver<PlayerEvent>,
+            data: Vec<u8>,
+            seekable: bool,
+        ) -> FakeServo {
+            let data = Arc::new(data);
+            // Weak, like Servo's media element: the test must be able to drop the player.
+            let bridge = Arc::downgrade(&player.bridge);
+            let fetches = Arc::new(AtomicUsize::new(0));
+            let answer = Arc::new(Mutex::new(SeekAnswer::Fetch));
+            let (forward, forwarded) = std::sync::mpsc::channel();
+
+            player.set_seekable(seekable).unwrap();
+            player.set_input_size(data.len() as u64).unwrap();
+            player.push_data(data[..FIRST_PUSH].to_vec()).unwrap();
+            fetch(bridge.clone(), data.clone(), FIRST_PUSH, fetches.clone());
+
+            let current_answer = answer.clone();
+            thread::spawn(move || {
+                let mut kept_locks = vec![];
+                while let Ok(event) = events.recv() {
+                    if let PlayerEvent::SeekData(offset, ref lock) = event {
+                        let answer = *current_answer.lock().unwrap();
+                        match answer {
+                            SeekAnswer::Fetch => {
+                                lock.unlock(true);
+                                fetch(
+                                    bridge.clone(),
+                                    data.clone(),
+                                    offset as usize,
+                                    fetches.clone(),
+                                );
+                            },
+                            SeekAnswer::Refuse => lock.unlock(false),
+                            SeekAnswer::Never => kept_locks.push(lock.clone()),
+                        }
+                    }
+                    if forward.send(event).is_err() {
+                        return;
+                    }
+                }
+            });
+            let servo = FakeServo {
+                events: forwarded,
+                answer,
+            };
+            servo.expect("the metadata", |event| {
+                matches!(event, PlayerEvent::MetadataUpdated(_))
+            });
+            servo
+        }
+
+        fn answer_with(&self, answer: SeekAnswer) {
+            *self.answer.lock().unwrap() = answer;
+        }
+
+        fn expect(&self, what: &str, matches: impl Fn(&PlayerEvent) -> bool) -> PlayerEvent {
+            next_matching(
+                |timeout| self.events.recv_timeout(timeout).ok(),
+                what,
+                matches,
+            )
+        }
+
+        fn expect_seek(&self) -> u64 {
+            let PlayerEvent::SeekData(offset, _) =
+                self.expect("a seek", |event| matches!(event, PlayerEvent::SeekData(..)))
+            else {
+                unreachable!()
+            };
+            offset
+        }
+    }
+
+    /// What Servo pushes through the player before its fetch goes on.
+    const FIRST_PUSH: usize = 16 * 1024;
+
+    /// Loads a long seekable media through a [`FakeServo`], then answers seeks with
+    /// `answer`.
+    fn load_seekable(answer: SeekAnswer) -> (MpvPlayer, FakeServo) {
+        let (player, events) = player_with_events();
+        let servo = FakeServo::load(&player, events, long_test_file(), true);
+        servo.answer_with(answer);
+        (player, servo)
     }
 
     #[test]
@@ -810,12 +1040,103 @@ mod tests {
             let _ = events_sender.send(event.unwrap());
         })
         .unwrap();
-        let notifier = Notifier { sender };
+        let notifier = Notifier::new(sender);
         notifier.enough_data();
         notifier.need_data();
         let next = || events.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(next(), PlayerEvent::EnoughData));
         assert!(matches!(next(), PlayerEvent::NeedData));
+    }
+
+    #[test]
+    fn seeking_past_the_fetched_data_asks_servo_for_it() {
+        let (player, servo) = load_seekable(SeekAnswer::Fetch);
+        let handle = player.handle.get().unwrap();
+        handle.command(&["seek", "250", "absolute"]).unwrap();
+        // 250 s is about 3/4 of the file.
+        assert!(servo.expect_seek() > long_test_file().len() as u64 / 2);
+        player.play().unwrap();
+        wait_until("playback from the new position", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 250.0)
+        });
+    }
+
+    #[test]
+    fn a_seek_refused_by_servo_fails_the_media() {
+        let (player, servo) = load_seekable(SeekAnswer::Refuse);
+        player
+            .handle
+            .get()
+            .unwrap()
+            .command(&["seek", "250", "absolute"])
+            .unwrap();
+        servo.expect_seek();
+        servo.expect("the error", |event| matches!(event, PlayerEvent::Error(_)));
+    }
+
+    #[test]
+    fn a_player_waiting_for_a_seek_is_dropped_without_hanging() {
+        let (player, servo) = load_seekable(SeekAnswer::Never);
+        player
+            .handle
+            .get()
+            .unwrap()
+            .command(&["seek", "250", "absolute"])
+            .unwrap();
+        servo.expect_seek();
+
+        let (dropped, done) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(player);
+            dropped.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(5))
+            .expect("dropping the player should end the seek");
+    }
+
+    #[test]
+    fn an_unseekable_stream_never_asks_servo_to_seek() {
+        let (player, events) = player_with_events();
+        let servo = FakeServo::load(&player, events, long_test_file(), false);
+        let handle = player.handle.get().unwrap();
+        player.play().unwrap();
+        wait_until("playback to advance", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 0.5)
+        });
+        // Neither a seek nor a stop may wait for Servo.
+        handle.command(&["seek", "250", "absolute"]).unwrap();
+        player.stop().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while let Ok(event) = servo
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            assert!(!matches!(event, PlayerEvent::SeekData(..)));
+        }
+    }
+
+    #[test]
+    fn stop_fetches_the_media_again_from_its_start() {
+        let (player, servo) = load_seekable(SeekAnswer::Fetch);
+        let handle = player.handle.get().unwrap();
+        // Play far from the start, so that libmpv no longer buffers it.
+        handle.command(&["seek", "250", "absolute"]).unwrap();
+        servo.expect_seek();
+        player.play().unwrap();
+        wait_until("playback to advance", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 250.5)
+        });
+
+        player.stop().unwrap();
+        // Time 0 is the first sample, right after the 44-byte WAV header.
+        assert_eq!(servo.expect_seek(), 44);
+        wait_until("the rewind", || {
+            time_pos(handle).is_some_and(|seconds| seconds < 0.05)
+        });
+        player.play().unwrap();
+        wait_until("playback to start again", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 0.2)
+        });
     }
 
     #[test]
