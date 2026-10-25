@@ -46,6 +46,8 @@ pub struct MpvPlayer {
     bridge: Arc<StreamBridge>,
     /// Whether libmpv was asked to load the media from the bridge.
     loading: Cell<bool>,
+    /// Whether Servo can fetch the media from any offset, so that it can be seeked.
+    seekable: Cell<bool>,
     handle: OnceCell<Instance>,
     /// Whether this player was playing when its page got suspended, so `resume` restarts
     /// it. A media paused by the page stays paused when the page is resumed.
@@ -72,6 +74,7 @@ impl MpvPlayer {
             bridge: Arc::new(StreamBridge::new(Box::new(Notifier::new(sender.clone())))),
             sender,
             loading: Cell::new(false),
+            seekable: Cell::new(false),
             handle: OnceCell::new(),
             resume_after_suspend: Cell::new(false),
             muted: Cell::new(DEFAULT_MUTED),
@@ -262,12 +265,30 @@ impl Player for MpvPlayer {
         Ok(())
     }
 
-    fn seek(&self, _time: f64) -> Result<(), PlayerError> {
-        Err(not_implemented("seek"))
+    fn seek(&self, time: f64) -> Result<(), PlayerError> {
+        // Servo only seeks within `seekable`, so once libmpv loaded the media.
+        let Some(handle) = self.handle.get() else {
+            return Err(PlayerError::Backend(
+                "MPV backend: there is no media to seek".to_owned(),
+            ));
+        };
+        // `exact`: Servo ignores a `SeekDone` more than half a second away from `time`,
+        // which a seek to the nearest keyframe could be.
+        handle
+            .command(&["seek", &time.to_string(), "absolute+exact"])
+            .map_err(backend_error)
     }
 
     fn seekable(&self) -> Vec<Range<f64>> {
-        vec![]
+        // Servo does not seek outside of these ranges: none when the media cannot be
+        // fetched from another offset, or its duration is not known yet.
+        if !self.seekable.get() {
+            return vec![];
+        }
+        match self.handle.get().map(|handle| handle.get_node("duration")) {
+            Some(Ok(Node::Double(duration))) => vec![0.0..duration],
+            _ => vec![],
+        }
     }
 
     fn set_mute(&self, muted: bool) -> Result<(), PlayerError> {
@@ -311,6 +332,7 @@ impl Player for MpvPlayer {
         // Without it, the bridge answers libmpv's seeks with MPV_ERROR_UNSUPPORTED, without
         // asking Servo: libmpv then reads the stream like a pipe.
         self.bridge.set_seekable(seekable);
+        self.seekable.set(seekable);
         Ok(())
     }
 
@@ -1137,6 +1159,39 @@ mod tests {
         wait_until("playback to start again", || {
             time_pos(handle).is_some_and(|seconds| seconds > 0.2)
         });
+    }
+
+    #[test]
+    fn a_loaded_seekable_media_can_be_seeked_whole() {
+        let (player, _servo) = load_seekable(SeekAnswer::Fetch);
+        assert_eq!(player.seekable(), vec![0.0..300.0]);
+    }
+
+    #[test]
+    fn an_unseekable_media_has_no_seekable_range() {
+        let (player, events) = player_with_events();
+        push_file(&player, &test_file());
+        expect_event(&events, "the metadata", |event| {
+            matches!(event, PlayerEvent::MetadataUpdated(_))
+        });
+        assert!(player.seekable().is_empty());
+    }
+
+    #[test]
+    fn seeking_without_a_media_fails() {
+        assert!(matches!(player().seek(1.0), Err(PlayerError::Backend(_))));
+    }
+
+    #[test]
+    fn a_seek_reports_seek_done_at_the_requested_time() {
+        let (player, servo) = load_seekable(SeekAnswer::Fetch);
+        player.seek(250.0).unwrap();
+        // Past what Servo fetched: libmpv needs the data from there first.
+        servo.expect_seek();
+        servo.expect(
+            "the seek to be done",
+            |event| matches!(event, PlayerEvent::SeekDone(position) if (position - 250.0).abs() < 0.5),
+        );
     }
 
     #[test]

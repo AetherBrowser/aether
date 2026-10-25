@@ -128,6 +128,19 @@ impl EventTranslator {
                 }
                 events
             },
+            // libmpv restarts playback once a seek is done, which is how Servo learns it
+            // can leave its seeking state. It also does when the file starts: Servo ignores
+            // a `SeekDone` while it does not seek.
+            Event::PlaybackRestart => {
+                if !self.file_loaded {
+                    return vec![];
+                }
+                self.last_position_update = None;
+                match handle.get_node("time-pos") {
+                    Ok(Node::Double(position)) => vec![PlayerEvent::SeekDone(position)],
+                    _ => vec![],
+                }
+            },
             // With `keep-open=yes`, the end of the file is reported by `eof-reached`.
             Event::EndFile(reason) => {
                 self.file_loaded = false;
@@ -317,6 +330,17 @@ mod tests {
             change(&mut translator, "eof-reached", Node::Flag(true)),
             Some(PlayerEvent::EndOfStream)
         ));
+    }
+
+    #[test]
+    fn restarts_before_a_file_is_loaded_are_not_seeks() {
+        let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
+        let mut translator = EventTranslator::default();
+        assert!(
+            translator
+                .translate(Event::PlaybackRestart, &handle, Instant::now())
+                .is_empty()
+        );
     }
 
     #[test]
