@@ -40,6 +40,7 @@ use script_bindings::reflector::{
     DomObject, DomObjectWrap, WeakReferenceableDomObjectWrap, reflect_dom_object_with_proto,
     reflect_weak_referenceable_dom_object_with_proto,
 };
+use script_bindings::trace::{RootedTraceableBox, TraceableSmallVec};
 use script_traits::{DocumentActivity, MouseButtons};
 use servo_base::id::PipelineId;
 use smallvec::SmallVec;
@@ -1149,14 +1150,14 @@ impl Node {
         self.owner_window().padding_query_without_reflow(self)
     }
 
-    pub(crate) fn content_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn content_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Content, false)
+            .box_area_query(cx, self, BoxAreaType::Content, false)
     }
 
-    pub(crate) fn border_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn border_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Border, false)
+            .box_area_query(cx, self, BoxAreaType::Border, false)
     }
 
     pub(crate) fn border_box_without_reflow(&self) -> Option<Rect<Au, CSSPixel>> {
@@ -1164,9 +1165,9 @@ impl Node {
             .box_area_query_without_reflow(self, BoxAreaType::Border, false)
     }
 
-    pub(crate) fn padding_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn padding_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Padding, false)
+            .box_area_query(cx, self, BoxAreaType::Padding, false)
     }
 
     pub(crate) fn padding_box_without_reflow(&self) -> Option<Rect<Au, CSSPixel>> {
@@ -2760,7 +2761,11 @@ impl Node {
         };
 
         // Step 10. Let staticNodeList be a list of nodes, initially « ».
-        let mut static_node_list: SmallVec<[_; 4]> = Default::default();
+        //
+        // This is incredibly hot code, so in an effort to avoiding rooting every single
+        // node in the `static_node_list`, this code only roots the entire list itself.
+        let mut static_node_list: Option<RootedTraceableBox<TraceableSmallVec<[Dom<Node>; 4]>>> =
+            None;
 
         let parent_shadow_root = parent.downcast::<Element>().and_then(Element::shadow_root);
         let parent_in_shadow_tree = parent.is_in_a_shadow_tree();
@@ -2866,7 +2871,9 @@ impl Node {
 
                 // Step 11.1 For each shadow-including inclusive descendant inclusiveDescendant of node,
                 //           in shadow-including tree order, append inclusiveDescendant to staticNodeList.
-                static_node_list.push(descendant.clone());
+                static_node_list
+                    .get_or_insert_default()
+                    .push(descendant.as_traced());
             }
         }
 
@@ -2901,15 +2908,15 @@ impl Node {
         // 2) post_connection_steps from Node::insert,
         // we use a delayed task that will run as soon as Node::insert removes its
         // script/layout blocker.
-        if !static_node_list.is_empty() {
+        if let Some(static_node_list) = static_node_list {
             parent_document.add_delayed_task(
-                task!(PostConnectionSteps: |cx, static_node_list: SmallVec<[DomRoot<Node>; 4]>| {
+                task!(PostConnectionSteps: |cx, static_node_list: RootedTraceableBox<TraceableSmallVec<[Dom<Node>; 4]>>| {
                     // Step 12. For each node of staticNodeList, if node is connected, then run the
                     //          post-connection steps with node.
                     //
                     // Note: We only add the nodes to the static_node_list which are connected.
-                    for node in static_node_list {
-                        vtable_for(&node).post_connection_steps(cx);
+                    for node in static_node_list.iter() {
+                        vtable_for(node).post_connection_steps(cx);
                     }
                 }),
             );

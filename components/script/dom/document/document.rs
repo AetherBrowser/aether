@@ -36,7 +36,7 @@ use indexmap::IndexSet;
 use js::context::{JSContext, NoGC};
 use js::jsapi::JSObject;
 use js::realm::CurrentRealm;
-use js::rust::{HandleObject, HandleValue, MutableHandleValue};
+use js::rust::{HandleObject, HandleValue};
 use layout_api::{
     ContainerTimingRecord, LCPCandidate, PendingRestyle, ReflowGoal, ReflowPhasesRun,
     ReflowStatistics, RestyleReason, ScrollContainerQueryFlags, TrustedNodeAddress,
@@ -64,6 +64,7 @@ use script_bindings::cell::{DomRefCell, Ref, RefMut};
 use script_bindings::domstring::TracedDOMString;
 use script_bindings::interfaces::DocumentHelpers;
 use script_bindings::reflector::reflect_dom_object_with_proto;
+use script_bindings::tasks::NonSendTaskBox;
 use script_bindings::trace::CustomTraceable;
 use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
@@ -126,7 +127,6 @@ use crate::dom::bindings::domname::{
     self, is_valid_attribute_local_name, is_valid_element_local_name, namespace_from_domstring,
 };
 use crate::dom::bindings::error::{Error, ErrorInfo, ErrorResult, Fallible};
-use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::refcounted::Trusted;
@@ -233,7 +233,6 @@ use crate::mime::{APPLICATION, CHARSET};
 use crate::navigation::navigate;
 use crate::runtime::script_runtime::compute_size;
 use crate::scripting::script_module::{ModuleRequest, ModuleStatus};
-use crate::tasks::task::NonSendTaskBox;
 use crate::tasks::task_manager::TaskManager;
 use crate::tasks::task_source::TaskSourceName;
 use crate::xpath::parse_expression;
@@ -692,11 +691,9 @@ pub(crate) struct Document {
     #[no_trace]
     container_first_render_times: DomRefCell<HashMap<OpaqueNode, CrossProcessInstant>>,
     /// The constructed stylesheet that is adopted by this [Document].
+    /// The DOM-side adopted stylesheet list for this [Document], including duplicates.
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
     adopted_stylesheets: DomRefCell<Vec<Dom<CSSStyleSheet>>>,
-    /// Cached frozen array of [`Self::adopted_stylesheets`]
-    #[ignore_malloc_size_of = "mozjs"]
-    adopted_stylesheets_frozen_types: CachedFrozenArray,
     /// <https://drafts.csswg.org/cssom-view/#document-pending-scroll-events>
     /// > Each Document has an associated list of pending scroll events, which stores
     /// > pairs of (EventTarget, DOMString), initially empty.
@@ -2957,6 +2954,10 @@ impl Document {
         // Step 11. For each workletGlobalScope in document's worklet global scopes,
         // terminate workletGlobalScope.
         // TODO
+
+        // This is not a specification step but needs to be done in order to ensure proper
+        // garbage collection of this global scope.
+        exited_window.as_global_scope().tear_down();
     }
 
     /// <https://html.spec.whatwg.org/multipage/#active-parser>
@@ -3426,23 +3427,33 @@ impl Document {
     }
 
     /// <https://drafts.csswg.org/resize-observer/#dom-resizeobserver-resizeobserver>
-    pub(crate) fn add_resize_observer(&self, resize_observer: &ResizeObserver) {
+    pub(crate) fn add_resize_observer(&self, cx: &mut JSContext, resize_observer: &ResizeObserver) {
         self.resize_observers
-            .borrow_mut()
+            .safe_borrow_mut(cx)
             .push(Dom::from_ref(resize_observer));
+    }
+
+    pub(crate) fn rooted_clone_of_resize_observers(&self) -> Vec<DomRoot<ResizeObserver>> {
+        self.resize_observers
+            .borrow()
+            .iter()
+            .map(Dom::as_rooted)
+            .collect()
     }
 
     /// <https://drafts.csswg.org/resize-observer/#gather-active-observations-h>
     /// <https://drafts.csswg.org/resize-observer/#has-active-resize-observations>
     pub(crate) fn gather_active_resize_observations_at_depth(
         &self,
-        no_gc: &NoGC,
+        cx: &mut JSContext,
         depth: &ResizeObservationDepth,
     ) -> bool {
+        // As the interior of the loop can trigger garbage collection, we must clone the resize observers
+        // before iterating them.
         let mut has_active_resize_observations = false;
-        for observer in self.resize_observers.borrow_mut().iter_mut() {
+        for observer in self.rooted_clone_of_resize_observers() {
             observer.gather_active_resize_observations_at_depth(
-                no_gc,
+                cx,
                 depth,
                 &mut has_active_resize_observations,
             );
@@ -3455,17 +3466,10 @@ impl Document {
         &self,
         cx: &mut JSContext,
     ) -> ResizeObservationDepth {
+        // As the interior of the loop can trigger garbage collection we must clone the resize observers
+        // before iterating them.
         let mut shallowest = ResizeObservationDepth::max();
-        // Breaking potential re-borrow cycle on `resize_observers`:
-        // broadcasting resize observations calls into a JS callback,
-        // which can add new observers.
-        let iterator: Vec<DomRoot<ResizeObserver>> = self
-            .resize_observers
-            .borrow()
-            .iter()
-            .map(|obs| obs.as_rooted())
-            .collect();
-        for observer in iterator {
+        for observer in self.rooted_clone_of_resize_observers() {
             observer.broadcast_active_resize_observations(cx, &mut shallowest);
         }
         shallowest
@@ -4272,7 +4276,6 @@ impl Document {
             container_timing_records: DomRefCell::new(Default::default()),
             container_first_render_times: DomRefCell::new(Default::default()),
             adopted_stylesheets: Default::default(),
-            adopted_stylesheets_frozen_types: CachedFrozenArray::new(),
             pending_scroll_events: Default::default(),
             rendering_update_reasons: Default::default(),
             waiting_on_canvas_image_updates: Cell::new(false),
@@ -7293,35 +7296,42 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
-    fn AdoptedStyleSheets(&self, cx: &mut JSContext, retval: MutableHandleValue) {
-        self.adopted_stylesheets_frozen_types.get_or_init(
-            cx,
-            || {
-                self.adopted_stylesheets
-                    .borrow()
-                    .clone()
-                    .iter()
-                    .map(|sheet| sheet.as_rooted())
-                    .collect()
-            },
-            retval,
-        );
+    ///
+    /// To react to an ObservableArray indexed write:
+    /// 1. Convert the binding-provided context into a JS API context.
+    /// 2. Insert `value` at `index` in the DOM-side list.
+    /// 3. Reconcile the effective constructed stylesheets for this document.
+    fn OnSetAdoptedStyleSheets(
+        &self,
+        cx: &mut JSContext,
+        value: DomRoot<CSSStyleSheet>,
+        index: u32,
+    ) -> ErrorResult {
+        DocumentOrShadowRoot::on_set_adopted_stylesheets(
+            self.adopted_stylesheets.safe_borrow_mut(cx).as_mut(),
+            &value,
+            index,
+            &StyleSheetListOwner::Document(Dom::from_ref(self)),
+        )
     }
 
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
-    fn SetAdoptedStyleSheets(&self, cx: &mut JSContext, val: HandleValue) -> ErrorResult {
-        let result = DocumentOrShadowRoot::set_adopted_stylesheet_from_jsval(
-            cx,
-            &self.adopted_stylesheets,
-            val,
+    ///
+    /// To react to an ObservableArray deletion:
+    /// 1. Convert the binding-provided context into a JS API context.
+    /// 2. Remove the entry at `index` from the DOM-side list.
+    /// 3. Reconcile the effective constructed stylesheets for this document.
+    fn OnDeleteAdoptedStyleSheets(
+        &self,
+        cx: &mut JSContext,
+        _value: DomRoot<CSSStyleSheet>,
+        index: u32,
+    ) -> ErrorResult {
+        DocumentOrShadowRoot::on_delete_adopted_stylesheets(
+            self.adopted_stylesheets.safe_borrow_mut(cx).as_mut(),
+            index,
             &StyleSheetListOwner::Document(Dom::from_ref(self)),
-        );
-
-        if result.is_ok() {
-            self.adopted_stylesheets_frozen_types.clear()
-        }
-
-        result
+        )
     }
 
     fn Timeline(&self) -> DomRoot<DocumentTimeline> {

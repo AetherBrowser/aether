@@ -140,6 +140,7 @@ use crate::dom::html::htmlbodyelement::HTMLBodyElement;
 use crate::dom::html::htmlbuttonelement::HTMLButtonElement;
 use crate::dom::html::htmlcollection::HTMLCollection;
 use crate::dom::html::htmlelement::HTMLElement;
+use crate::dom::html::htmlembedelement::HTMLEmbedElement;
 use crate::dom::html::htmlfieldsetelement::HTMLFieldSetElement;
 use crate::dom::html::htmlfontelement::HTMLFontElement;
 use crate::dom::html::htmlformelement::FormControlElementHelpers;
@@ -168,6 +169,7 @@ use crate::dom::html::htmlvideoelement::HTMLVideoElement;
 use crate::dom::html::internals::elementinternals::ElementInternals;
 use crate::dom::intersectionobserver::{IntersectionObserver, IntersectionObserverRegistration};
 use crate::dom::iterators::ShadowIncluding;
+use crate::dom::mathmlelement::MathMLElement;
 use crate::dom::mutationobserver::{Mutation, MutationObserver};
 use crate::dom::namednodemap::NamedNodeMap;
 use crate::dom::node::virtualmethods::{VirtualMethods, vtable_for};
@@ -913,11 +915,11 @@ impl Element {
         container: Option<&Element>,
         inner_target_rect: Option<Rect<Au, CSSPixel>>,
     ) {
-        let get_target_rect = || match inner_target_rect {
-            None => self.upcast::<Node>().border_box().unwrap_or_default(),
+        let get_target_rect = |cx: &mut JSContext| match inner_target_rect {
+            None => self.upcast::<Node>().border_box(cx).unwrap_or_default(),
             Some(inner_target_rect) => inner_target_rect.translate(
                 self.upcast::<Node>()
-                    .content_box()
+                    .content_box(cx)
                     .unwrap_or_default()
                     .origin
                     .to_vector(),
@@ -940,12 +942,9 @@ impl Element {
             // determine the scroll-into-view position of `target` with `behavior` as the scroll
             // behavior, `block` as the block flow position, `inline` as the inline base direction
             // position and `scrolling box` as the scrolling box.
-            let position = scrolling_box.determine_scroll_into_view_position(
-                cx.no_gc(),
-                block,
-                inline,
-                get_target_rect(),
-            );
+            let target_rect = get_target_rect(cx);
+            let position =
+                scrolling_box.determine_scroll_into_view_position(cx, block, inline, target_rect);
 
             // Step 1.3: If `position` is not the same as `scrolling box`’s current scroll position, or
             // `scrolling box` has an ongoing smooth scroll,
@@ -983,11 +982,9 @@ impl Element {
             return;
         };
 
-        let inner_target_rect = Some(get_target_rect());
-
+        let inner_target_rect = Some(get_target_rect(cx));
         let mut realm = enter_auto_realm(cx, frame_element);
         let cx = &mut realm;
-
         frame_element.scroll_into_view_with_options(
             cx,
             behavior,
@@ -1037,7 +1034,8 @@ impl Element {
     }
 
     pub(crate) fn style(&self) -> Option<ServoArc<ComputedValues>> {
-        self.owner_window().layout_reflow(QueryMsg::StyleQuery);
+        self.owner_window()
+            .layout_reflow_deprecated(QueryMsg::StyleQuery);
         self.style_without_reflow()
     }
 
@@ -1391,13 +1389,17 @@ impl<'dom> LayoutDom<'dom, Element> {
             ));
         }
 
-        let width = if let Some(this) = self.downcast::<HTMLIFrameElement>() {
+        let width = if let Some(this) = self.downcast::<HTMLEmbedElement>() {
+            this.width()
+        } else if let Some(this) = self.downcast::<HTMLIFrameElement>() {
             this.width()
         } else if let Some(this) = self.downcast::<HTMLImageElement>() {
             this.width()
         } else if let Some(this) = self.downcast::<HTMLInputElement>() {
             this.width()
         } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.width()
+        } else if let Some(this) = self.downcast::<HTMLObjectElement>() {
             this.width()
         } else if let Some(this) = self.downcast::<HTMLVideoElement>() {
             this.width()
@@ -1420,13 +1422,17 @@ impl<'dom> LayoutDom<'dom, Element> {
             ));
         });
 
-        let height = if let Some(this) = self.downcast::<HTMLIFrameElement>() {
+        let height = if let Some(this) = self.downcast::<HTMLEmbedElement>() {
+            this.height()
+        } else if let Some(this) = self.downcast::<HTMLIFrameElement>() {
             this.height()
         } else if let Some(this) = self.downcast::<HTMLImageElement>() {
             this.height()
         } else if let Some(this) = self.downcast::<HTMLInputElement>() {
             this.height()
         } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.height()
+        } else if let Some(this) = self.downcast::<HTMLObjectElement>() {
             this.height()
         } else if let Some(this) = self.downcast::<HTMLVideoElement>() {
             this.height()
@@ -1448,11 +1454,15 @@ impl<'dom> LayoutDom<'dom, Element> {
             ));
         });
 
-        let margin_right_left = if let Some(this) = self.downcast::<HTMLImageElement>() {
+        let margin_right_left = if let Some(this) = self.downcast::<HTMLEmbedElement>() {
+            this.margin_right_left()
+        } else if let Some(this) = self.downcast::<HTMLImageElement>() {
             this.margin_right_left()
         } else if let Some(this) = self.downcast::<HTMLInputElement>() {
             this.margin_right_left()
         } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.margin_right_left()
+        } else if let Some(this) = self.downcast::<HTMLObjectElement>() {
             this.margin_right_left()
         } else {
             LengthOrPercentageOrAuto::Auto
@@ -1464,11 +1474,15 @@ impl<'dom> LayoutDom<'dom, Element> {
             push(PropertyDeclaration::MarginRight(value));
         });
 
-        let margin_top_bottom = if let Some(this) = self.downcast::<HTMLImageElement>() {
+        let margin_top_bottom = if let Some(this) = self.downcast::<HTMLEmbedElement>() {
+            this.margin_top_bottom()
+        } else if let Some(this) = self.downcast::<HTMLImageElement>() {
             this.margin_top_bottom()
         } else if let Some(this) = self.downcast::<HTMLInputElement>() {
             this.margin_top_bottom()
         } else if let Some(this) = self.downcast::<HTMLMarqueeElement>() {
+            this.margin_top_bottom()
+        } else if let Some(this) = self.downcast::<HTMLObjectElement>() {
             this.margin_top_bottom()
         } else {
             LengthOrPercentageOrAuto::Auto
@@ -1482,6 +1496,10 @@ impl<'dom> LayoutDom<'dom, Element> {
 
         if let Some(svg_element) = self.downcast::<SVGElement>() {
             svg_element.synthesize_presentational_hints(document, &mut push);
+        }
+
+        if let Some(mathml_element) = self.downcast::<MathMLElement>() {
+            mathml_element.synthesize_presentational_hints(document, &mut push);
         }
 
         // Aspect ratio when providing both width and height.
@@ -2592,7 +2610,7 @@ impl Element {
 
     /// <https://html.spec.whatwg.org/multipage/#nonce-attributes>
     pub(crate) fn update_nonce_post_connection(&self, cx: &mut JSContext) {
-        // Whenever an element including HTMLOrSVGElement becomes browsing-context connected,
+        // Whenever an element including HTMLOrSVGOrMathMLElement becomes browsing-context connected,
         // the user agent must execute the following steps on the element:
         if !self
             .upcast::<Node>()
@@ -3378,7 +3396,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     /// <https://drafts.csswg.org/cssom-view/#dom-element-getboundingclientrect>
     fn GetBoundingClientRect(&self, cx: &mut JSContext) -> DomRoot<DOMRect> {
         let win = self.owner_window();
-        let rect = self.upcast::<Node>().border_box().unwrap_or_default();
+        let rect = self.upcast::<Node>().border_box(cx).unwrap_or_default();
         debug_assert!(rect.size.width.to_f64_px() >= 0.0 && rect.size.height.to_f64_px() >= 0.0);
         DOMRect::new(
             cx,
