@@ -90,6 +90,17 @@ pub(crate) fn location_bar_input_to_url(request: &str, searchpage: &str) -> Opti
     }
 }
 
+/// Completes a lone name into `www.<name>.com`, as Ctrl+Enter does in the location bar.
+#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+pub(crate) fn complete_com_domain(input: &str) -> String {
+    let input = input.trim();
+    let (host, path) = input.split_at(input.find('/').unwrap_or(input.len()));
+    if host.is_empty() || host.contains(['.', ':']) || host.contains(char::is_whitespace) {
+        return input.to_owned();
+    }
+    format!("www.{host}.com{path}")
+}
+
 fn try_as_file(request: &str) -> Option<ServoUrl> {
     if request.starts_with('/') {
         return ServoUrl::parse(&format!("file://{}", request)).ok();

@@ -30,7 +30,7 @@ const ABOUT_HOME: &str = "about:home";
 
 /// Page shown for the Aether home page.
 pub(crate) const AETHER_HOME_URL: &str = "servo:newtab";
-const BLANK_URL: &str = "about:blank";
+pub(crate) const BLANK_URL: &str = "about:blank";
 
 /// `browser.startup.page`: show a blank page. Deprecated in Firefox; a blank
 /// homepage is normally `browser.startup.homepage = about:blank`.

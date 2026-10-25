@@ -25,8 +25,8 @@ use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
-    Button, FontDefinitions, Id, Key, Label, LayerId, Modifiers, Order, PaintCallback, Panel,
-    WidgetInfo, WidgetType, pos2,
+    Button, FontDefinitions, Id, Key, Label, LayerId, Order, PaintCallback, Panel, WidgetInfo,
+    WidgetType, pos2,
 };
 #[cfg(any(
     target_os = "windows",
@@ -58,12 +58,28 @@ use winit::window::Window;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
-use crate::desktop::menu::{AppMenu, AppMenuAction};
+use crate::desktop::menu::AppMenu;
+use crate::desktop::shortcuts::BrowserAction;
+use crate::home::{AETHER_HOME_URL, BLANK_URL};
+use crate::parser::complete_com_domain;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
-    ServoShellWindow, TopLevelWebViewCreationRequest, can_view_source, history_url, new_tab_url,
-    new_window_url, processes_url, settings_url, view_source_url,
+    ServoShellWindow, TopLevelWebViewCreationRequest, can_view_source, new_tab_url,
 };
+
+/// The egui id of the location bar.
+fn location_id() -> Id {
+    Id::new("location_input")
+}
+
+/// The location bar text for `url`: empty on the new tab page, as in other browsers.
+fn location_text(url: &Url) -> String {
+    if [AETHER_HOME_URL, BLANK_URL].contains(&url.as_str()) {
+        String::new()
+    } else {
+        url.to_string()
+    }
+}
 
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
@@ -76,6 +92,15 @@ pub struct Gui {
 
     /// Whether the location has been edited by the user without clicking Go.
     location_dirty: bool,
+
+    /// The tab whose location the location bar shows.
+    location_webview: Option<WebViewId>,
+
+    /// Locations edited without clicking Go in tabs that are not active.
+    edited_locations: HashMap<WebViewId, String>,
+
+    /// Whether a shortcut asked to focus the location bar on the next update.
+    location_focus_requested: bool,
 
     /// The [`LoadStatus`] of the active `WebView`.
     load_status: LoadStatus,
@@ -99,6 +124,9 @@ pub struct Gui {
 
     /// Hamburger menu opened from the toolbar.
     app_menu: AppMenu,
+
+    /// Action chosen in the application menu, performed by the window after the update.
+    app_menu_action: Option<BrowserAction>,
 
     /// Whether the docked developer tools panel is open beside the page.
     devtools_open: bool,
@@ -296,8 +324,11 @@ impl Gui {
             rendering_context,
             context,
             toolbar_height: Default::default(),
-            location: initial_url.to_string(),
+            location: location_text(&initial_url),
             location_dirty: false,
+            location_webview: None,
+            edited_locations: Default::default(),
+            location_focus_requested: false,
             load_status: LoadStatus::Complete,
             status_text: None,
             can_go_back: false,
@@ -305,6 +336,7 @@ impl Gui {
             favicon_textures: Default::default(),
             toolbar_icons: Default::default(),
             app_menu: Default::default(),
+            app_menu_action: None,
             devtools_open: false,
             devtools_rect: egui::Rect::NOTHING,
             pending_accesskit_updates: vec![],
@@ -315,6 +347,29 @@ impl Gui {
         self.context
             .egui_ctx
             .memory(|memory| memory.focused().is_some())
+    }
+
+    /// Whether a text field of the interface has keyboard focus.
+    pub(crate) fn is_editing_text(&self) -> bool {
+        self.context.egui_ctx.text_edit_focused()
+    }
+
+    /// Focuses the location bar and selects its text on the next update.
+    pub(crate) fn focus_location_bar(&mut self) {
+        self.location_focus_requested = true;
+    }
+
+    pub(crate) fn toggle_developer_tools(&mut self) {
+        self.devtools_open = !self.devtools_open;
+    }
+
+    /// Opens or closes the application menu from the keyboard on the next update.
+    pub(crate) fn toggle_app_menu(&mut self) {
+        self.app_menu.toggle_from_keyboard();
+    }
+
+    pub(crate) fn take_app_menu_action(&mut self) -> Option<BrowserAction> {
+        self.app_menu_action.take()
     }
 
     pub(crate) fn surrender_focus(&self) {
@@ -517,9 +572,11 @@ impl Gui {
             toolbar_height,
             location,
             location_dirty,
+            location_focus_requested,
             favicon_textures,
             toolbar_icons,
             app_menu,
+            app_menu_action,
             ..
         } = self;
 
@@ -656,7 +713,7 @@ impl Gui {
                                         );
                                     }
 
-                                    let location_id = egui::Id::new("location_input");
+                                    let location_id = location_id();
                                     let location_field = ui.add_sized(
                                         ui.available_size(),
                                         egui::TextEdit::singleline(location)
@@ -667,20 +724,35 @@ impl Gui {
                                     if location_field.changed() {
                                         *location_dirty = true;
                                     }
-                                    // Handle adddress bar shortcut.
-                                    if ui.input(|i| {
-                                        if cfg!(target_os = "macos") {
-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L)
-                                        } else {
-                                            i.clone().consume_key(Modifiers::COMMAND, Key::L) ||
-                                                i.clone().consume_key(Modifiers::ALT, Key::D)
-                                        }
-                                    }) {
-                                        // The focus request immediately makes gained_focus return true.
+                                    let focus_requested = std::mem::take(location_focus_requested);
+                                    if focus_requested {
                                         location_field.request_focus();
+                                        ui.ctx().request_repaint();
+                                    }
+                                    let (escape, enter, modifiers) = ui.input(|i| {
+                                        (
+                                            i.key_pressed(Key::Escape),
+                                            i.key_pressed(Key::Enter),
+                                            i.modifiers,
+                                        )
+                                    });
+                                    // Escape reverts an edited address and keeps the focus.
+                                    let reverted =
+                                        location_field.lost_focus() && escape && *location_dirty;
+                                    if reverted {
+                                        *location_dirty = false;
+                                        *location = window
+                                            .active_webview()
+                                            .and_then(|webview| webview.url())
+                                            .map(|url| location_text(&url))
+                                            .unwrap_or_default();
+                                        location_field.request_focus();
+                                        ui.ctx().request_repaint();
                                     }
                                     // Select address bar text when it's focused (click or shortcut).
-                                    if location_field.gained_focus() &&
+                                    if (location_field.gained_focus() ||
+                                        focus_requested ||
+                                        reverted) &&
                                         let Some(mut state) =
                                             TextEditState::load(ui.ctx(), location_id)
                                     {
@@ -691,13 +763,28 @@ impl Gui {
                                         )));
                                         state.store(ui.ctx(), location_id);
                                     }
-                                    // Navigate to address when enter is pressed in the address bar.
-                                    if location_field.lost_focus() &&
-                                        ui.input(|i| i.clone().key_pressed(Key::Enter))
-                                    {
-                                        window.queue_user_interface_command(
-                                            UserInterfaceCommand::Go(location.clone()),
-                                        );
+                                    // Navigate to address when enter is pressed in the address bar:
+                                    // Ctrl+Enter completes www.<name>.com, Alt+Enter opens a new tab.
+                                    let submitted = enter &&
+                                        !location.trim().is_empty() &&
+                                        (location_field.lost_focus() ||
+                                            (location_field.has_focus() &&
+                                                modifiers.command));
+                                    if submitted {
+                                        location_field.surrender_focus();
+                                        if modifiers.command {
+                                            *location = complete_com_domain(location);
+                                        }
+                                        if modifiers.alt {
+                                            *location_dirty = false;
+                                            window.queue_user_interface_command(
+                                                UserInterfaceCommand::GoInNewTab(location.clone()),
+                                            );
+                                        } else {
+                                            window.queue_user_interface_command(
+                                                UserInterfaceCommand::Go(location.clone()),
+                                            );
+                                        }
                                     }
                                 },
                             );
@@ -745,6 +832,8 @@ impl Gui {
                                                 ),
                                             ),
                                         );
+                                        *location_focus_requested = true;
+                                        ui.ctx().request_repaint();
                                     }
                                 },
                             );
@@ -759,53 +848,8 @@ impl Gui {
                         .and_then(|webview| webview.url())
                         .as_ref()
                         .is_some_and(can_view_source);
-                    match app_menu.update(button, toolbar_icons, can_view_source) {
-                        Some(AppMenuAction::NewTab) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
-                                TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
-                            ));
-                        },
-                        Some(AppMenuAction::NewWindow) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWindow(
-                                TopLevelWebViewCreationRequest::WithUrl(new_window_url()),
-                            ));
-                        },
-                        Some(AppMenuAction::History) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
-                                TopLevelWebViewCreationRequest::WithUrl(history_url()),
-                            ));
-                        },
-                        Some(AppMenuAction::Settings) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
-                                TopLevelWebViewCreationRequest::WithUrl(settings_url()),
-                            ));
-                        },
-                        Some(AppMenuAction::Processes) => {
-                            window.queue_user_interface_command(UserInterfaceCommand::NewWebView(
-                                TopLevelWebViewCreationRequest::WithUrl(processes_url()),
-                            ));
-                        },
-                        Some(AppMenuAction::ViewSource) => {
-                            if let Some(url) = window
-                                .active_webview()
-                                .and_then(|webview| webview.url())
-                                .as_ref()
-                                .and_then(view_source_url)
-                            {
-                                window.queue_user_interface_command(
-                                    UserInterfaceCommand::NewWebView(
-                                        TopLevelWebViewCreationRequest::WithUrl(url),
-                                    ),
-                                );
-                            }
-                        },
-                        Some(AppMenuAction::DeveloperTools) => {
-                            self.devtools_open = true;
-                        },
-                        Some(AppMenuAction::Exit) => {
-                            state.schedule_exit();
-                        },
-                        None => {},
+                    if let Some(action) = app_menu.update(button, toolbar_icons, can_view_source) {
+                        *app_menu_action = Some(action);
                     }
                 }
             } else {
@@ -814,7 +858,6 @@ impl Gui {
             }
 
             // Split the page area in half: the WebView keeps the left, developer tools the right.
-            // Shown after the menu action so the panel appears on the same frame it is opened.
             if self.devtools_open {
                 let dock = Self::show_devtools_dock(ctx, toolbar_icons);
                 if dock.close_clicked {
@@ -932,19 +975,61 @@ impl Gui {
             return false;
         }
 
-        let current_url_string = window
-            .active_webview()
-            .and_then(|webview| Some(webview.url()?.to_string()));
+        let current_url_string = window.active_webview().map(|webview| {
+            webview
+                .url()
+                .map(|url| location_text(&url))
+                .unwrap_or_default()
+        });
         match current_url_string {
             Some(location) if location != self.location => {
                 self.location = location;
+                // Keep the whole address selected, so typing replaces it.
+                if self.location_has_focus() {
+                    self.location_focus_requested = true;
+                }
                 true
             },
             _ => false,
         }
     }
 
-    fn update_load_status(&mut self, window: &ServoShellWindow) -> bool {
+    /// Keeps the location edited in the tab being left, and shows the one edited in the newly
+    /// active tab, if any. Returns true iff the active tab changed.
+    fn update_location_webview(&mut self, window: &ServoShellWindow) -> bool {
+        let active_id = window.active_webview().map(|webview| webview.id());
+        if active_id == self.location_webview {
+            return false;
+        }
+        if let Some(previous_id) = self.location_webview &&
+            self.location_dirty
+        {
+            self.edited_locations
+                .insert(previous_id, std::mem::take(&mut self.location));
+        }
+        self.edited_locations
+            .retain(|id, _| window.webview_by_id(*id).is_some());
+        self.location_webview = active_id;
+        match active_id.and_then(|id| self.edited_locations.remove(&id)) {
+            Some(edited_location) => {
+                self.location = edited_location;
+                self.location_dirty = true;
+            },
+            None => self.location_dirty = false,
+        }
+        if self.location_has_focus() {
+            self.location_focus_requested = true;
+        }
+        true
+    }
+
+    fn location_has_focus(&self) -> bool {
+        self.context
+            .egui_ctx
+            .memory(|memory| memory.has_focus(location_id()))
+    }
+
+    fn update_load_status(&mut self, window: &ServoShellWindow, switched_tab: bool) -> bool {
         let state_status = window
             .active_webview()
             .map(|webview| webview.load_status())
@@ -953,8 +1038,8 @@ impl Gui {
         let status_changed = old_status != self.load_status;
 
         // When the load status changes, we want the new changes to the URL to start
-        // being reflected in the location bar.
-        if status_changed {
+        // being reflected in the location bar, unless the user is still typing there.
+        if status_changed && !switched_tab && !self.location_has_focus() {
             self.location_dirty = false;
         }
 
@@ -986,7 +1071,9 @@ impl Gui {
         //       because logical OR would short-circuit if any of the functions return true.
         //       We want to ensure that all functions are called. The "bitwise OR" operator
         //       does not short-circuit.
-        self.update_load_status(window) |
+        let switched_tab = self.update_location_webview(window);
+        switched_tab |
+            self.update_load_status(window, switched_tab) |
             self.update_location_in_toolbar(window) |
             self.update_status_text(window) |
             self.update_can_go_back_and_forward(window)
@@ -1115,6 +1202,18 @@ mod tests {
                 modifiers: egui::Modifiers::default(),
             },
         ]
+    }
+
+    #[test]
+    fn location_bar_is_empty_on_the_new_tab_page() {
+        let url = |url: &str| Url::parse(url).unwrap();
+        assert_eq!(location_text(&url("servo:newtab")), "");
+        assert_eq!(location_text(&url("about:blank")), "");
+        assert_eq!(location_text(&url("servo:history")), "servo:history");
+        assert_eq!(
+            location_text(&url("https://example.com/")),
+            "https://example.com/"
+        );
     }
 
     #[test]
