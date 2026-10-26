@@ -34,7 +34,7 @@ import servo.visual_studio
 
 from servo.command_base import BuildType, CommandBase, check_call
 from servo.gstreamer import windows_dlls, windows_plugins, package_gstreamer_dylibs
-from servo.platform.build_target import BuildPort, BuildTarget
+from servo.platform.build_target import BuildTarget
 
 from python.servo.platform.build_target import SanitizerKind
 
