@@ -10,7 +10,7 @@
 #   4. Create the icons folder if it doesn't exist:
 #          mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 #   5. Create a link for the icon:
-#          ln -s servo.svg ~/.local/share/icons/hicolor/scalable/apps/servo.svg
+#          ln -s aether.svg ~/.local/share/icons/hicolor/scalable/apps/aether.svg
 [Desktop Entry]
 Version=1.0
 Name=Servo
@@ -18,7 +18,7 @@ GenericName=Web Browser
 Comment=Browse the Web
 # TODO: Replace SERVO_SRC_PATH with the path to the Servo sources
 Exec=SERVO_SRC_PATH/target/release/servoshell %u
-Icon=servo
+Icon=aether
 Terminal=false
 Type=Application
 MimeType=text/html;text/xml;application/xhtml+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;

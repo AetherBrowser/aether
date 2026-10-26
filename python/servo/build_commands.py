@@ -219,7 +219,7 @@ class MachCommands(CommandBase):
             try:
                 import Cocoa  # pyrefly: ignore[missing-import]
 
-                icon_name = "aether_1024.png" if self.port == BuildPort.AETHER else "servo_1024.png"
+                icon_name = "aether_1024.png"
                 icon_path = path.join(self.get_top_dir(), "resources", icon_name)
                 icon = Cocoa.NSImage.alloc().initWithContentsOfFile_(icon_path)
                 if icon is not None:

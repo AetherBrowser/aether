@@ -7,7 +7,7 @@
 	<key>CFBundleGetInfoString</key>
 	<string>ServoShell</string>
 	<key>CFBundleIconFile</key>
-	<string>servo.icns</string>
+	<string>aether.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>org.servo.ServoShell</string>
 	<key>CFBundleInfoDictionaryVersion</key>
