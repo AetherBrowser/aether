@@ -21,9 +21,9 @@ use servo::protocol_handler::{
 const NEWTAB_HTML: &str = include_str!("../../../resources/resource_protocol/newtab.html");
 const NEWTAB_CSS: &str = include_str!("../../../resources/resource_protocol/newtab.css");
 const LOGO_LIGHT: &[u8] =
-    include_bytes!("../../../resources/resource_protocol/servo-color-positive-no-container.svg");
+    include_bytes!("../../../resources/resource_protocol/aether-color-positive-no-container.svg");
 const LOGO_DARK: &[u8] =
-    include_bytes!("../../../resources/resource_protocol/servo-color-negative-no-container.svg");
+    include_bytes!("../../../resources/resource_protocol/aether-color-negative-no-container.svg");
 
 #[derive(Default)]
 pub(crate) struct ServoProtocolHandler;
@@ -76,10 +76,10 @@ impl ProtocolHandler for ResourceProtocolHandler {
             "newtab.css" => {
                 bytes_response(request, NEWTAB_CSS.as_bytes(), "text/css; charset=utf-8")
             },
-            "servo-color-positive-no-container.svg" => {
+            "aether-color-positive-no-container.svg" => {
                 bytes_response(request, LOGO_LIGHT, "image/svg+xml")
             },
-            "servo-color-negative-no-container.svg" => {
+            "aether-color-negative-no-container.svg" => {
                 bytes_response(request, LOGO_DARK, "image/svg+xml")
             },
             _ => error_response("Invalid path"),

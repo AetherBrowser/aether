@@ -34,7 +34,7 @@ import servo.visual_studio
 
 from servo.command_base import BuildType, CommandBase, check_call
 from servo.gstreamer import windows_dlls, windows_plugins, package_gstreamer_dylibs
-from servo.platform.build_target import BuildTarget
+from servo.platform.build_target import BuildPort, BuildTarget
 
 from python.servo.platform.build_target import SanitizerKind
 
@@ -219,7 +219,8 @@ class MachCommands(CommandBase):
             try:
                 import Cocoa  # pyrefly: ignore[missing-import]
 
-                icon_path = path.join(self.get_top_dir(), "resources", "servo_1024.png")
+                icon_name = "aether_1024.png" if self.port == BuildPort.AETHER else "servo_1024.png"
+                icon_path = path.join(self.get_top_dir(), "resources", icon_name)
                 icon = Cocoa.NSImage.alloc().initWithContentsOfFile_(icon_path)
                 if icon is not None:
                     Cocoa.NSWorkspace.sharedWorkspace().setIcon_forFile_options_(icon, built_binary, 0)

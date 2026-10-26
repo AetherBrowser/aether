@@ -139,7 +139,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(windows)]
         {
             let mut res = winresource::WindowsResource::new();
-            res.set_icon("../../resources/servo.ico");
+            res.set_icon("../../resources/aether.ico");
             res.set_manifest_file("platform/windows/servoshell.exe.manifest");
             res.compile().unwrap();
         }
