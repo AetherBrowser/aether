@@ -447,6 +447,7 @@ mod tests {
 
     use servo_base::generic_channel::GenericReceiver;
     use servo_media_player::PlaybackState;
+    use servo_media_player::metadata::Metadata;
 
     use super::*;
 
@@ -559,7 +560,16 @@ mod tests {
         what: &str,
         matches: impl Fn(&PlayerEvent) -> bool,
     ) -> PlayerEvent {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        next_matching_within(Duration::from_secs(5), recv, what, matches)
+    }
+
+    fn next_matching_within(
+        timeout: Duration,
+        recv: impl Fn(Duration) -> Option<PlayerEvent>,
+        what: &str,
+        matches: impl Fn(&PlayerEvent) -> bool,
+    ) -> PlayerEvent {
+        let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let event = recv(remaining).unwrap_or_else(|| panic!("timed out waiting for {what}"));
@@ -586,6 +596,7 @@ mod tests {
     struct FakeServo {
         events: std::sync::mpsc::Receiver<PlayerEvent>,
         answer: Arc<Mutex<SeekAnswer>>,
+        metadata: Metadata,
     }
 
     /// Pushes `data` from `offset` in small chunks, as a network would, until the file
@@ -635,8 +646,9 @@ mod tests {
 
             player.set_seekable(seekable).unwrap();
             player.set_input_size(data.len() as u64).unwrap();
-            player.push_data(data[..FIRST_PUSH].to_vec()).unwrap();
-            fetch(bridge.clone(), data.clone(), FIRST_PUSH, fetches.clone());
+            let first_push = FIRST_PUSH.min(data.len());
+            player.push_data(data[..first_push].to_vec()).unwrap();
+            fetch(bridge.clone(), data.clone(), first_push, fetches.clone());
 
             let current_answer = answer.clone();
             thread::spawn(move || {
@@ -663,14 +675,18 @@ mod tests {
                     }
                 }
             });
-            let servo = FakeServo {
+            let PlayerEvent::MetadataUpdated(metadata) = next_matching(
+                |timeout| forwarded.recv_timeout(timeout).ok(),
+                "the metadata",
+                |event| matches!(event, PlayerEvent::MetadataUpdated(_)),
+            ) else {
+                unreachable!()
+            };
+            FakeServo {
                 events: forwarded,
                 answer,
-            };
-            servo.expect("the metadata", |event| {
-                matches!(event, PlayerEvent::MetadataUpdated(_))
-            });
-            servo
+                metadata,
+            }
         }
 
         fn answer_with(&self, answer: SeekAnswer) {
@@ -1191,6 +1207,132 @@ mod tests {
         servo.expect(
             "the seek to be done",
             |event| matches!(event, PlayerEvent::SeekDone(position) if (position - 250.0).abs() < 0.5),
+        );
+    }
+
+    /// Where the format tests find their media.
+    const WPT: &str = "../../../../tests/wpt/tests/";
+
+    /// The codec of each track of the loaded media, as `(type, codec)`.
+    fn track_codecs(handle: &MpvHandle) -> Vec<(String, String)> {
+        let Ok(Node::Array(tracks)) = handle.get_node("track-list") else {
+            return vec![];
+        };
+        tracks
+            .iter()
+            .map(|track| {
+                let string = |key| track.get(key).and_then(Node::as_str).unwrap_or_default();
+                (string("type").to_owned(), string("codec").to_owned())
+            })
+            .collect()
+    }
+
+    /// Plays a media to its end through the path Servo uses: `push_data`, the bridge, then
+    /// libmpv, which seeks through `SeekData` when it needs to. Video is not decoded yet
+    /// (`vid=no`): its track must be recognized, and the audio played.
+    ///
+    /// In real time, as a page plays it: with `ao-null-untimed`, libmpv plays a short media
+    /// within one iteration of its loop, and reports none of its property changes.
+    fn plays_to_its_end(path: &str, audio_codec: &str, video_codec: Option<&str>) {
+        let data = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .unwrap_or_else(|error| panic!("cannot read {path}: {error}"));
+        let (player, events) = player_with_events();
+        let servo = FakeServo::load(&player, events, data, true);
+
+        assert_eq!(servo.metadata.audio_tracks.len(), 1, "{path}");
+        assert_eq!(
+            servo.metadata.video_tracks.len(),
+            usize::from(video_codec.is_some()),
+            "{path}"
+        );
+        let mut expected = vec![("audio".to_owned(), audio_codec.to_owned())];
+        expected.extend(video_codec.map(|codec| ("video".to_owned(), codec.to_owned())));
+        let mut codecs = track_codecs(player.handle.get().unwrap());
+        codecs.sort();
+        expected.sort();
+        assert_eq!(codecs, expected, "{path}");
+
+        player.play().unwrap();
+        let duration = servo.metadata.duration.expect("a duration");
+        next_matching_within(
+            duration + Duration::from_secs(5),
+            |timeout| servo.events.recv_timeout(timeout).ok(),
+            &format!("the end of {path}"),
+            |event| matches!(event, PlayerEvent::EndOfStream),
+        );
+    }
+
+    #[test]
+    fn mp3_plays() {
+        plays_to_its_end(&format!("{WPT}media/sine440.mp3"), "mp3", None);
+    }
+
+    #[test]
+    fn aac_in_mp4_plays() {
+        plays_to_its_end(
+            &format!("{WPT}media-source/mp4/test-a-128k-44100Hz-1ch.mp4"),
+            "aac",
+            None,
+        );
+    }
+
+    #[test]
+    fn raw_aac_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx.adts"), "aac", None);
+    }
+
+    #[test]
+    fn flac_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx.flac"), "flac", None);
+    }
+
+    #[test]
+    fn wav_plays() {
+        plays_to_its_end(&format!("{WPT}media/speech.wav"), "pcm_s16le", None);
+    }
+
+    #[test]
+    fn opus_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx-opus.ogg"), "opus", None);
+    }
+
+    #[test]
+    fn ogg_vorbis_plays() {
+        plays_to_its_end(&format!("{WPT}media/sound_5.oga"), "vorbis", None);
+    }
+
+    #[test]
+    fn h264_mp4_plays() {
+        plays_to_its_end(&format!("{WPT}media/movie_5.mp4"), "aac", Some("h264"));
+    }
+
+    #[test]
+    fn mp4_with_its_index_at_the_end_plays() {
+        // libmpv must read the index (`moov`) at the end before playing. The file is small
+        // enough for libmpv to buffer it whole, so this does not go through `SeekData`.
+        plays_to_its_end(&format!("{WPT}media/test-1s.mp4"), "aac", Some("h264"));
+    }
+
+    #[test]
+    fn vp8_webm_plays() {
+        plays_to_its_end(
+            &format!("{WPT}media/test-av-384k-44100Hz-1ch-320x240-30fps-10kfr.webm"),
+            "vorbis",
+            Some("vp8"),
+        );
+    }
+
+    #[test]
+    fn vp9_webm_plays() {
+        plays_to_its_end(&format!("{WPT}media/A4.webm"), "opus", Some("vp9"));
+    }
+
+    #[test]
+    fn av1_mp4_plays() {
+        plays_to_its_end(
+            &format!("{WPT}speculation-rules/prerender/resources/bear-av1-opus.mp4"),
+            "opus",
+            Some("av1"),
         );
     }
 
