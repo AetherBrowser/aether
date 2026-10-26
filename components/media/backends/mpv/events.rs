@@ -114,6 +114,8 @@ struct EventTranslator {
     /// The last value of `idle-active`, `None` before libmpv reported it.
     idle: Option<bool>,
     last_position_update: Option<Instant>,
+    /// Whether `EndOfStream` was sent since playback last reached the end.
+    ended: bool,
 }
 
 impl EventTranslator {
@@ -121,6 +123,7 @@ impl EventTranslator {
         match event {
             Event::FileLoaded => {
                 self.file_loaded = true;
+                self.ended = false;
                 self.last_position_update = None;
                 let mut events = vec![PlayerEvent::MetadataUpdated(metadata(handle))];
                 if let Ok(Node::Flag(paused)) = handle.get_node("pause") {
@@ -135,6 +138,7 @@ impl EventTranslator {
                 if !self.file_loaded {
                     return vec![];
                 }
+                self.ended = false;
                 self.last_position_update = None;
                 match handle.get_node("time-pos") {
                     Ok(Node::Double(position)) => vec![PlayerEvent::SeekDone(position)],
@@ -151,10 +155,22 @@ impl EventTranslator {
                     EndFileReason::Eof | EndFileReason::Other => vec![],
                 }
             },
-            Event::PropertyChange { name, value } => self
-                .property_changed(&name, value, now)
-                .into_iter()
-                .collect(),
+            Event::PropertyChange { name, value } => {
+                // With `keep-open=yes`, libmpv pauses at the end of the file, but does not
+                // always report `eof-reached` when it changes along with `pause`, which
+                // happens with short media: check it on pause.
+                let ended = self.file_loaded &&
+                    name == "pause" &&
+                    value == Node::Flag(true) &&
+                    handle.get_node("eof-reached") == Ok(Node::Flag(true));
+                let mut events: Vec<_> = ended
+                    .then(|| self.end_of_stream())
+                    .flatten()
+                    .into_iter()
+                    .collect();
+                events.extend(self.property_changed(&name, value, now));
+                events
+            },
             Event::None | Event::Shutdown | Event::Other => vec![],
         }
     }
@@ -189,9 +205,18 @@ impl EventTranslator {
                 Duration::try_from_secs_f64(duration).ok(),
             )),
             ("duration", Node::None) => Some(PlayerEvent::DurationChanged(None)),
-            ("eof-reached", Node::Flag(true)) => Some(PlayerEvent::EndOfStream),
+            ("eof-reached", Node::Flag(true)) => self.end_of_stream(),
+            ("eof-reached", Node::Flag(false)) => {
+                self.ended = false;
+                None
+            },
             _ => None,
         }
+    }
+
+    /// `EndOfStream`, unless it was already sent for this end.
+    fn end_of_stream(&mut self) -> Option<PlayerEvent> {
+        (!std::mem::replace(&mut self.ended, true)).then_some(PlayerEvent::EndOfStream)
     }
 }
 
@@ -325,6 +350,23 @@ mod tests {
     #[test]
     fn reaching_the_end_is_end_of_stream() {
         let mut translator = loaded();
+        assert!(change(&mut translator, "eof-reached", Node::Flag(false)).is_none());
+        assert!(matches!(
+            change(&mut translator, "eof-reached", Node::Flag(true)),
+            Some(PlayerEvent::EndOfStream)
+        ));
+    }
+
+    #[test]
+    fn the_end_is_reported_once() {
+        let mut translator = loaded();
+        assert!(matches!(
+            change(&mut translator, "eof-reached", Node::Flag(true)),
+            Some(PlayerEvent::EndOfStream)
+        ));
+        assert!(translator.end_of_stream().is_none());
+        assert!(change(&mut translator, "eof-reached", Node::Flag(true)).is_none());
+        // Played again, e.g. after a seek back.
         assert!(change(&mut translator, "eof-reached", Node::Flag(false)).is_none());
         assert!(matches!(
             change(&mut translator, "eof-reached", Node::Flag(true)),
