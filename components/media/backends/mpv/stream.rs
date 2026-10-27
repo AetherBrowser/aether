@@ -18,13 +18,14 @@ const LOW_WATER_MARK: usize = 2 * 1024 * 1024;
 /// How the bridge asks the player for data. It is called without the bridge's lock held,
 /// and must not keep the bridge alive, or neither would ever be freed.
 pub(crate) trait BridgeObserver: Send + Sync {
-    /// The queue went down below the low water mark after reaching the high one.
-    /// Must not call the bridge.
+    /// The queue went down below the low water mark after reaching the high one, and
+    /// Servo kept fetching, as it cannot fetch from an offset. Must not call the bridge.
     fn need_data(&self);
     /// The queue went over the high water mark. Must not call the bridge.
     fn enough_data(&self);
     /// Asks Servo to push the resource from `offset` on, and waits for its answer. Must
-    /// give up once `bridge` is cancelled.
+    /// give up once `bridge` is cancelled. Also how the bridge resumes a fetch that Servo
+    /// stopped on `enough_data`, once it needs data again.
     fn seek_data(&self, offset: u64, bridge: &StreamBridge) -> SeekReply;
 }
 
@@ -90,6 +91,36 @@ impl StreamState {
         self.queued = 0;
         self.full = false;
     }
+
+    /// How to get data once the queue went below the low water mark. Servo stops fetching
+    /// on `enough_data` when it can fetch from an offset: it must then fetch from the first
+    /// byte it did not push. Asking it with `need_data` instead makes it seek to the
+    /// current time, which libmpv may serve from its cache without reading the stream, so
+    /// that the fetch would never resume.
+    fn refill(&mut self) -> Refill {
+        if self.end_of_stream {
+            return Refill::Nothing;
+        }
+        if !self.seekable {
+            return Refill::NeedData;
+        }
+        let offset = self.position + self.queued as u64;
+        // Servo pushed everything, but stopped before telling that the stream ended.
+        if self.size.is_some_and(|size| offset >= size) {
+            self.end_of_stream = true;
+            return Refill::Nothing;
+        }
+        // What the stopped fetch may still push is a duplicate: drop it.
+        self.seeking = true;
+        Refill::FetchFrom(offset)
+    }
+}
+
+/// What [`StreamState::refill`] decided.
+enum Refill {
+    Nothing,
+    NeedData,
+    FetchFrom(u64),
 }
 
 impl StreamBridge {
@@ -193,11 +224,22 @@ impl StreamBridge {
         state.position += copied as u64;
         let needs_data = state.full && state.queued < LOW_WATER_MARK;
         state.full &= !needs_data;
+        let refill = if needs_data {
+            state.refill()
+        } else {
+            Refill::Nothing
+        };
         let notifying = needs_data.then(|| self.notifying.lock().unwrap());
         drop(state);
 
         if notifying.is_some() {
-            self.observer.need_data();
+            match refill {
+                Refill::Nothing => {},
+                Refill::NeedData => self.observer.need_data(),
+                Refill::FetchFrom(offset) => {
+                    self.fetch_from(offset);
+                },
+            }
         }
         ReadResult::Data(copied)
     }
@@ -220,6 +262,12 @@ impl StreamBridge {
         state.seeking = true;
         drop(state);
 
+        self.fetch_from(offset).then_some(offset)
+    }
+
+    /// Asks Servo for the resource from `offset` on, once `seeking` is set. Returns whether
+    /// it will come; the stream is cancelled otherwise.
+    fn fetch_from(&self, offset: u64) -> bool {
         let reply = self.observer.seek_data(offset, self);
 
         let mut state = self.state.lock().unwrap();
@@ -235,7 +283,7 @@ impl StreamBridge {
         let cancelled = state.cancelled;
         drop(state);
         (reply.ack)();
-        (!cancelled).then_some(offset)
+        !cancelled
     }
 
     /// Fails current and future reads, and frees what is queued.
@@ -655,6 +703,40 @@ mod tests {
         // Back above the high water mark: reported again.
         bridge.push(vec![0; HIGH_WATER_MARK]);
         assert_eq!(enough(), 2);
+    }
+
+    #[test]
+    fn a_stopped_fetch_resumes_from_the_first_byte_not_pushed() {
+        let (bridge, calls) = observed_bridge(|_, bridge| {
+            // Pushed by the stopped fetch before Servo answers: already queued.
+            bridge.push(vec![9; 10]);
+            true
+        });
+        bridge.set_seekable(true);
+        bridge.push(vec![0; HIGH_WATER_MARK + 1]);
+        assert_eq!(calls.enough_data.load(Ordering::SeqCst), 1);
+
+        read_data(&bridge, HIGH_WATER_MARK + 2 - LOW_WATER_MARK);
+        assert_eq!(*calls.seeks.lock().unwrap(), [HIGH_WATER_MARK as u64 + 1]);
+        assert_eq!(calls.need_data.load(Ordering::SeqCst), 0);
+
+        bridge.push(vec![1; 3]);
+        bridge.end_of_stream();
+        let mut expected = vec![0; LOW_WATER_MARK - 1];
+        expected.extend_from_slice(&[1; 3]);
+        assert_eq!(read_to_end(&bridge, 4096), expected);
+    }
+
+    #[test]
+    fn a_fetch_pushed_to_its_end_is_not_resumed() {
+        let (bridge, calls) = observed_bridge(|_, _| panic!("unexpected seek"));
+        bridge.set_seekable(true);
+        bridge.set_size(HIGH_WATER_MARK as u64 + 1);
+        bridge.push(vec![0; HIGH_WATER_MARK + 1]);
+
+        // Servo stopped before telling that the stream ended: the bridge knows it did.
+        assert_eq!(read_to_end(&bridge, 4096).len(), HIGH_WATER_MARK + 1);
+        assert_eq!(calls.need_data.load(Ordering::SeqCst), 0);
     }
 
     #[test]

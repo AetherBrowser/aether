@@ -55,7 +55,19 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 ///   video file still plays.
 /// - `keep-open=yes`: pause at the end of the file instead of unloading it, so it can be
 ///   played again: the stream bridge does not keep the bytes mpv already read.
-const PLAYER_OPTIONS: &[(&str, &str)] = &[("pause", "yes"), ("vid", "no"), ("keep-open", "yes")];
+/// - `cache=yes`: keep what was read, so that seeking back, `stop()` included, does not
+///   fetch the media again, and read ahead of playback, which drains the stream bridge. It
+///   is otherwise only enabled for network streams, which `aether-media://` is not.
+/// - `demuxer-max-bytes` and `demuxer-max-back-bytes`: bound that cache, by default up to
+///   150 MiB ahead and 50 MiB behind for each media element.
+const PLAYER_OPTIONS: &[(&str, &str)] = &[
+    ("pause", "yes"),
+    ("vid", "no"),
+    ("keep-open", "yes"),
+    ("cache", "yes"),
+    ("demuxer-max-bytes", "32MiB"),
+    ("demuxer-max-back-bytes", "16MiB"),
+];
 
 /// Media instances per client context (a pipeline), weakly referenced.
 type Instances = HashMap<ClientContextId, Vec<(usize, Weak<Mutex<dyn MediaInstance>>)>>;

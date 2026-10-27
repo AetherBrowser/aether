@@ -508,12 +508,17 @@ mod tests {
     /// WAV, because FFmpeg seeks it by computing the byte offset of the target time, so a
     /// seek always reaches the stream, while it may read an MP3 up to the target instead.
     fn long_test_file() -> Vec<u8> {
+        sine_wav(300)
+    }
+
+    /// `seconds` of a 440 Hz sine as an 8 kHz mono WAV: 16 kB per second.
+    fn sine_wav(seconds: u32) -> Vec<u8> {
         const RATE: u32 = 8000;
-        let samples = (0..RATE * 300).map(|i| {
+        let samples = (0..RATE * seconds).map(|i| {
             let time = f64::from(i) / f64::from(RATE);
             ((time * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16
         });
-        let data_size = RATE * 300 * 2;
+        let data_size = RATE * seconds * 2;
         let mut wav = Vec::with_capacity(44 + data_size as usize);
         wav.extend_from_slice(b"RIFF");
         wav.extend_from_slice(&(36 + data_size).to_le_bytes());
@@ -599,18 +604,22 @@ mod tests {
         metadata: Metadata,
     }
 
-    /// Pushes `data` from `offset` in small chunks, as a network would, until the file
-    /// ends, the player is gone, or a newer fetch replaced this one.
+    /// How long a slow network takes to bring each 16 kB chunk.
+    const SLOW_NETWORK: Duration = Duration::from_millis(10);
+
+    /// Pushes `data` from `offset` in 16 kB chunks, one every `delay`, as a network would,
+    /// until the file ends, the player is gone, or a newer fetch replaced this one.
     fn fetch(
         bridge: Weak<StreamBridge>,
         data: Arc<Vec<u8>>,
         offset: usize,
         fetches: Arc<AtomicUsize>,
+        delay: Duration,
     ) {
         let fetch = fetches.fetch_add(1, Ordering::SeqCst) + 1;
         thread::spawn(move || {
             for chunk in data[offset..].chunks(16 * 1024) {
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(delay);
                 let Some(bridge) = bridge.upgrade() else {
                     return;
                 };
@@ -648,7 +657,13 @@ mod tests {
             player.set_input_size(data.len() as u64).unwrap();
             let first_push = FIRST_PUSH.min(data.len());
             player.push_data(data[..first_push].to_vec()).unwrap();
-            fetch(bridge.clone(), data.clone(), first_push, fetches.clone());
+            fetch(
+                bridge.clone(),
+                data.clone(),
+                first_push,
+                fetches.clone(),
+                SLOW_NETWORK,
+            );
 
             let current_answer = answer.clone();
             thread::spawn(move || {
@@ -664,6 +679,7 @@ mod tests {
                                     data.clone(),
                                     offset as usize,
                                     fetches.clone(),
+                                    SLOW_NETWORK,
                                 );
                             },
                             SeekAnswer::Refuse => lock.unlock(false),
@@ -1154,23 +1170,22 @@ mod tests {
     }
 
     #[test]
-    fn stop_fetches_the_media_again_from_its_start() {
+    fn stop_rewinds_from_the_cache() {
         let (player, servo) = load_seekable(SeekAnswer::Fetch);
         let handle = player.handle.get().unwrap();
-        // Play far from the start, so that libmpv no longer buffers it.
-        handle.command(&["seek", "250", "absolute"]).unwrap();
-        servo.expect_seek();
         player.play().unwrap();
         wait_until("playback to advance", || {
-            time_pos(handle).is_some_and(|seconds| seconds > 250.5)
+            time_pos(handle).is_some_and(|seconds| seconds > 1.0)
         });
 
         player.stop().unwrap();
-        // Time 0 is the first sample, right after the 44-byte WAV header.
-        assert_eq!(servo.expect_seek(), 44);
         wait_until("the rewind", || {
             time_pos(handle).is_some_and(|seconds| seconds < 0.05)
         });
+        // The start of the media is still in libmpv's cache: nothing is fetched again.
+        while let Ok(event) = servo.events.recv_timeout(Duration::from_millis(500)) {
+            assert!(!matches!(event, PlayerEvent::SeekData(..)));
+        }
         player.play().unwrap();
         wait_until("playback to start again", || {
             time_pos(handle).is_some_and(|seconds| seconds > 0.2)
@@ -1207,6 +1222,87 @@ mod tests {
         servo.expect(
             "the seek to be done",
             |event| matches!(event, PlayerEvent::SeekDone(position) if (position - 250.0).abs() < 0.5),
+        );
+    }
+
+    #[test]
+    fn a_media_larger_than_the_buffers_plays_to_its_end() {
+        // 50 minutes, about 48 MB: more than libmpv's cache (32 MiB) and the 8 MB the bridge
+        // then holds, past which it asks Servo to stop with `EnoughData`.
+        let data = Arc::new(sine_wav(3000));
+        let mut options = options();
+        // Decode as fast as possible: the media is long enough for libmpv to report its
+        // property changes.
+        options.push(("ao-null-untimed", "yes"));
+        let (player, events) = player_with_events_and_options(&options);
+        let player = Arc::new(Mutex::new(player));
+        let bridge = Arc::downgrade(&player.lock().unwrap().bridge);
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let resumed = Arc::new(AtomicUsize::new(0));
+        let (ended, end) = std::sync::mpsc::channel();
+
+        // Servo's reactions, from htmlmediaelement.rs: `EnoughData` cancels the fetch, a
+        // `NeedData` then seeks to the current position, and `SeekData` fetches again from
+        // the requested offset. That seek would be served from libmpv's cache, so the fetch
+        // would never resume: the player must resume it with `SeekData`.
+        thread::spawn({
+            // Weak, like Servo's media element: the test must be able to drop the player.
+            let player = Arc::downgrade(&player);
+            let (data, bridge, fetches, resumed) = (
+                data.clone(),
+                bridge.clone(),
+                fetches.clone(),
+                resumed.clone(),
+            );
+            move || {
+                let mut position = 0.0;
+                let mut cancelled = false;
+                while let Ok(event) = events.recv() {
+                    match event {
+                        PlayerEvent::PositionChanged(new_position) => position = new_position,
+                        PlayerEvent::EnoughData => {
+                            fetches.fetch_add(1, Ordering::SeqCst);
+                            cancelled = true;
+                        },
+                        PlayerEvent::NeedData if cancelled => {
+                            cancelled = false;
+                            let Some(player) = player.upgrade() else {
+                                return;
+                            };
+                            player.lock().unwrap().seek(position).unwrap();
+                        },
+                        PlayerEvent::SeekData(offset, lock) => {
+                            if std::mem::take(&mut cancelled) {
+                                resumed.fetch_add(1, Ordering::SeqCst);
+                            }
+                            lock.unlock(true);
+                            let (bridge, data, fetches) =
+                                (bridge.clone(), data.clone(), fetches.clone());
+                            fetch(bridge, data, offset as usize, fetches, Duration::ZERO);
+                        },
+                        PlayerEvent::EndOfStream => {
+                            let _ = ended.send(());
+                        },
+                        _ => {},
+                    }
+                }
+            }
+        });
+
+        {
+            let player = player.lock().unwrap();
+            player.set_seekable(true).unwrap();
+            player.set_input_size(data.len() as u64).unwrap();
+            player.push_data(data[..FIRST_PUSH].to_vec()).unwrap();
+            // A fast network: it fills the bridge before libmpv drains it.
+            fetch(bridge, data.clone(), FIRST_PUSH, fetches, Duration::ZERO);
+            player.play().unwrap();
+        }
+        end.recv_timeout(Duration::from_secs(60))
+            .expect("playback should reach the end of the media");
+        assert!(
+            resumed.load(Ordering::SeqCst) > 0,
+            "the fetch should have been stopped, then resumed"
         );
     }
 
