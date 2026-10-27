@@ -190,6 +190,8 @@ pub enum Event {
     /// The instance is being destroyed: no more events will come.
     Shutdown,
     FileLoaded,
+    /// Playback resumed after a seek, or started after the file was loaded.
+    PlaybackRestart,
     EndFile(EndFileReason),
     /// An observed property changed. `value` is [`Node::None`] when it is unavailable.
     PropertyChange {
@@ -212,6 +214,7 @@ impl Event {
                 ffi::MPV_EVENT_NONE => Event::None,
                 ffi::MPV_EVENT_SHUTDOWN => Event::Shutdown,
                 ffi::MPV_EVENT_FILE_LOADED => Event::FileLoaded,
+                ffi::MPV_EVENT_PLAYBACK_RESTART => Event::PlaybackRestart,
                 ffi::MPV_EVENT_END_FILE => {
                     let end_file = &*(event.data as *const ffi::mpv_event_end_file);
                     Event::EndFile(match end_file.reason {
@@ -448,10 +451,6 @@ impl MpvHandle {
     ///
     /// The bridge serves a single stream: once libmpv cancels it, when it unloads the
     /// file, the bytes already read are gone and the stream cannot be opened again.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "MpvPlayer does not use the bridge yet")
-    )]
     pub fn add_stream_protocol(&self, bridge: Arc<StreamBridge>) -> Result<(), MpvError> {
         // libmpv keeps the protocol, and calls into the bridge, until the instance is
         // destroyed (stream_cb.h): the handle keeps the bridge alive until then.
