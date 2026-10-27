@@ -692,6 +692,10 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
 
     update_preferences_from_command_line_arguments(&mut preferences, &cmd_args);
 
+    // Always enable the internal DevTools server so the native DevTools panel
+    // receives NewGlobal / NetworkEvent / ConsoleAPI telemetry.
+    preferences.devtools_server_enabled = true;
+
     // FIXME: enable JIT compilation on 32-bit Android after the startup crash issue (#31134) is fixed.
     if cfg!(target_os = "android") && cfg!(target_pointer_width = "32") {
         preferences.js_baseline_interpreter_enabled = false;

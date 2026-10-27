@@ -39,6 +39,31 @@ use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_url::ServoUrl;
 use uuid::Uuid;
 
+// ─── Global event hook for native DevTools panels ────────────────────────────
+//
+// `components/devtools` calls [`notify_event`] for every `DevtoolsControlMsg`
+// it receives. Embedders (e.g. `ports/aether`) register a handler via
+// [`set_event_hook`] to intercept engine telemetry in-process without
+// speaking the Firefox Remote Debugging TCP protocol.
+
+static EVENT_HOOK: std::sync::OnceLock<
+    Box<dyn Fn(&DevtoolsControlMsg) + Send + Sync>,
+> = std::sync::OnceLock::new();
+
+/// Register a callback invoked for every [`DevtoolsControlMsg`] received by
+/// the devtools server thread.  Only the first registration takes effect.
+pub fn set_event_hook(hook: impl Fn(&DevtoolsControlMsg) + Send + Sync + 'static) {
+    let _ = EVENT_HOOK.set(Box::new(hook));
+}
+
+/// Forward a [`DevtoolsControlMsg`] to the registered hook, if any.
+/// Called from the devtools server's `run` loop before normal processing.
+pub fn notify_event(msg: &DevtoolsControlMsg) {
+    if let Some(hook) = EVENT_HOOK.get() {
+        hook(msg);
+    }
+}
+
 // Information would be attached to NewGlobal to be received and show in devtools.
 // Extend these fields if we need more information.
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]

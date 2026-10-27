@@ -191,18 +191,20 @@ impl DevtoolsInstance {
         };
         println!("Binding devtools to {address}");
 
-        let bound = TcpListener::bind(address).ok().and_then(|l| {
-            l.local_addr()
-                .map(|addr| addr.port())
-                .ok()
-                .map(|port| (l, port))
-        });
+        let bound = TcpListener::bind(address)
+            .or_else(|_| TcpListener::bind(SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 0)))
+            .ok()
+            .and_then(|l| {
+                l.local_addr()
+                    .map(|addr| addr.port())
+                    .ok()
+                    .map(|port| (l, port))
+            });
 
         // A token shared with the embedder to bypass permission prompt.
-        let port = if bound.is_some() {
-            Ok(address.port())
-        } else {
-            Err(())
+        let port = match &bound {
+            Some((_, port)) => Ok(*port),
+            None => Err(()),
         };
         let token = format!("{:X}", rng().next_u32());
         embedder.send(EmbedderMsg::OnDevtoolsStarted(port, token.clone()));
@@ -257,6 +259,8 @@ impl DevtoolsInstance {
         let mut next_id = StreamId(0);
         while let Ok(msg) = self.receiver.recv() {
             trace!("{:?}", msg);
+            // Forward to the native DevTools panel hook (if registered).
+            devtools_traits::notify_event(&msg);
             match msg {
                 DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::AddClient(stream)) => {
                     let id = next_id;

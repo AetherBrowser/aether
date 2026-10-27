@@ -13,6 +13,8 @@ mod backtrace;
 mod crash_handler;
 #[cfg(not(any(target_os = "android", target_env = "ohos")))]
 pub(crate) mod desktop;
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+pub(crate) mod devtools;
 #[cfg(any(target_os = "android", target_env = "ohos"))]
 mod egl;
 mod history;
@@ -50,6 +52,9 @@ pub fn init_crypto() {
 }
 
 pub fn init_tracing(filter_directives: Option<&str>) {
+    // Install the DevtoolsControlMsg hook for native DevTools telemetry.
+    crate::devtools::install_engine_hook();
+
     #[cfg(not(feature = "tracing"))]
     {
         if filter_directives.is_some() {
@@ -91,6 +96,11 @@ pub fn init_tracing(filter_directives: Option<&str>) {
         };
 
         let subscriber = subscriber.with(filter);
+
+        // Capture tracing events into the DevTools console ring buffer.
+        let subscriber = subscriber.with(crate::devtools::DevToolsLogLayer::new(
+            crate::devtools::sender(),
+        ));
 
         // Same as SubscriberInitExt::init, but avoids initialising the tracing-log compat layer,
         // since it would break Servo’s FromScriptLogger and FromEmbederLogger.

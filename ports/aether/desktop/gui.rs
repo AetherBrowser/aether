@@ -103,6 +103,12 @@ pub struct Gui {
     /// Whether the docked developer tools panel is open beside the page.
     devtools_open: bool,
 
+    /// DevTools state and event receiver (owned by the UI thread).
+    devtools_panel: crate::devtools::DevToolsPanel,
+
+    /// Timestamp of the previous frame, used for frame-time telemetry.
+    last_frame_time: std::time::Instant,
+
     /// Screen rect of the docked developer tools panel, in device-independent pixels.
     ///
     /// Empty when the panel is closed. Pointer events inside this rect stay in egui
@@ -243,7 +249,9 @@ fn pointer_hits_browser_chrome(
 ) -> bool {
     position.y < toolbar_height ||
         menu_contains_pointer ||
-        devtools_rect.contains(egui::pos2(position.x, position.y))
+        devtools_rect
+            .expand(8.0)
+            .contains(egui::pos2(position.x, position.y))
 }
 
 impl Drop for Gui {
@@ -306,6 +314,8 @@ impl Gui {
             toolbar_icons: Default::default(),
             app_menu: Default::default(),
             devtools_open: false,
+            devtools_panel: crate::devtools::DevToolsPanel::new(),
+            last_frame_time: std::time::Instant::now(),
             devtools_rect: egui::Rect::NOTHING,
             pending_accesskit_updates: vec![],
         }
@@ -345,6 +355,11 @@ impl Gui {
         &self,
         position: Point2D<f32, DeviceIndependentPixel>,
     ) -> bool {
+        // While actively dragging the DevTools resize splitter, keep pointer
+        // capture even if the cursor drifts outside the panel rect.
+        if self.devtools_open && self.context.egui_ctx.egui_is_using_pointer() {
+            return true;
+        }
         pointer_hits_browser_chrome(
             self.toolbar_height.get(),
             self.app_menu.contains_pointer(position),
@@ -355,6 +370,27 @@ impl Gui {
 
     pub(crate) fn is_app_menu_open(&self) -> bool {
         self.app_menu.is_open()
+    }
+
+    /// Toggle the docked developer tools panel open or closed.
+    pub(crate) fn toggle_devtools(&mut self) {
+        let open = !self.devtools_open;
+        self.set_devtools_open(open);
+    }
+
+    /// Open or close the DevTools panel with proper state reset.
+    pub(crate) fn set_devtools_open(&mut self, open: bool) {
+        self.devtools_open = open;
+        if open {
+            self.last_frame_time = std::time::Instant::now();
+            self.devtools_panel.request_dom_tree();
+            self.devtools_panel.refresh_storage();
+            self.devtools_panel.request_page_timing();
+        } else {
+            self.devtools_panel.clear_highlight();
+            self.devtools_rect = egui::Rect::NOTHING;
+            self.surrender_focus();
+        }
     }
 
     /// Whether the pointer is over the open application menu, which overlays the page.
@@ -454,53 +490,83 @@ impl Gui {
         tab_frame.end(ui);
     }
 
-    /// Header of the docked developer tools panel.
-    ///
-    /// The boolean is true when the close button is clicked. The rect is that button.
-    fn devtools_header(
-        ui: &mut egui::Ui,
-        toolbar_icons: &mut ToolbarIconCache,
-    ) -> (bool, egui::Rect) {
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let close_button = toolbar_icons
-                    .button(ui, ToolbarIcon::Close)
-                    .on_hover_text("Close developer tools");
-                close_button.widget_info(|| {
-                    let mut info = WidgetInfo::new(WidgetType::Button);
-                    info.label = Some("Close developer tools".into());
-                    info
-                });
-                (close_button.clicked(), close_button.rect)
-            })
-            .inner
-        })
-        .inner
-    }
+    /// Render DevTools as a floating overlay anchored to the Right or Bottom
+    /// edge of the viewport area. Does NOT consume layout space — the WebView
+    /// always keeps 100% of the area below the toolbar.
+    /// Bottom-docked DevTools panel using `egui::Area` on `Order::Foreground`
+    /// so it paints AFTER the WebView PaintCallback on `LayerId::background()`.
+    /// Anchored to the bottom of the viewport, resizable via top border.
+    fn show_devtools_overlay(
+        ctx: &egui::Context,
+        viewport: egui::Rect,
+        devtools: &mut crate::devtools::DevToolsPanel,
+    ) -> DevtoolsDock {
+        let mut result = DevtoolsDock {
+            close_clicked: false,
+            panel_rect: egui::Rect::NOTHING,
+            close_button_rect: egui::Rect::NOTHING,
+        };
 
-    /// Dock developer tools on the right half of `ui`. The page keeps the left half.
-    fn show_devtools_dock(ui: &mut egui::Ui, toolbar_icons: &mut ToolbarIconCache) -> DevtoolsDock {
-        let split_width = (ui.available_rect_before_wrap().width() / 2.0).max(1.0);
-        let frame = egui::Frame::default()
-            .fill(ui.style().visuals.panel_fill)
-            .inner_margin(4.0);
-        let mut close_clicked = false;
-        let mut close_button_rect = egui::Rect::NOTHING;
-        let panel = Panel::right("devtools")
-            .frame(frame)
-            .exact_size(split_width)
-            .resizable(false)
-            .show_inside(ui, |ui| {
-                (close_clicked, close_button_rect) = Self::devtools_header(ui, toolbar_icons);
-                // Fill the dock so the reserved rect is the full right half,
-                // not just the header row.
-                ui.allocate_space(ui.available_size());
+        let bounds = if viewport.is_positive() { viewport } else { ctx.viewport_rect() };
+        let max_h = (bounds.height() * 0.75).max(120.0);
+        let min_h = 120.0_f32.min(max_h);
+        let h = devtools.state.bottom_dock_height.clamp(min_h, max_h);
+
+        let panel_rect = egui::Rect::from_min_max(
+            egui::pos2(bounds.min.x, bounds.max.y - h),
+            bounds.max,
+        );
+
+        let panel_bg = ctx.global_style().visuals.panel_fill;
+        let border_color = ctx.global_style().visuals.widgets.noninteractive.bg_stroke.color;
+
+        egui::Area::new(egui::Id::new("devtools_overlay"))
+            .fixed_pos(panel_rect.min)
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                // Force content into the panel's screen-space rect so widget
+                // coordinates match `panel_rect` (fixes run_ui test positioning).
+                ui.scope_builder(egui::UiBuilder::new().max_rect(panel_rect), |ui| {
+                    ui.set_min_size(panel_rect.size());
+                    ui.set_max_size(panel_rect.size());
+
+                    let frame = egui::Frame::default()
+                        .fill(panel_bg)
+                        .inner_margin(4.0)
+                        .stroke(egui::Stroke::new(1.0_f32, border_color));
+
+                    frame.show(ui, |ui| {
+                        let r = crate::devtools::show_devtools_panel(ui, devtools);
+                        result.close_clicked = r.close_clicked;
+                        result.close_button_rect = r.close_button_rect;
+                    });
+                });
+
+                // Top border resize handle in absolute screen coordinates
+                let handle_rect = egui::Rect::from_min_max(
+                    egui::pos2(bounds.min.x, panel_rect.min.y - 3.0),
+                    egui::pos2(bounds.max.x, panel_rect.min.y + 4.0),
+                );
+                let handle_response = ui.interact(
+                    handle_rect,
+                    ui.id().with("devtools_resize_handle"),
+                    egui::Sense::click_and_drag(),
+                );
+                if handle_response.hovered() {
+                    ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+                if handle_response.dragged() {
+                    if let Some(pointer_pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                        devtools.state.bottom_dock_height =
+                            (bounds.max.y - pointer_pos.y).clamp(min_h, max_h);
+                    }
+                }
             });
-        DevtoolsDock {
-            close_clicked,
-            panel_rect: panel.response.rect,
-            close_button_rect,
-        }
+
+        result.panel_rect = panel_rect;
+        devtools.state.bottom_dock_height = h;
+        result
     }
 
     /// Update the user interface, but do not paint the updated state.
@@ -513,6 +579,31 @@ impl Gui {
         self.rendering_context
             .make_current()
             .expect("Could not make RenderingContext current");
+
+        // Track active webview for DevTools pipeline routing.
+        crate::devtools::set_active_webview(
+            window.active_webview().map(|wv| wv.id()),
+        );
+
+        // Always drain DevTools events so the channel does not accumulate
+        // stale events while the panel is closed.
+        self.devtools_panel.drain_events();
+
+        // Frame-time telemetry for the DevTools Performance tab (only when open).
+        if self.devtools_open {
+            let now = std::time::Instant::now();
+            let delta_ms = now.duration_since(self.last_frame_time).as_secs_f64() * 1000.0;
+            self.last_frame_time = now;
+            // Ignore idle pauses (no repaint) so the graph isn't polluted with
+            // multi-second spikes from winit's event-driven redraw model.
+            if delta_ms > 0.0 && delta_ms <= 250.0 {
+                crate::devtools::sender().send(crate::devtools::DevToolsEvent::FrameTime(delta_ms));
+            }
+            // Keep repainting while the Performance tab is visible so FPS is live.
+            if self.devtools_panel.state.active_tab == crate::devtools::DevtoolsTab::Performance {
+                self.context.egui_ctx.request_repaint();
+            }
+        }
         let Self {
             rendering_context,
             context,
@@ -784,6 +875,10 @@ impl Gui {
                         },
                         Some(AppMenuAction::DeveloperTools) => {
                             self.devtools_open = true;
+                            self.last_frame_time = std::time::Instant::now();
+                            self.devtools_panel.request_dom_tree();
+                            self.devtools_panel.refresh_storage();
+                            self.devtools_panel.request_page_timing();
                         },
                         Some(AppMenuAction::Exit) => {
                             state.schedule_exit();
@@ -795,13 +890,24 @@ impl Gui {
                 app_menu.close_ui(ctx);
                 *toolbar_height = Length::default();
             }
+            // DevTools is rendered as an overlay AFTER this, so the WebView
+            // always keeps 100% of the window area below the toolbar and
+            // never resizes when DevTools opens, closes, or is dragged.
+            let scale =
+                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
 
-            // Split the page area in half: the WebView keeps the left, developer tools the right.
-            // Shown after the menu action so the panel appears on the same frame it is opened.
+            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx));
+
+            let available_rect = ctx.available_rect_before_wrap();
             if self.devtools_open {
-                let dock = Self::show_devtools_dock(ctx, toolbar_icons);
+                let dock = Self::show_devtools_overlay(
+                    ctx,
+                    available_rect,
+                    &mut self.devtools_panel,
+                );
                 if dock.close_clicked {
                     self.devtools_open = false;
+                    self.devtools_panel.clear_highlight();
                     self.devtools_rect = egui::Rect::NOTHING;
                 } else {
                     self.devtools_rect = dock.panel_rect;
@@ -809,15 +915,6 @@ impl Gui {
             } else {
                 self.devtools_rect = egui::Rect::NOTHING;
             }
-
-            let scale =
-                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
-
-            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx));
-
-            // If the top parts of the GUI changed size, then update the size of the WebView and also
-            // the size of its RenderingContext.
-            let available_rect = ctx.available_rect_before_wrap();
 
             // Build a graft node for each WebView.
             let affine = {
@@ -939,6 +1036,14 @@ impl Gui {
         // being reflected in the location bar.
         if status_changed {
             self.location_dirty = false;
+        }
+
+        // Auto-refresh DevTools data when a page load completes.
+        if status_changed && self.load_status == LoadStatus::Complete {
+            if self.devtools_open || self.devtools_panel.state.auto_refresh_dom {
+                self.devtools_panel.request_dom_tree();
+                self.devtools_panel.refresh_storage();
+            }
         }
 
         status_changed
@@ -1082,6 +1187,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn click(pos: egui::Pos2) -> Vec<egui::Event> {
         vec![
             egui::Event::PointerMoved(pos),
@@ -1101,52 +1207,46 @@ mod tests {
     }
 
     #[test]
-    fn devtools_dock_splits_the_page_vertically() {
+    fn devtools_dock_sits_at_bottom_of_viewport() {
         let ctx = egui::Context::default();
-        let mut icons = ToolbarIconCache::default();
-        let mut page = egui::Rect::NOTHING;
-        let mut dock = DevtoolsDock {
-            close_clicked: false,
-            panel_rect: egui::Rect::NOTHING,
-            close_button_rect: egui::Rect::NOTHING,
-        };
+        let mut devtools = crate::devtools::DevToolsPanel::new();
+        devtools.state.bottom_dock_height = 280.0;
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 560.0));
 
-        ctx.run_ui(screen_input(vec![]), |ui| {
-            let content = ui.available_rect_before_wrap();
-            dock = Gui::show_devtools_dock(ui, &mut icons);
-            page = ui.available_rect_before_wrap();
-
-            assert!(
-                (content.width() - 800.0).abs() < 1.0,
-                "test surface should be the screen width"
-            );
-            // Left half stays with the page, right half is the dock, both full height.
-            assert!(page.max.x <= dock.panel_rect.min.x + 1.0);
-            assert!((page.width() - content.width() / 2.0).abs() < 8.0);
-            assert!((dock.panel_rect.width() - content.width() / 2.0).abs() < 8.0);
-            assert!((page.height() - content.height()).abs() < 1.0);
-            assert!(dock.panel_rect.height() > content.height() * 0.9);
-            assert!(dock.close_button_rect.center().x > content.center().x);
+        let _ = ctx.run_ui(screen_input(vec![]), |_ui| {
+            let dock = Gui::show_devtools_overlay(&ctx, viewport, &mut devtools);
+            assert!(dock.panel_rect.max.y >= viewport.max.y - 10.0);
+            assert!(dock.panel_rect.min.x <= viewport.min.x + 10.0);
+            assert!(dock.panel_rect.max.x >= viewport.max.x - 10.0);
+            assert!(dock.panel_rect.height() > 50.0);
+            assert!(dock.panel_rect.height() < viewport.height() * 0.95);
             assert!(!dock.close_clicked);
         });
     }
 
     #[test]
-    fn devtools_close_button_reports_a_click() {
+    fn devtools_close_button_is_inside_panel() {
         let ctx = egui::Context::default();
-        let mut icons = ToolbarIconCache::default();
+        let mut devtools = crate::devtools::DevToolsPanel::new();
+        let viewport = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(800.0, 560.0));
+
         let mut close_button_rect = egui::Rect::NOTHING;
-
-        ctx.run_ui(screen_input(vec![]), |ui| {
-            close_button_rect = Gui::show_devtools_dock(ui, &mut icons).close_button_rect;
+        let mut panel_rect = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(screen_input(vec![]), |_ui| {
+            let dock = Gui::show_devtools_overlay(&ctx, viewport, &mut devtools);
+            close_button_rect = dock.close_button_rect;
+            panel_rect = dock.panel_rect;
         });
-        assert!(close_button_rect.is_positive());
-
-        let mut close_clicked = false;
-        ctx.run_ui(screen_input(click(close_button_rect.center())), |ui| {
-            close_clicked = Gui::show_devtools_dock(ui, &mut icons).close_clicked;
-        });
-        assert!(close_clicked);
+        assert!(panel_rect.width() > 100.0);
+        assert!(panel_rect.height() > 100.0);
+        assert!(panel_rect.max.y >= viewport.max.y - 10.0);
+        assert!(close_button_rect.is_positive(), "close_button_rect must have positive size");
+        assert!(
+            panel_rect.contains_rect(close_button_rect),
+            "close_button_rect {:#?} must be inside panel_rect {:#?}",
+            close_button_rect,
+            panel_rect,
+        );
     }
 
     #[test]

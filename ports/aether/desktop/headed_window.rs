@@ -346,12 +346,42 @@ impl HeadedWindow {
     }
 
     /// Handle key events before sending them to Servo.
+    /// Check if a keyboard event is a DevTools toggle shortcut (F12 or Ctrl+Shift+I).
+    fn is_devtools_shortcut(key_event: &KeyboardEvent) -> bool {
+        if !key_event.event.state.is_down() {
+            return false;
+        }
+        let key = &key_event.event.key;
+        let mods = key_event.event.modifiers;
+        // Bare F12.
+        if *key == Key::Named(NamedKey::F12) && mods.is_empty() {
+            return true;
+        }
+        // Ctrl+Shift+F12.
+        if *key == Key::Named(NamedKey::F12) && mods == Modifiers::CONTROL | Modifiers::SHIFT {
+            return true;
+        }
+        // Ctrl+Shift+I.
+        let is_i = matches!(key, Key::Character(c) if c == "i" || c == "I");
+        if is_i && mods == Modifiers::CONTROL | Modifiers::SHIFT {
+            return true;
+        }
+        false
+    }
+
     fn handle_intercepted_key_bindings(
         &self,
         state: Rc<RunningAppState>,
         window: &Rc<ServoShellWindow>,
         key_event: &KeyboardEvent,
     ) -> bool {
+        // F12 toggles DevTools regardless of whether a WebView is active.
+        if Self::is_devtools_shortcut(key_event) {
+            self.gui.borrow_mut().toggle_devtools();
+            self.winit_window.request_redraw();
+            return true;
+        }
+
         let Some(active_webview) = window.active_webview() else {
             return false;
         };
@@ -624,6 +654,22 @@ impl HeadedWindow {
                 // component has keyboard focus.
             },
             ref event => {
+                // Track modifier state for shortcut matching.
+                if let WindowEvent::ModifiersChanged(modifiers) = event {
+                    self.modifiers_state.set(modifiers.state());
+                }
+
+                // Check DevTools toggle shortcuts before egui so F12 works
+                // even when a TextEdit inside DevTools has keyboard focus.
+                if let WindowEvent::KeyboardInput { event: kev, .. } = event {
+                    let kb = keyboard_event_from_winit(kev, self.modifiers_state.get());
+                    if Self::is_devtools_shortcut(&kb) {
+                        self.gui.borrow_mut().toggle_devtools();
+                        self.winit_window.request_redraw();
+                        return;
+                    }
+                }
+
                 let response = self
                     .gui
                     .borrow_mut()
@@ -650,6 +696,22 @@ impl HeadedWindow {
                     // Note that servo doesn’t yet support tabbing through links and inputs
                     consumed = response.consumed;
                 }
+
+                // When the pointer is over egui chrome (toolbar, DevTools),
+                // capture mouse and scroll events so they never leak to the WebView.
+                if should_forward_mouse_event_to_egui() {
+                    match event {
+                        WindowEvent::MouseInput { .. } |
+                        WindowEvent::MouseWheel { .. } |
+                        WindowEvent::CursorMoved { .. } => {
+                            consumed = true;
+                            if let WindowEvent::CursorMoved { .. } = event {
+                                self.clear_page_hover_under_menu(&window);
+                            }
+                        },
+                        _ => {},
+                    }
+                }
                 // Clicks, hover, and Escape while the menu is open must not reach the page.
                 // Cursor moves are still delivered to egui above so menu rows can highlight.
                 if self.gui.borrow().is_app_menu_open() {
@@ -672,6 +734,19 @@ impl HeadedWindow {
                     }
                 }
             },
+        }
+
+        // F12 must work even when no WebView is active — handle it before
+        // the active-webview gate below.
+        if !consumed {
+            if let WindowEvent::KeyboardInput { event, .. } = &event {
+                let kev = keyboard_event_from_winit(event, self.modifiers_state.get());
+                if Self::is_devtools_shortcut(&kev) {
+                    self.gui.borrow_mut().toggle_devtools();
+                    self.winit_window.request_redraw();
+                    return;
+                }
+            }
         }
 
         if !consumed && let Some(webview) = window.active_webview() {
