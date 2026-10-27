@@ -1075,10 +1075,33 @@ mod tests {
         options.push(("ao-null-untimed", "yes"));
         let (player, events) = player_with_events_and_options(&options);
         push_file(&player, &test_file());
+        let PlayerEvent::MetadataUpdated(metadata) =
+            expect_event(&events, "the metadata", |event| {
+                matches!(event, PlayerEvent::MetadataUpdated(_))
+            })
+        else {
+            unreachable!()
+        };
+        let duration = metadata.duration.unwrap().as_secs_f64();
         player.play().unwrap();
-        expect_event(&events, "the end of stream", |event| {
-            matches!(event, PlayerEvent::EndOfStream)
-        });
+        let next = || {
+            expect_event(&events, "the end of stream", |event| {
+                matches!(
+                    event,
+                    PlayerEvent::PositionChanged(_) | PlayerEvent::EndOfStream
+                )
+            })
+        };
+        let mut position = None;
+        while let PlayerEvent::PositionChanged(new_position) = next() {
+            position = Some(new_position);
+        }
+        // Servo only fires `ended` once the position it knows reaches the duration.
+        let position = position.expect("a position before the end of stream");
+        assert!(
+            (position - duration).abs() < 1e-3,
+            "the end of stream comes at {position} s, not at the duration ({duration} s)"
+        );
     }
 
     #[test]
@@ -1222,6 +1245,24 @@ mod tests {
     #[test]
     fn seeking_without_a_media_fails() {
         assert!(matches!(player().seek(1.0), Err(PlayerError::Backend(_))));
+    }
+
+    #[test]
+    fn a_media_played_to_its_end_can_be_seeked_back() {
+        // What Servo does on `play()` after `ended`: seek to the start, then play.
+        let mut options = options();
+        options.push(("ao-null-untimed", "yes"));
+        let (player, events) = player_with_events_and_options(&options);
+        let servo = FakeServo::load(&player, events, test_file(), true);
+        player.play().unwrap();
+        servo.expect("the end of stream", |event| {
+            matches!(event, PlayerEvent::EndOfStream)
+        });
+        player.seek(0.0).unwrap();
+        servo.expect(
+            "the seek back to be done",
+            |event| matches!(event, PlayerEvent::SeekDone(position) if *position < 0.5),
+        );
     }
 
     #[test]

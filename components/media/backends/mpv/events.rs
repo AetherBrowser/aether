@@ -120,6 +120,26 @@ struct EventTranslator {
 
 impl EventTranslator {
     fn translate(&mut self, event: Event, handle: &MpvHandle, now: Instant) -> Vec<PlayerEvent> {
+        let mut events = self.translate_event(event, handle, now);
+        // Servo only ends playback once the last position it got reaches the duration
+        // (`ended_playback`), which the position updates, sent every
+        // `POSITION_UPDATE_INTERVAL`, may not have done: report the end of the media first.
+        if let Some(index) = events
+            .iter()
+            .position(|event| matches!(event, PlayerEvent::EndOfStream)) &&
+            let Ok(Node::Double(duration)) = handle.get_node("duration")
+        {
+            events.insert(index, PlayerEvent::PositionChanged(duration));
+        }
+        events
+    }
+
+    fn translate_event(
+        &mut self,
+        event: Event,
+        handle: &MpvHandle,
+        now: Instant,
+    ) -> Vec<PlayerEvent> {
         match event {
             Event::FileLoaded => {
                 self.file_loaded = true;
