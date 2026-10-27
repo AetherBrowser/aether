@@ -1,4 +1,8 @@
-# The Servo Parallel Browser Engine Project
+# The Aether Browser Project
+
+[![Build status](https://github.com/AetherBrowser/aether/workflows/GitHub%20Release/badge.svg)](https://github.com/AetherBrowser/aether/actions?query=workflow%3A"GitHub+Release")
+[![Coverage](https://codecov.io/gh/AetherBrowser/aether/branch/master/graph/badge.svg)](https://codecov.io/gh/AetherBrowser/aether)
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-blue.svg)](https://github.com/AetherBrowser/aether/LICENSE)
 
 Servo is a prototype web browser engine written in the
 [Rust](https://github.com/rust-lang/rust) language. It is currently developed on

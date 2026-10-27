@@ -241,6 +241,7 @@ impl IndependentFormattingContext {
                     node_and_style_info,
                     non_replaced_contents,
                     propagated_data,
+                    base_fragment_info.flags,
                 ))
             },
             DisplayInside::Flex => {
@@ -353,6 +354,7 @@ impl IndependentFormattingContext {
         containing_block: &IndefiniteContainingBlock,
         auto_minimum: &LogicalVec2<Au>,
         auto_block_size_stretches_to_containing_block: bool,
+        skippable_for_block_percentage_quirk: bool,
     ) -> InlineContentSizesResult {
         sizing::outer_inline(
             &self.base,
@@ -362,6 +364,7 @@ impl IndependentFormattingContext {
             auto_block_size_stretches_to_containing_block,
             self.is_replaced(),
             true, /* establishes_containing_block */
+            skippable_for_block_percentage_quirk,
             |padding_border_sums| self.preferred_aspect_ratio(padding_border_sums),
             |constraint_space| self.inline_content_sizes(layout_context, constraint_space),
             |preferred_aspect_ratio| {
@@ -398,7 +401,7 @@ impl IndependentFormattingContext {
                 taffy_container.repair_style(new_style)
             },
             IndependentFormattingContextContents::Table(table) => {
-                table.repair_style(context, new_style)
+                table.repair_style(context, new_style, &self.base)
             },
         }
     }
@@ -516,15 +519,15 @@ impl IndependentFormattingContext {
         preferred_aspect_ratio: Option<AspectRatio>,
         lazy_block_size: &LazySize,
     ) -> (IndependentFormattingContextLayoutResult, bool) {
-        if let Some(cached_layout_result) = self
+        let content_block_size_under_default_constraint = match self
             .base
             .cached_independent_formatting_context_layout_if_applicable(
                 positioning_context,
                 containing_block_for_children,
-            )
-        {
-            return (cached_layout_result, true);
-        }
+            ) {
+            Ok(cached_layout_result) => return (cached_layout_result, true),
+            Err(v) => v,
+        };
 
         #[cfg(feature = "tracing")]
         tracing::debug!(
@@ -543,6 +546,7 @@ impl IndependentFormattingContext {
         self.base.cache_independent_formatting_context_layout(
             containing_block_for_children,
             &child_positioning_context,
+            content_block_size_under_default_constraint,
             &result,
         );
         positioning_context.append(child_positioning_context);
@@ -567,6 +571,38 @@ impl IndependentFormattingContext {
             lazy_block_size,
         )
         .0
+    }
+
+    pub(crate) fn content_block_size_under_default_constraint(
+        &self,
+        layout_context: &LayoutContext,
+        positioning_context: &mut PositioningContext,
+        inline_size: Au,
+        containing_block: &ContainingBlock,
+        preferred_aspect_ratio: Option<AspectRatio>,
+        lazy_block_size: &LazySize,
+    ) -> Au {
+        if let Some(content_block_size) = self
+            .base
+            .cached_content_block_size_under_default_constraint_if_applicable(inline_size)
+        {
+            return content_block_size;
+        }
+        self.layout(
+            layout_context,
+            positioning_context,
+            &ContainingBlock {
+                size: ContainingBlockSize {
+                    inline: inline_size,
+                    block: SizeConstraint::default(),
+                },
+                style: self.style(),
+            },
+            containing_block,
+            preferred_aspect_ratio,
+            lazy_block_size,
+        )
+        .content_block_size
     }
 
     #[inline]

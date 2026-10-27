@@ -180,9 +180,12 @@ impl UAShadowRoot<ShadowTree> for HTMLSelectElement {
             .AppendChild(cx, chevron_container.upcast::<Node>())
             .unwrap();
 
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            selected_option: text.as_traced(),
-        });
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                selected_option: text.as_traced(),
+            });
     }
 
     fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
@@ -389,7 +392,7 @@ impl HTMLSelectElement {
             .collect()
     }
 
-    pub(crate) fn show_menu(&self, no_gc: &NoGC) {
+    pub(crate) fn show_menu(&self, cx: &mut JSContext) {
         // Collect list of optgroups and options
         let mut index = 0;
         let mut embedder_option_from_option = |option: &HTMLOptionElement| {
@@ -426,7 +429,7 @@ impl HTMLSelectElement {
             .collect();
 
         let selected_options = self
-            .list_of_options(no_gc)
+            .list_of_options(cx.no_gc())
             .enumerate()
             .filter(|(_, option)| option.Selected())
             .map(|(index, _)| index)
@@ -435,6 +438,7 @@ impl HTMLSelectElement {
         self.owner_document()
             .embedder_controls()
             .show_embedder_control(
+                cx,
                 ControlElement::Select(Dom::from_ref(self)),
                 EmbedderControlRequest::SelectElement(SelectElementRequest {
                     options,
@@ -443,11 +447,11 @@ impl HTMLSelectElement {
                 }),
                 None,
             );
-        self.upcast::<Element>().set_open_state(true);
+        self.upcast::<Element>().set_open_state(cx.no_gc(), true);
     }
 
     pub(crate) fn handle_embedder_response(&self, cx: &mut JSContext, selected_values: Vec<usize>) {
-        self.upcast::<Element>().set_open_state(false);
+        self.upcast::<Element>().set_open_state(cx.no_gc(), false);
 
         let selected_values = if self.Multiple() {
             selected_values
@@ -814,12 +818,12 @@ impl VirtualMethods for HTMLSelectElement {
                 let el = self.upcast::<Element>();
                 match mutation {
                     AttributeMutation::Set(_) => {
-                        el.set_disabled_state(true);
-                        el.set_enabled_state(false);
+                        el.set_disabled_state(cx.no_gc(), true);
+                        el.set_enabled_state(cx.no_gc(), false);
                     },
                     AttributeMutation::Removed => {
-                        el.set_disabled_state(false);
-                        el.set_enabled_state(true);
+                        el.set_disabled_state(cx.no_gc(), false);
+                        el.set_enabled_state(cx.no_gc(), true);
                         el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
                     },
                 }
@@ -859,10 +863,10 @@ impl VirtualMethods for HTMLSelectElement {
         {
             el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
         } else {
-            el.check_disabled_attribute();
+            el.check_disabled_attribute(cx.no_gc());
         }
 
-        self.owner_document()
+        self.owner_document_unrooted(cx.no_gc())
             .embedder_controls()
             .hide_embedder_control(self.upcast());
     }
@@ -972,7 +976,7 @@ impl Activatable for HTMLSelectElement {
             return;
         }
 
-        self.show_menu(cx.no_gc());
+        self.show_menu(cx);
     }
 }
 

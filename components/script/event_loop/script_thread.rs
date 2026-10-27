@@ -61,6 +61,7 @@ use js::rust::wrappers2::{JS_AddInterruptCallback, JS_GC, JS_GetGCParameter, Set
 use layout_api::{LayoutConfig, LayoutFactory, RestyleReason, ScriptThreadFactory};
 use media::WindowGLContext;
 use metrics::MAX_TASK_NS;
+use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::fetch::fetch_controller::FetchController;
 use net_traits::image_cache::{ImageCacheFactory, ImageCacheResponseMessage};
 use net_traits::pub_domains::is_same_site;
@@ -89,8 +90,8 @@ use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSender;
 use servo_base::id::{
-    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId, WebViewId,
-    WorkerId,
+    BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespace, ScriptEventLoopId,
+    ServiceWorkerId, WebViewId, WorkerId,
 };
 use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 use servo_base::{Epoch, generic_channel};
@@ -101,8 +102,9 @@ use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     HistoryTraversalSource, LoadData, LoadOrigin, NavigationHistoryBehavior, PaintMetricEvent,
     RemoteFocusOperation, ScreenshotReadinessResponse, ScriptToConstellationChan,
-    ScriptToConstellationMessage, ScrollStateUpdate, SessionHistoryTraversalRequest,
-    StructuredSerializedData, TargetSnapshotParams, TraversalDirection, WindowSizeType,
+    ScriptToConstellationMessage, ScrollStateUpdate, ServiceWorkerState,
+    SessionHistoryTraversalRequest, StructuredSerializedData, TargetSnapshotParams,
+    TraversalDirection, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use smallvec::SmallVec;
@@ -127,6 +129,7 @@ use crate::dom::bindings::conversions::{
     ConversionResult, FromJSValConvertible, StringificationBehavior,
 };
 use crate::dom::bindings::inheritance::Castable;
+use crate::dom::bindings::refcounted::{LivePromiseReferences, Trusted};
 use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::{CspReporting, GlobalCspReporting, Violation};
@@ -341,10 +344,6 @@ pub struct ScriptThread {
 
     /// The JavaScript runtime.
     js_runtime: Rc<Runtime>,
-
-    /// List of pipelines that have been owned and closed by this script thread.
-    #[no_trace]
-    closed_pipelines: DomRefCell<FxHashSet<PipelineId>>,
 
     mutation_observers: Rc<ScriptMutationObservers>,
 
@@ -887,7 +886,7 @@ impl ScriptThread {
             )
         };
 
-        let task_queue = TaskQueue::new(self_receiver, self_sender.clone());
+        let task_queue = TaskQueue::new(self_receiver);
 
         let closing = Arc::new(AtomicBool::new(false));
         let background_hang_monitor_exit_signal = BHMExitSignal {
@@ -987,7 +986,6 @@ impl ScriptThread {
                     closing,
                     timer_scheduler: Default::default(),
                     js_runtime: Rc::new(runtime),
-                    closed_pipelines: DomRefCell::new(FxHashSet::default()),
                     mutation_observers: Default::default(),
                     system_font_service: Arc::new(state.system_font_service.to_proxy()),
                     #[cfg(feature = "webgl")]
@@ -1296,7 +1294,7 @@ impl ScriptThread {
 
             // Run the resize observer steps.
             let mut depth = Default::default();
-            while document.gather_active_resize_observations_at_depth(cx.no_gc(), &depth) {
+            while document.gather_active_resize_observations_at_depth(cx, &depth) {
                 // Note: this will reflow the doc.
                 depth = document.broadcast_active_resize_observations(cx);
             }
@@ -1824,8 +1822,43 @@ impl ScriptThread {
         value
     }
 
+    /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
+    fn handle_update_service_worker_state(
+        &self,
+        pipeline_id: PipelineId,
+        state: ServiceWorkerState,
+        worker_id: ServiceWorkerId,
+    ) {
+        let Some(global) = self.documents.borrow().find_global(pipeline_id) else {
+            log::warn!(
+                "Received update sw worker state for unknown pipeline: {:?}",
+                pipeline_id
+            );
+            return;
+        };
+
+        let trusted_global = Trusted::new(&*global);
+
+        // Step 4: For each settingsObject of settingsObjects queue a task on settingsObject’s responsible event loop
+        // in the DOM manipulation task source to run the following steps.
+        let task = task!(update_sw_state: move |cx| {
+            trusted_global.root().update_service_worker_state(cx, state, worker_id);
+        });
+        global
+            .task_manager()
+            .dom_manipulation_task_source()
+            .queue(task);
+    }
+
     fn handle_msg_from_constellation(&self, cx: &mut JSContext, msg: ScriptThreadMessage) {
         match msg {
+            ScriptThreadMessage::UpdateServiceWorkerState {
+                pipeline_id,
+                state,
+                worker_id,
+            } => {
+                self.handle_update_service_worker_state(pipeline_id, state, worker_id);
+            },
             ScriptThreadMessage::StopDelayingLoadEventsMode(pipeline_id) => {
                 self.handle_stop_delaying_load_events_mode(pipeline_id)
             },
@@ -3221,7 +3254,7 @@ impl ScriptThread {
         metadata: Option<&Metadata>,
         origin: MutableOrigin,
     ) -> Option<DomRoot<Document>> {
-        if self.closed_pipelines.borrow().contains(&pipeline_id) {
+        if self.task_queue.is_pipeline_closed(&pipeline_id) {
             // If the pipeline closed, do not process the headers.
             return None;
         }
@@ -3332,13 +3365,16 @@ impl ScriptThread {
                 // garbage collected. See servo/servo#45239.
                 window.image_cache().clear();
 
+                // Tear down the GlobalScope to ensure that garbage collection happens
+                // immediately.
+                window.as_global_scope().tear_down();
+
                 debug!("{pipeline_id}: Clearing JavaScript runtime");
                 window.clear_js_runtime();
             }
         }
 
         // Prevent any further work for this Pipeline.
-        self.closed_pipelines.borrow_mut().insert(pipeline_id);
         self.task_queue
             .remove_tasks_for_exiting_pipeline(&pipeline_id);
 
@@ -3358,6 +3394,10 @@ impl ScriptThread {
         #[cfg(feature = "devtools")]
         self.devtools_state.notify_pipeline_exited(pipeline_id);
         self.pipeline_to_node_ids.borrow_mut().remove(&pipeline_id);
+
+        // This prunes any promises that are now no longer active due to this pipeline going away
+        // or that have been dropped on other threads.
+        LivePromiseReferences::expensive_prune_dropped_promises();
 
         debug!("{pipeline_id}: Finished pipeline exit");
     }
@@ -4308,7 +4348,13 @@ impl ScriptThread {
                 // submit_timing will only accept timing that is of type ResourceTimingType::Resource
                 let mut resource_timing = timing.clone();
                 resource_timing.timing_type = ResourceTimingType::Resource;
-                submit_timing(cx, &iframe_ctx, &eof, &resource_timing);
+                submit_timing(
+                    cx,
+                    &frame_element.owner_global(),
+                    &iframe_ctx,
+                    &eof,
+                    &resource_timing,
+                );
             }
 
             context.process_response_eof(cx, eof, timing);
@@ -4352,7 +4398,11 @@ impl ScriptThread {
 
         // Update the `url_list` of the incomplete load to track all redirects. This will be reflected
         // in the new `RequestBuilder` as well.
-        incomplete_load.url_list.push(metadata.final_url.clone());
+        incomplete_load
+            .url_list
+            .push(UrlWithBlobClaim::from_url_without_having_claimed_blob(
+                metadata.final_url.clone(),
+            ));
 
         let mut request_builder = incomplete_load.request_builder();
         request_builder.referrer = metadata

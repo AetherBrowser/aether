@@ -4,6 +4,382 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>History</title>
+    <style>
+      :root {
+        --bg: #f6f7f8;
+        --surface: #ffffff;
+        --text: #1b1b1b;
+        --muted: #5c5c5c;
+        --border: #d7d7d7;
+        --accent: #1191e8;
+        --error: #b42318;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121619;
+          --surface: #1c2126;
+          --text: #f5f5f5;
+          --muted: #b0b8c0;
+          --border: #2f3942;
+          --accent: #5cb6f0;
+          --error: #ff6b6b;
+        }
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: sans-serif;
+      }
+
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+
+      header {
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 16px;
+      }
+
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 600;
+        margin: 0 0 16px;
+      }
+
+      h2 {
+        font-size: 1.2rem;
+        margin: 0 0 16px;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 12px;
+      }
+
+      #open-delete {
+        margin-left: auto;
+      }
+
+      select,
+      button {
+        font: inherit;
+        color: inherit;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+
+      #message {
+        color: var(--muted);
+        min-height: 1.2em;
+        margin: 12px 0 0;
+      }
+
+      #message.error {
+        color: var(--error);
+      }
+
+      #backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgb(0 0 0 / 40%);
+      }
+
+      dialog {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        width: 40rem;
+        max-width: calc(100% - 32px);
+        box-sizing: border-box;
+      }
+
+      .ranges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        border: 0;
+        margin: 0;
+        padding: 0;
+      }
+
+      .ranges input {
+        position: absolute;
+        width: 0;
+        height: 0;
+        margin: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .ranges > label > span,
+      #more {
+        display: inline-block;
+        padding: 6px 8px;
+        background: none;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
+      .ranges input:focus-visible + span {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      .ranges > label > input:checked + span,
+      #more.selected {
+        background: var(--accent);
+        color: #fff;
+      }
+
+      .ranges > label > input:checked + span::before,
+      #more.selected::before {
+        content: "✓ ";
+      }
+
+      #more::after {
+        content: " ▾";
+      }
+
+      .more {
+        position: relative;
+      }
+
+      #more-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        display: flex;
+        flex-direction: column;
+        min-width: 10rem;
+        padding: 4px 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+      }
+
+      #more-menu[hidden] {
+        display: none;
+      }
+
+      #more-menu span {
+        display: block;
+        padding: 8px 16px;
+        cursor: pointer;
+      }
+
+      #more-menu span:hover {
+        background: var(--bg);
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 16px 0 20px;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+    </style>
   </head>
-  <body></body>
+  <body>
+    <main>
+      <header>
+        <h1>History</h1>
+        <div class="toolbar">
+          <label for="retention">Keep history for</label>
+          <select id="retention" disabled>
+            <option value="1">1 day</option>
+            <option value="7">1 week</option>
+            <option value="30">1 month</option>
+            <option value="90">3 months</option>
+            <option value="180">6 months</option>
+            <option value="365">1 year</option>
+          </select>
+          <button type="button" id="open-delete">Delete browsing data…</button>
+        </div>
+        <p id="message" role="status"></p>
+      </header>
+    </main>
+
+    <div id="backdrop" hidden></div>
+    <dialog id="delete-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete browsing data</h2>
+      <fieldset class="ranges" aria-label="Time range">
+        <label><input type="radio" name="range" value="15" /><span>Last 15 min</span></label>
+        <label><input type="radio" name="range" value="60" /><span>Last hour</span></label>
+        <label><input type="radio" name="range" value="1440" /><span>Last 24 hours</span></label>
+        <label><input type="radio" name="range" value="10080" /><span>Last 7 days</span></label>
+        <div class="more">
+          <button type="button" id="more" aria-haspopup="true" aria-expanded="false">
+            More
+          </button>
+          <div id="more-menu" hidden>
+            <label><input type="radio" name="range" value="40320" /><span>Last 4 weeks</span></label>
+            <label><input type="radio" name="range" value="all" /><span>All time</span></label>
+          </div>
+        </div>
+      </fieldset>
+      <p class="hint">Visits in this time range are deleted from your history.</p>
+      <div class="actions">
+        <button type="button" id="cancel-delete">Cancel</button>
+        <button type="button" id="confirm-delete" class="primary">Delete</button>
+      </div>
+    </dialog>
+
+    <script>
+      const retention = document.getElementById("retention");
+      const message = document.getElementById("message");
+      const backdrop = document.getElementById("backdrop");
+      const deleteDialog = document.getElementById("delete-dialog");
+      const rangeInputs = [...deleteDialog.querySelectorAll('input[name="range"]')];
+      const more = document.getElementById("more");
+      const moreMenu = document.getElementById("more-menu");
+      const confirmDelete = document.getElementById("confirm-delete");
+      let retentionDays;
+
+      function showMessage(text, isError) {
+        message.textContent = text;
+        message.classList.toggle("error", isError);
+      }
+
+      function showRetention(days) {
+        retentionDays = days;
+        if (![...retention.options].some((option) => option.value === String(days))) {
+          const option = document.createElement("option");
+          option.value = days;
+          option.textContent = `${days} days`;
+          retention.append(option);
+        }
+        retention.value = String(days);
+        retention.disabled = false;
+      }
+
+      async function send(query) {
+        const url = query ? `servo:history-data?${query}` : "servo:history-data";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          showRetention(data.retentionDays);
+          return data.error;
+        } catch (error) {
+          if (retentionDays) {
+            retention.value = String(retentionDays);
+          }
+          return "Could not reach the history.";
+        }
+      }
+
+      retention.addEventListener("change", async () => {
+        const days = Number(retention.value);
+        const period = retention.options[retention.selectedIndex].textContent;
+        if (
+          days < retentionDays &&
+          !confirm(`Visits older than ${period} will be deleted now.`)
+        ) {
+          retention.value = String(retentionDays);
+          return;
+        }
+        const error = await send(`retentionDays=${days}`);
+        showMessage(error || "", Boolean(error));
+      });
+
+      function checkedRange() {
+        return rangeInputs.find((input) => input.checked);
+      }
+
+      function setMoreMenuOpen(open) {
+        moreMenu.hidden = !open;
+        more.setAttribute("aria-expanded", String(open));
+      }
+
+      function showCheckedRange() {
+        const range = checkedRange();
+        const inMoreMenu = moreMenu.contains(range);
+        more.textContent = inMoreMenu ? range.nextElementSibling.textContent : "More";
+        more.classList.toggle("selected", inMoreMenu);
+        setMoreMenuOpen(false);
+      }
+
+      for (const input of rangeInputs) {
+        input.addEventListener("change", showCheckedRange);
+      }
+
+      more.addEventListener("click", () => setMoreMenuOpen(moreMenu.hidden));
+
+      deleteDialog.addEventListener("click", (event) => {
+        if (!event.target.closest(".more")) {
+          setMoreMenuOpen(false);
+        }
+      });
+
+      deleteDialog.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") {
+          return;
+        }
+        event.preventDefault();
+        if (moreMenu.hidden) {
+          deleteDialog.close();
+        } else {
+          setMoreMenuOpen(false);
+        }
+      });
+
+      deleteDialog.addEventListener("close", () => {
+        backdrop.hidden = true;
+      });
+
+      document.getElementById("open-delete").addEventListener("click", () => {
+        rangeInputs.find((input) => input.value === "60").checked = true;
+        showCheckedRange();
+        backdrop.hidden = false;
+        deleteDialog.showModal();
+      });
+
+      document.getElementById("cancel-delete").addEventListener("click", () => {
+        deleteDialog.close();
+      });
+
+      confirmDelete.addEventListener("click", async () => {
+        const range = checkedRange();
+        const label = range.nextElementSibling.textContent;
+        confirmDelete.disabled = true;
+        const error = await send(`delete=${range.value}`);
+        confirmDelete.disabled = false;
+        deleteDialog.close();
+        showMessage(
+          error || `Browsing history deleted (${label.toLowerCase()}).`,
+          Boolean(error),
+        );
+      });
+
+      send().then((error) => showMessage(error || "", Boolean(error)));
+    </script>
+  </body>
 </html>

@@ -10,7 +10,7 @@ jobs:
     # This job is only useful when run on upstream aether.
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
     name: Upload docs to GitHub Pages
-    runs-on: self-hosted
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
       - name: Free Disk Space (Ubuntu)

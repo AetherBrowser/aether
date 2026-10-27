@@ -41,7 +41,6 @@ use crate::dom::domtokenlist::DOMTokenList;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element, reflect_referrer_policy_attribute};
 use crate::dom::eventtarget::EventTarget;
-use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, Node, NodeDamage, NodeTraits, UnbindContext};
@@ -1123,7 +1122,10 @@ impl VirtualMethods for HTMLIFrameElement {
                 // the child browsing context to be created.
 
                 // trigger the processing of iframe attributes whenever "srcdoc" attribute is set, changed or removed
-                if self.upcast::<Node>().is_connected_with_browsing_context() {
+                if self
+                    .upcast::<Node>()
+                    .is_connected_with_browsing_context(cx.no_gc())
+                {
                     debug!("iframe srcdoc modified while in browsing context.");
                     self.process_the_iframe_attributes(cx, ProcessingMode::NotFirstTime);
                 }
@@ -1137,7 +1139,10 @@ impl VirtualMethods for HTMLIFrameElement {
                 // may be in a different script thread. Instead, we check to see if the parent
                 // is in a document tree and has a browsing context, which is what causes
                 // the child browsing context to be created.
-                if self.upcast::<Node>().is_connected_with_browsing_context() {
+                if self
+                    .upcast::<Node>()
+                    .is_connected_with_browsing_context(cx.no_gc())
+                {
                     debug!("iframe src set while in browsing context.");
                     self.process_the_iframe_attributes(cx, ProcessingMode::NotFirstTime);
                 }
@@ -1198,7 +1203,10 @@ impl VirtualMethods for HTMLIFrameElement {
         // This isn't mentioned any longer in the specification, but still seems important. This is
         // likely due to the fact that we have deviated a great deal with it comes to navigables
         // and browsing contexts.
-        if !self.upcast::<Node>().is_connected_with_browsing_context() {
+        if !self
+            .upcast::<Node>()
+            .is_connected_with_browsing_context(cx.no_gc())
+        {
             return;
         }
 
@@ -1237,20 +1245,17 @@ impl VirtualMethods for HTMLIFrameElement {
     }
 }
 
-/// IframeContext is a wrapper around [`HTMLIFrameElement`] that implements the [`ResourceTimingListener`] trait.
-/// Note: this implementation of `resource_timing_global` returns the parent document's global scope, not the iframe's global scope.
-pub(crate) struct IframeContext<'a> {
-    // The iframe element that this context is associated with.
-    element: &'a HTMLIFrameElement,
+/// IframeContext is a wrapper around [`HTMLIFrameElement`] that implements the
+/// [`ResourceTimingListener`] trait.
+pub(crate) struct IframeContext {
     // The URL of the iframe document.
     url: ServoUrl,
 }
 
-impl<'a> IframeContext<'a> {
+impl IframeContext {
     /// Creates a new IframeContext from a reference to an HTMLIFrameElement.
-    pub fn new(element: &'a HTMLIFrameElement) -> Self {
+    pub fn new(element: &HTMLIFrameElement) -> Self {
         Self {
-            element,
             url: element
                 .shared_attribute_processing_steps_for_iframe_and_frame_elements(
                     ProcessingMode::NotFirstTime,
@@ -1260,16 +1265,9 @@ impl<'a> IframeContext<'a> {
     }
 }
 
-impl<'a> ResourceTimingListener for IframeContext<'a> {
+impl ResourceTimingListener for IframeContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
-        (
-            InitiatorType::LocalName("iframe".to_string()),
-            self.url.clone(),
-        )
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.element.upcast::<Node>().owner_doc().global()
+        (InitiatorType::LocalName("iframe".into()), self.url.clone())
     }
 }
 

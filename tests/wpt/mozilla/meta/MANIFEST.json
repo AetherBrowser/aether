@@ -10705,7 +10705,7 @@
      []
     ],
     "text-transform-capitalize-ref.html": [
-     "1fd4ceb1b301d8aef0eb98eca56a7a8d03dc5d5a",
+     "a3bde624eaf8bf05b66bdefd5b39dfed24f69a56",
      []
     ],
     "text-transform-lowercase-ref.html": [
@@ -11037,6 +11037,18 @@
     "314a9e5b44443be1a4e28dd3c5047a5082a7ccab",
     []
    ],
+   "memory": {
+    "resources": {
+     "leak-helpers.js": [
+      "732a61ff517138e7b445d8459c8b72120a6075e2",
+      []
+     ],
+     "set-global-module.js": [
+      "7be2eede887cff37f4e66a0a70ccda70fbccf7fa",
+      []
+     ]
+    }
+   },
    "mozilla": {
     "2x2.png": [
      "276791c4348ada7e1da71041f2ccd383305e209c",
@@ -13254,7 +13266,7 @@
      ]
     ],
     "css-property-listing.html": [
-     "8c213b0ad5c4f42e06f1c38f6b5ab65a712d4e9e",
+     "32b190f165c2cd564dfd46189d06a3c5b8ded921",
      [
       null,
       {}
@@ -13830,6 +13842,36 @@
       {
        "testdriver": true
       }
+     ]
+    ]
+   },
+   "memory": {
+    "FileReader-does-not-leak-document.https.html": [
+     "40ca0754ae6b3ef86d8b02f9933a5ba19bdda773",
+     [
+      null,
+      {}
+     ]
+    ],
+    "fetch-body-does-not-leak-document.https.html": [
+     "a14165df3bf875d45506b341fa24206db807d596",
+     [
+      null,
+      {}
+     ]
+    ],
+    "fetch-does-not-leak-document.https.html": [
+     "5d795effda7bce5ff5bf9992f3a2c7bcfec76453",
+     [
+      null,
+      {}
+     ]
+    ],
+    "modules-do-not-leak-document.https.html": [
+     "e94e6ed4bf5f43d30970e4da29bd35ed59394f08",
+     [
+      null,
+      {}
      ]
     ]
    },
@@ -14768,7 +14810,7 @@
      ]
     ],
     "interfaces.https.html": [
-     "d5eb8af441418639ef224afc0bff878afc89497c",
+     "7493dec90e794faca202fda4edea9022e6262925",
      [
       null,
       {}
@@ -15341,31 +15383,6 @@
      [
       null,
       {}
-     ]
-    ],
-    "task-queue-throttling.any.js": [
-     "bbf464f384d55a44db6948d6cc7ab5f54509b800",
-     [
-      "mozilla/task-queue-throttling.any.html",
-      {
-       "script_metadata": [
-        [
-         "title",
-         "Throttling the performance timeline task queue."
-        ]
-       ]
-      }
-     ],
-     [
-      "mozilla/task-queue-throttling.any.worker.html",
-      {
-       "script_metadata": [
-        [
-         "title",
-         "Throttling the performance timeline task queue."
-        ]
-       ]
-      }
      ]
     ],
     "textarea-select-focus.html": [

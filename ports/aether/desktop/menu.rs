@@ -12,6 +12,7 @@ use euclid::Point2D;
 use servo::DeviceIndependentPixel;
 
 use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
+use crate::desktop::shortcuts::{BrowserAction, shortcut_label};
 
 /// Matches other chrome menus (see `dialog.rs`).
 const APP_MENU_MIN_WIDTH: f32 = 350.0;
@@ -30,18 +31,6 @@ const APP_MENU_ITEM_PADDING: f32 = 5.0;
 
 const APP_MENU_ID: &str = "app_menu";
 
-/// An action chosen in the application menu.
-pub(crate) enum AppMenuAction {
-    NewTab,
-    NewWindow,
-    History,
-    Settings,
-    Processes,
-    ViewSource,
-    DeveloperTools,
-    Exit,
-}
-
 /// Which page of the hamburger menu is showing.
 ///
 /// Nested pages replace the menu body in place. The popup stays open.
@@ -58,6 +47,10 @@ pub(crate) struct AppMenu {
     page: AppMenuPage,
     /// Content height of the root page, so nested pages keep the same panel size.
     root_content_height: f32,
+    /// Whether a shortcut asked to open or close the menu on the next update.
+    keyboard_toggle_requested: bool,
+    /// Whether the first row takes keyboard focus, after opening from the keyboard.
+    focus_first_item: bool,
 }
 
 impl Default for AppMenu {
@@ -67,6 +60,8 @@ impl Default for AppMenu {
             rect: egui::Rect::NOTHING,
             page: AppMenuPage::Root,
             root_content_height: 0.0,
+            keyboard_toggle_requested: false,
+            focus_first_item: false,
         }
     }
 }
@@ -81,6 +76,12 @@ impl AppMenu {
         self.rect = egui::Rect::NOTHING;
         self.page = AppMenuPage::Root;
         self.root_content_height = 0.0;
+        self.focus_first_item = false;
+    }
+
+    /// Opens or closes the menu on the next update, focusing its first row when opening.
+    pub(crate) fn toggle_from_keyboard(&mut self) {
+        self.keyboard_toggle_requested = true;
     }
 
     pub(crate) fn close_ui(&mut self, ctx: &egui::Context) {
@@ -106,7 +107,12 @@ impl AppMenu {
         button: &egui::Response,
         icons: &mut ToolbarIconCache,
         can_view_source: bool,
-    ) -> Option<AppMenuAction> {
+    ) -> Option<BrowserAction> {
+        if std::mem::take(&mut self.keyboard_toggle_requested) {
+            let id = Id::new(APP_MENU_ID);
+            self.focus_first_item = !Popup::is_id_open(&button.ctx, id);
+            Popup::toggle_id(&button.ctx, id);
+        }
         let drawn_page = self.page;
         let min_height = self.content_min_height();
         let inner = Popup::menu(button)
@@ -144,7 +150,7 @@ impl AppMenu {
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
         can_view_source: bool,
-    ) -> Option<AppMenuAction> {
+    ) -> Option<BrowserAction> {
         ui.set_min_width(APP_MENU_MIN_WIDTH);
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.spacing_mut().button_padding = vec2(APP_MENU_ITEM_PADDING, APP_MENU_ITEM_PADDING);
@@ -161,24 +167,30 @@ impl AppMenu {
         &mut self,
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
-    ) -> Option<AppMenuAction> {
-        if let Some(action) = Self::action_item(ui, "New Tab", AppMenuAction::NewTab, true) {
+    ) -> Option<BrowserAction> {
+        // Widgets cannot keep the focus during the invisible pass that sizes a new popup.
+        if self.focus_first_item && !ui.is_sizing_pass() {
+            self.focus_first_item = false;
+            let first_item = ui.next_auto_id();
+            ui.memory_mut(|memory| memory.request_focus(first_item));
+        }
+        if let Some(action) = Self::action_item(ui, "New Tab", BrowserAction::NewTab, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "New Window", AppMenuAction::NewWindow, true) {
+        if let Some(action) = Self::action_item(ui, "New Window", BrowserAction::NewWindow, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "History", AppMenuAction::History, true) {
+        if let Some(action) = Self::action_item(ui, "History", BrowserAction::History, true) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "Settings", AppMenuAction::Settings, true) {
+        if let Some(action) = Self::action_item(ui, "Settings", BrowserAction::Settings, true) {
             return Some(action);
         }
         if Self::submenu_item(ui, icons, "More Tools") {
             self.page = AppMenuPage::MoreTools;
         }
         ui.separator();
-        if let Some(action) = Self::action_item(ui, "Exit", AppMenuAction::Exit, true) {
+        if let Some(action) = Self::action_item(ui, "Exit", BrowserAction::Quit, true) {
             return Some(action);
         }
 
@@ -190,23 +202,26 @@ impl AppMenu {
         ui: &mut egui::Ui,
         icons: &mut ToolbarIconCache,
         can_view_source: bool,
-    ) -> Option<AppMenuAction> {
+    ) -> Option<BrowserAction> {
         if Self::back_title(ui, icons, "More tools") {
             self.page = AppMenuPage::Root;
             return None;
         }
-        if let Some(action) =
-            Self::action_item(ui, "Developer Tools", AppMenuAction::DeveloperTools, true)
-        {
+        if let Some(action) = Self::action_item(
+            ui,
+            "Developer Tools",
+            BrowserAction::ToggleDeveloperTools,
+            true,
+        ) {
             return Some(action);
         }
-        if let Some(action) = Self::action_item(ui, "Processes", AppMenuAction::Processes, true) {
+        if let Some(action) = Self::action_item(ui, "Processes", BrowserAction::Processes, true) {
             return Some(action);
         }
         if let Some(action) = Self::action_item(
             ui,
             "View Page Source",
-            AppMenuAction::ViewSource,
+            BrowserAction::ViewSource,
             can_view_source,
         ) {
             return Some(action);
@@ -218,10 +233,14 @@ impl AppMenu {
     fn action_item(
         ui: &mut egui::Ui,
         label: &str,
-        action: AppMenuAction,
+        action: BrowserAction,
         enabled: bool,
-    ) -> Option<AppMenuAction> {
-        let response = ui.add_enabled(enabled, Self::item_button(label));
+    ) -> Option<BrowserAction> {
+        let mut button = Self::item_button(label);
+        if let Some(shortcut) = shortcut_label(action) {
+            button = button.shortcut_text(shortcut);
+        }
+        let response = ui.add_enabled(enabled, button);
         response.widget_info(|| {
             let mut info = WidgetInfo::new(WidgetType::Button);
             info.label = Some(label.into());
@@ -388,6 +407,61 @@ mod tests {
         ]
     }
 
+    fn key_press(key: egui::Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]
+    }
+
+    #[test]
+    fn keyboard_toggle_opens_on_the_first_row() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut menu = AppMenu::default();
+        let mut update = |events, menu: &mut AppMenu| {
+            let mut action = None;
+            let _ = ctx.run_ui(screen_input(events), |ui| {
+                let button = ui.button("Menu");
+                action = menu.update(&button, &mut icons, true);
+            });
+            action
+        };
+
+        menu.toggle_from_keyboard();
+        assert!(update(vec![], &mut menu).is_none());
+        assert!(menu.is_open());
+        // The second frame draws the popup after egui sized it.
+        assert!(update(vec![], &mut menu).is_none());
+
+        let action = update(key_press(egui::Key::Enter), &mut menu);
+        assert_eq!(action, Some(BrowserAction::NewTab));
+    }
+
+    #[test]
+    fn keyboard_toggle_closes_an_open_menu() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut menu = AppMenu::default();
+        let mut update = |menu: &mut AppMenu| {
+            let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+                let button = ui.button("Menu");
+                menu.update(&button, &mut icons, true);
+            });
+        };
+
+        menu.toggle_from_keyboard();
+        update(&mut menu);
+        assert!(menu.is_open());
+
+        menu.toggle_from_keyboard();
+        update(&mut menu);
+        assert!(!menu.is_open());
+    }
+
     #[test]
     fn more_tools_developer_tools_row_selects_that_action() {
         let ctx = egui::Context::default();
@@ -406,7 +480,7 @@ mod tests {
                 menu.page = AppMenuPage::MoreTools;
                 action = menu.more_tools_page(ui, &mut icons, true);
             });
-            if matches!(action, Some(AppMenuAction::DeveloperTools)) {
+            if matches!(action, Some(BrowserAction::ToggleDeveloperTools)) {
                 found = true;
                 break;
             }

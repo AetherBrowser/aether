@@ -9,3 +9,4 @@ mod host_trait;
 mod log;
 #[cfg(target_env = "ohos")]
 mod ohos;
+mod protocols;

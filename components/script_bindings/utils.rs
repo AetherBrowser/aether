@@ -27,8 +27,7 @@ use js::jsval::{JSVal, UndefinedValue};
 use js::rust::wrappers2::{
     AppendToIdVector, CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, CallOriginalPromiseReject,
     JS_AtomizeStringN, JS_ClearPendingException, JS_ForwardGetPropertyTo, JS_FreezeObject,
-    JS_GetPendingException, JS_GetProperty, JS_GetPrototype, JS_HasOwnProperty, JS_HasProperty,
-    JS_HasPropertyById, JS_SetProperty,
+    JS_GetPendingException, JS_HasOwnProperty, JS_HasProperty, JS_HasPropertyById, JS_SetProperty,
 };
 use js::rust::{
     HandleId, HandleObject, HandleValue, MutableHandleValue, Runtime, get_object_class,
@@ -43,7 +42,10 @@ use crate::codegen::PrototypeList::{self, MAX_PROTO_CHAIN_LENGTH, PROTO_OR_IFACE
 use crate::conversions::{PrototypeCheck, private_from_proto_check};
 use crate::error::throw_invalid_this;
 use crate::interfaces::DomHelpers;
-use crate::js::{JS_DefineProperty, JS_IsExceptionPending, JS_SetPendingException, PropertyFlags};
+use crate::js::{
+    JS_DefineProperty, JS_GetProperty, JS_GetPrototype, JS_IsExceptionPending,
+    JS_SetPendingException, PropertyFlags,
+};
 use crate::proxyhandler::{
     is_cross_origin_object, is_platform_object_same_origin, report_cross_origin_denial,
 };
@@ -131,7 +133,7 @@ pub(crate) fn get_property_on_prototype(
     vp: MutableHandleValue,
 ) -> bool {
     rooted!(&in(cx) let mut proto = ptr::null_mut::<JSObject>());
-    if unsafe { !JS_GetPrototype(cx, proxy, proto.handle_mut()) || proto.is_null() } {
+    if !JS_GetPrototype(cx, proxy, proto.handle_mut()) || proto.is_null() {
         *found = false;
         return true;
     }
@@ -250,7 +252,7 @@ pub(crate) fn get_dictionary_property(
         return Ok(false);
     }
 
-    if unsafe { !JS_GetProperty(cx, object, property.as_ptr(), rval) } {
+    if !JS_GetProperty(cx, object, property, rval) {
         return Err(());
     }
 
@@ -338,7 +340,7 @@ pub fn has_property_on_prototype(
     found: &mut bool,
 ) -> bool {
     rooted!(&in(cx) let mut proto = ptr::null_mut::<JSObject>());
-    if unsafe { !JS_GetPrototype(cx, proxy, proto.handle_mut()) } {
+    if !JS_GetPrototype(cx, proxy, proto.handle_mut()) {
         return false;
     }
     assert!(!proto.is_null());

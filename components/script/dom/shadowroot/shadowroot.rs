@@ -9,9 +9,9 @@ use std::collections::hash_map::Entry;
 use dom_struct::dom_struct;
 use html5ever::serialize::TraversalScope;
 use js::context::{JSContext, NoGC};
-use js::rust::{HandleValue, MutableHandleValue};
 use script_bindings::cell::{DomRefCell, RefMut};
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::error::{ErrorResult, Fallible};
 use script_bindings::reflector::reflect_dom_object;
 use servo_arc::Arc;
@@ -36,7 +36,6 @@ use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::{
 use crate::dom::bindings::codegen::UnionTypes::{
     TrustedHTMLOrNullIsEmptyString, TrustedHTMLOrString,
 };
-use crate::dom::bindings::frozenarray::CachedFrozenArray;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::num::Finite;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
@@ -95,7 +94,7 @@ pub(crate) struct ShadowRoot {
     /// <https://dom.spec.whatwg.org/#shadowroot-available-to-element-internals>
     available_to_element_internals: Cell<bool>,
 
-    slots: DomRefCell<HashMap<DOMString, Vec<Dom<HTMLSlotElement>>>>,
+    slots: DomRefCell<HashMap<TracedDOMString, Vec<Dom<HTMLSlotElement>>>>,
 
     is_user_agent_widget: bool,
 
@@ -108,13 +107,9 @@ pub(crate) struct ShadowRoot {
     /// <https://dom.spec.whatwg.org/#shadowroot-delegates-focus>
     delegates_focus: Cell<bool>,
 
-    /// The constructed stylesheet that is adopted by this [ShadowRoot].
+    /// The DOM-side adopted stylesheet list for this [ShadowRoot], including duplicates.
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
     adopted_stylesheets: DomRefCell<Vec<Dom<CSSStyleSheet>>>,
-
-    /// Cached frozen array of [`Self::adopted_stylesheets`]
-    #[ignore_malloc_size_of = "mozjs"]
-    adopted_stylesheets_frozen_types: CachedFrozenArray,
 
     details_name_groups: DomRefCell<Option<DetailsNameGroups>>,
 }
@@ -154,7 +149,6 @@ impl ShadowRoot {
             serializable: Cell::new(false),
             delegates_focus: Cell::new(false),
             adopted_stylesheets: Default::default(),
-            adopted_stylesheets_frozen_types: CachedFrozenArray::new(),
             details_name_groups: Default::default(),
         }
     }
@@ -303,7 +297,7 @@ impl ShadowRoot {
 
         let mut slots = self.slots.borrow_mut();
 
-        let slots_with_the_same_name = slots.entry(slot.Name()).or_default();
+        let slots_with_the_same_name = slots.entry(slot.Name().traced()).or_default();
 
         // Insert the slot before the first element that comes after it in tree order
         slots_with_the_same_name.insert_pre_order(slot, self.upcast::<Node>());
@@ -313,7 +307,7 @@ impl ShadowRoot {
         debug!("Unregistering slot with name={:?}", name.str());
 
         let mut slots = self.slots.borrow_mut();
-        let Entry::Occupied(mut entry) = slots.entry(name) else {
+        let Entry::Occupied(mut entry) = slots.entry(name.traced()) else {
             panic!("slot is not registered");
         };
         entry.get_mut().retain(|s| slot != &**s);
@@ -584,37 +578,41 @@ impl ShadowRootMethods<crate::DomTypeHolder> for ShadowRoot {
     event_handler!(slotchange, GetOnslotchange, SetOnslotchange);
 
     /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
-    fn AdoptedStyleSheets(&self, cx: &mut JSContext, retval: MutableHandleValue) {
-        self.adopted_stylesheets_frozen_types.get_or_init(
-            cx,
-            || {
-                self.adopted_stylesheets
-                    .borrow()
-                    .clone()
-                    .iter()
-                    .map(|sheet| sheet.as_rooted())
-                    .collect()
-            },
-            retval,
-        );
-    }
-
-    /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
-    fn SetAdoptedStyleSheets(&self, cx: &mut JSContext, val: HandleValue) -> ErrorResult {
-        let result = DocumentOrShadowRoot::set_adopted_stylesheet_from_jsval(
-            cx,
-            &self.adopted_stylesheets,
-            val,
+    fn OnSetAdoptedStyleSheets(
+        &self,
+        cx: &mut JSContext,
+        value: DomRoot<CSSStyleSheet>,
+        index: u32,
+    ) -> ErrorResult {
+        let result = DocumentOrShadowRoot::on_set_adopted_stylesheets(
+            self.adopted_stylesheets.safe_borrow_mut(cx).as_mut(),
+            &value,
+            index,
             &StyleSheetListOwner::ShadowRoot(Dom::from_ref(self)),
         );
 
-        if result.is_ok() {
-            if self.author_styles.borrow().stylesheets.dirty() {
-                self.invalidate_stylesheets(cx.no_gc());
-            }
+        if result.is_ok() && self.author_styles.borrow().stylesheets.dirty() {
+            self.invalidate_stylesheets(cx.no_gc());
+        }
 
-            // Clear the FrozenArray cache.
-            self.adopted_stylesheets_frozen_types.clear();
+        result
+    }
+
+    /// <https://drafts.csswg.org/cssom/#dom-documentorshadowroot-adoptedstylesheets>
+    fn OnDeleteAdoptedStyleSheets(
+        &self,
+        cx: &mut JSContext,
+        _value: DomRoot<CSSStyleSheet>,
+        index: u32,
+    ) -> ErrorResult {
+        let result = DocumentOrShadowRoot::on_delete_adopted_stylesheets(
+            self.adopted_stylesheets.safe_borrow_mut(cx).as_mut(),
+            index,
+            &StyleSheetListOwner::ShadowRoot(Dom::from_ref(self)),
+        );
+
+        if result.is_ok() && self.author_styles.borrow().stylesheets.dirty() {
+            self.invalidate_stylesheets(cx.no_gc());
         }
 
         result
@@ -642,8 +640,8 @@ impl VirtualMethods for ShadowRoot {
         // TODO(stevennovaryo): Handle adoptedStylesheet to deal with different
         //                      constructor document.
         if context.tree_connected {
-            let document = self.owner_document();
-            document.register_shadow_root(self);
+            self.owner_document_unrooted(cx.no_gc())
+                .register_shadow_root(self);
         }
 
         let shadow_root = self.upcast::<Node>();
@@ -668,8 +666,8 @@ impl VirtualMethods for ShadowRoot {
         }
 
         if context.tree_connected {
-            let document = self.owner_document();
-            document.unregister_shadow_root(self);
+            self.owner_document_unrooted(cx.no_gc())
+                .unregister_shadow_root(self);
         }
     }
 }

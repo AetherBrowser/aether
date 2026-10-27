@@ -632,6 +632,13 @@ impl Font {
         let codepoint = match self.descriptor.variant {
             font_variant_caps::T::SmallCaps => codepoint.to_ascii_uppercase(),
             font_variant_caps::T::Normal => codepoint,
+            // The other values are behind `layout.css.font-variant-caps.all-values.enabled`
+            // which Servo does not enable, so they are never parsed.
+            font_variant_caps::T::AllSmallCaps |
+            font_variant_caps::T::PetiteCaps |
+            font_variant_caps::T::AllPetiteCaps |
+            font_variant_caps::T::Unicase |
+            font_variant_caps::T::TitlingCaps => unreachable!(),
         };
         let glyph_index = self.handle.glyph_index(codepoint);
 
@@ -678,7 +685,7 @@ impl Font {
         self.shaper.get_or_init(|| Shaper::new(self)).baseline()
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     pub(crate) fn find_fallback_using_system_font_api(
         &self,
         _: &FallbackFontSelectionOptions,
@@ -832,7 +839,12 @@ impl FontGroup {
             _ => codepoint,
         };
 
-        let options = FallbackFontSelectionOptions::new(codepoint, next_codepoint, language);
+        let options = FallbackFontSelectionOptions::new(
+            codepoint,
+            next_codepoint,
+            language,
+            Some(&self.families),
+        );
 
         let should_look_for_small_caps = self.descriptor.variant == font_variant_caps::T::SmallCaps &&
             options.character.is_ascii_lowercase();
@@ -991,7 +1003,7 @@ impl FontGroup {
 /// character. Unicode ranges are specified by the [`FontGroupFamilyTemplate::template`]
 /// member.
 #[derive(MallocSizeOf)]
-struct FontGroupFamilyTemplate {
+pub(crate) struct FontGroupFamilyTemplate {
     #[ignore_malloc_size_of = "This measured in the FontContext template cache."]
     template: FontTemplateRef,
     #[ignore_malloc_size_of = "This measured in the FontContext font cache."]
@@ -1038,9 +1050,9 @@ impl FontGroupFamilyTemplate {
 /// only if actually needed. A single `FontGroupFamily` can have multiple fonts, in the case that
 /// individual fonts only cover part of the Unicode range.
 #[derive(MallocSizeOf)]
-struct FontGroupFamily {
-    family_descriptor: FontFamilyDescriptor,
-    members: OnceLock<Vec<FontGroupFamilyTemplate>>,
+pub struct FontGroupFamily {
+    pub(crate) family_descriptor: FontFamilyDescriptor,
+    pub(crate) members: OnceLock<Vec<FontGroupFamilyTemplate>>,
 }
 
 impl From<FontFamilyDescriptor> for FontGroupFamily {

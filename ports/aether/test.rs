@@ -6,7 +6,9 @@ use std::path::Path;
 
 use url::Url;
 
-use crate::parser::{get_default_url, location_bar_input_to_url, parse_url_or_filename};
+use crate::parser::{
+    complete_com_domain, get_default_url, location_bar_input_to_url, parse_url_or_filename,
+};
 
 #[cfg(not(target_os = "windows"))]
 const FAKE_CWD: &str = "/fake/cwd";
@@ -452,6 +454,17 @@ fn settings_page_has_a_search_section() {
 }
 
 #[test]
+fn history_page_has_its_settings_and_a_delete_dialog() {
+    let html = include_str!("../../resources/resource_protocol/history.html");
+    assert!(html.contains("<title>History</title>"));
+    assert!(html.contains("servo:history-data"));
+    assert!(html.contains("Keep history for"));
+    assert!(html.contains("<option value=\"90\">3 months</option>"));
+    assert!(html.contains("<dialog id=\"delete-dialog\""));
+    assert!(html.contains("value=\"all\" /><span>All time</span>"));
+}
+
+#[test]
 fn new_tab_page_follows_home_content_preferences() {
     let html = include_str!("../../resources/resource_protocol/newtab.html");
     let css = include_str!("../../resources/resource_protocol/newtab.css");
@@ -476,4 +489,17 @@ fn processes_page_lists_sortable_columns_and_json_endpoint() {
         !html.contains("Updating every second"),
         "status subtitle should stay off the page"
     );
+}
+
+#[test]
+fn test_ctrl_enter_completes_com_domain() {
+    assert_eq!(complete_com_domain("example"), "www.example.com");
+    assert_eq!(
+        complete_com_domain(" example/news "),
+        "www.example.com/news"
+    );
+    assert_eq!(complete_com_domain("example.org"), "example.org");
+    assert_eq!(complete_com_domain("localhost:8000"), "localhost:8000");
+    assert_eq!(complete_com_domain("two words"), "two words");
+    assert_eq!(complete_com_domain(""), "");
 }

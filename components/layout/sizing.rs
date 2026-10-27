@@ -134,6 +134,7 @@ pub(crate) fn outer_inline(
     auto_block_size_stretches_to_containing_block: bool,
     is_replaced: bool,
     establishes_containing_block: bool,
+    skippable_for_block_percentage_quirk: bool,
     get_preferred_aspect_ratio: impl FnOnce(&LogicalVec2<Au>) -> Option<AspectRatio>,
     get_inline_content_size: impl FnOnce(&ConstraintSpace) -> InlineContentSizesResult,
     get_tentative_block_content_size: impl FnOnce(Option<AspectRatio>) -> Option<ContentSizes>,
@@ -170,7 +171,7 @@ pub(crate) fn outer_inline(
                 Size::FitContent
             };
             let aspect_ratio = get_preferred_aspect_ratio(&pbm.padding_border_sums);
-            let block_size =
+            let mut block_size =
                 if let Some(block_content_size) = get_tentative_block_content_size(aspect_ratio) {
                     SizeConstraint::Definite(content_box_sizes.block.resolve(
                         LogicalAxis::Block,
@@ -187,6 +188,9 @@ pub(crate) fn outer_inline(
                         available_block_size,
                     )
                 };
+            if skippable_for_block_percentage_quirk {
+                block_size.replace_if_indefinite_with(containing_block.size.block.into())
+            }
             ConstraintSpace::new(block_size, style, aspect_ratio)
         } else {
             // Even if the size doesn't directly depend on block constraints, since this box
@@ -228,6 +232,7 @@ pub(crate) fn outer_inline(
                 (size, size, content_size.depends_on_block_constraints)
             },
             Size::Stretch => return stretch_values,
+            Size::QuirkyStretch => unreachable!("Quirky stretch can't be an inline size"),
         })
     };
     let (mut preferred_min_content, preferred_max_content, preferred_depends_on_block_constraints) =
@@ -348,6 +353,12 @@ pub(crate) enum Size<T> {
     FitContentFunction(T),
     /// <https://drafts.csswg.org/css-sizing-4/#valdef-width-stretch>
     Stretch,
+    /// Represents the special stretching behavior of `<html>` and `<body>`
+    /// in quirks mode. Roughly, it behaves as the maximum of `fit-content`
+    /// and `stretch`. It can only be used as a preferred block size.
+    /// <https://quirks.spec.whatwg.org/#the-html-element-fills-the-viewport-quirk>
+    /// <https://quirks.spec.whatwg.org/#the-body-element-fills-the-html-element-quirk>
+    QuirkyStretch,
     /// Represents a numeric `<length-percentage>`, but resolved as a `T`.
     /// <https://drafts.csswg.org/css-sizing/#valdef-width-length-percentage-0>
     Numeric(T),
@@ -387,6 +398,7 @@ impl<T: Clone> Size<T> {
             Size::FitContent => Size::FitContent,
             Size::FitContentFunction(size) => Size::FitContentFunction(f(size.clone())),
             Size::Stretch => Size::Stretch,
+            Size::QuirkyStretch => Size::QuirkyStretch,
             Size::Numeric(numeric) => Size::Numeric(f(numeric.clone())),
         }
     }
@@ -508,6 +520,9 @@ impl Size<Au> {
                 content_size.shrink_to_fit(stretch_size.unwrap_or_else(|| content_size.max_content))
             },
             Self::Stretch => stretch_size.unwrap_or_else(|| content_size.max_content),
+            Self::QuirkyStretch => stretch_size
+                .unwrap_or_else(|| content_size.max_content)
+                .max(content_size.min_content),
             Self::Numeric(numeric) => *numeric,
         }
     }
@@ -529,6 +544,7 @@ impl Size<Au> {
             Self::FitContentFunction(size) => content_size.shrink_to_fit(*size),
             Self::FitContent => content_size.shrink_to_fit(stretch_size.unwrap_or_default()),
             Self::Stretch => stretch_size.unwrap_or_default(),
+            Self::QuirkyStretch => unreachable!("Quirky stretch can't be a min size"),
             Self::Numeric(numeric) => *numeric,
         };
         if is_table {
@@ -561,6 +577,7 @@ impl Size<Au> {
             Self::FitContentFunction(size) => content_size.shrink_to_fit(*size),
             Self::FitContent => content_size.shrink_to_fit(stretch_size.unwrap_or(MAX_AU)),
             Self::Stretch => return stretch_size,
+            Self::QuirkyStretch => unreachable!("Quirky stretch can't be a max size"),
             Self::Numeric(numeric) => *numeric,
         })
     }
@@ -570,7 +587,7 @@ impl Size<Au> {
     /// <https://drafts.csswg.org/css-sizing-3/#extrinsic>
     ///
     /// Returns `None` if either:
-    /// - The size is intrinsic.
+    /// - The size is intrinsic. A quirky stretch doesn't count as intrinsic here.
     /// - The size is the initial one.
     ///   TODO: should we allow it to behave as `stretch` instead of assuming it's intrinsic?
     /// - The provided `stretch_size` is `None` but we need its value.
@@ -582,7 +599,7 @@ impl Size<Au> {
             Self::MaxContent |
             Self::FitContent |
             Self::FitContentFunction(_) => None,
-            Self::Stretch => stretch_size,
+            Self::Stretch | Self::QuirkyStretch => stretch_size,
             Self::Numeric(numeric) => Some(*numeric),
         }
     }
@@ -633,6 +650,13 @@ impl SizeConstraint {
         match self {
             Self::Definite(size) => size,
             Self::MinMax(min, _) => min,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn replace_if_indefinite_with(&mut self, replacement: Self) {
+        if !self.is_definite() {
+            *self = replacement
         }
     }
 }

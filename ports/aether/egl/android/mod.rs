@@ -16,7 +16,7 @@ use euclid::{Point2D, Rect, Scale, Size2D};
 use jni::errors::{Error, ThrowRuntimeExAndDefault};
 use jni::objects::{Global, JClass, JObject, JString, JValue, JValueOwned};
 use jni::strings::JNIStr;
-use jni::sys::{jboolean, jfloat, jint, jobject};
+use jni::sys::{jboolean, jfloat, jint, jobject, jstring};
 use jni::{Env, EnvUnowned, JavaVM, jni_sig, jni_str};
 use keyboard_types::{Key, NamedKey};
 use log::{debug, error, info, warn};
@@ -110,10 +110,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         // should show up in adb logcat with a release build.
         let filters = [
             "servo",
-            "servoshell",
-            "servoshell::egl:gl_glue",
-            // Show redirected stdout / stderr by default
-            "servoshell::egl::log",
+            // This binary is the `aether` crate. `console.log` is emitted from
+            // `aether::egl::app`, and redirected stdout/stderr from `aether::egl::log`.
+            "aether",
             // Show JS errors by default.
             "script::dom::bindings::error",
             // Show GL errors by default.
@@ -262,6 +261,56 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_setExperimentalMode<'local>(
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Homepage and new-tab settings, the same JSON `servo:home` returns on desktop.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_homeSettings<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    query: JString<'local>,
+) -> jstring {
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        let query = optional_query(env, query)?;
+        let json = crate::home::handle_home_request(query.as_deref());
+        Ok(env.new_string(json)?.into_raw() as jstring)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Configured search engines, the same JSON `servo:search-engines` returns on desktop.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_searchEngines<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    query: JString<'local>,
+) -> jstring {
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        let query = optional_query(env, query)?;
+        let json = crate::search::handle_search_engines_request(query.as_deref());
+        Ok(env.new_string(json)?.into_raw() as jstring)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// Version, channel, and architecture, the same JSON `servo:about` returns on desktop.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_aboutInfo<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+) -> jstring {
+    env.with_env(|env| -> jni::errors::Result<jstring> {
+        Ok(env.new_string(crate::about_info_json())?.into_raw() as jstring)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+fn optional_query<'local>(
+    env: &mut Env<'local>,
+    query: JString<'local>,
+) -> jni::errors::Result<Option<String>> {
+    let query = JString::cast_local(env, query)?.try_to_string(env).ok();
+    Ok(query.filter(|query| !query.is_empty()))
 }
 
 #[unsafe(no_mangle)]

@@ -16,7 +16,7 @@ dependencyResolutionManagement {
     }
 }
 
-include(":servoapp")
+include(":aetherapp")
 
 val userPropertiesFile = File("user.properties")
 if (userPropertiesFile.exists()) {

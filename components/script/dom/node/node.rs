@@ -31,6 +31,7 @@ use layout_api::{
 };
 use libc::{self, uintptr_t};
 use script_bindings::cell::{DomRefCell, Ref, RefMut};
+use script_bindings::codegen::GenericBindings::DocumentTypeBinding::DocumentTypeMethods;
 use script_bindings::codegen::GenericBindings::ElementBinding::ElementMethods;
 use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::ProcessingInstructionBinding::ProcessingInstructionMethods;
@@ -39,6 +40,7 @@ use script_bindings::reflector::{
     DomObject, DomObjectWrap, WeakReferenceableDomObjectWrap, reflect_dom_object_with_proto,
     reflect_weak_referenceable_dom_object_with_proto,
 };
+use script_bindings::trace::{RootedTraceableBox, TraceableSmallVec};
 use script_traits::{DocumentActivity, MouseButtons};
 use servo_base::id::PipelineId;
 use smallvec::SmallVec;
@@ -194,7 +196,11 @@ bitflags! {
         /// this element.
         const CLICK_IN_PROGRESS = 1 << 2;
 
-        // There are three free bits here.
+        /// Whether this node has ever taken part in a CSS animation/transition or has been an
+        /// animating image. This flag is never cleared once it is set.
+        const HAS_EVER_ANIMATED = 1 << 3;
+
+        // There are two free bits here.
 
         /// Specifies whether the parser has set an associated form owner for
         /// this element. Only applicable for form-associatable elements.
@@ -302,7 +308,7 @@ impl Node {
         assert!(new_child.prev_sibling.get().is_none());
         assert!(new_child.next_sibling.get().is_none());
 
-        self.add_pending_accessibility_damage(AccessibilityDamage::Children);
+        self.add_pending_accessibility_damage(cx.no_gc(), AccessibilityDamage::Children);
 
         match before {
             Some(before) => {
@@ -404,8 +410,8 @@ impl Node {
 
         // Since both the initial traversal in light dom and the inner traversal
         // in shadow DOM share the same code, we define a closure to prevent omissions.
-        let document = root.owner_doc();
         let cleanup_node = |cx: &mut JSContext, node: &Node| {
+            let document = node.owner_document_unrooted(cx.no_gc());
             document.cancel_animations_for_node(node);
             document.clean_up_style_and_layout_data_for_node(node);
 
@@ -451,10 +457,12 @@ impl Node {
 
         // Make sure the node and its subtree aren't GCed until the accessibility tree has had a
         // chance to remove them.
-        if root.owner_document().accessibility_active() {
-            root.owner_document()
+        let no_gc = cx.no_gc();
+        let document = root.owner_document_unrooted(no_gc);
+        if document.accessibility_active() {
+            document
                 .accessibility_data_mut()
-                .root_removed_node(cx.no_gc(), root);
+                .root_removed_node(no_gc, root);
         }
     }
 
@@ -511,7 +519,7 @@ impl Node {
         if let Some(element) = self.downcast::<Element>() {
             element.note_dirty_descendants(cx.no_gc());
         }
-        self.add_pending_accessibility_damage(AccessibilityDamage::Children);
+        self.add_pending_accessibility_damage(cx.no_gc(), AccessibilityDamage::Children);
 
         let prev_sibling = child.GetPreviousSibling();
         match prev_sibling {
@@ -553,7 +561,7 @@ impl Node {
             element.note_dirty_descendants(cx.no_gc());
         }
 
-        self.add_pending_accessibility_damage(AccessibilityDamage::Children);
+        self.add_pending_accessibility_damage(cx.no_gc(), AccessibilityDamage::Children);
 
         child.prev_sibling.set(None);
         child.next_sibling.set(None);
@@ -679,14 +687,17 @@ impl Node {
         )
     }
 
-    pub(crate) fn add_pending_accessibility_damage(&self, damage: AccessibilityDamage) {
-        if !self.owner_doc().accessibility_active() {
-            return;
+    pub(crate) fn add_pending_accessibility_damage(
+        &self,
+        no_gc: &NoGC,
+        damage: AccessibilityDamage,
+    ) {
+        let document = self.owner_document_unrooted(no_gc);
+        if document.accessibility_active() {
+            document
+                .accessibility_data_mut()
+                .add_pending_accessibility_damage_for_node(self, damage);
         }
-
-        self.owner_doc()
-            .accessibility_data_mut()
-            .add_pending_accessibility_damage_for_node(self, damage);
     }
 
     /// Set selection information on the given node if it is an element that responds to selection.
@@ -877,16 +888,16 @@ impl Node {
         // its descendants version, and the document's version. Normally, this will just be
         // the document's version, but we do have to deal with the case where the node has moved
         // document, so may have a higher version count than its owning document.
-        let doc: DomRoot<Node> = DomRoot::upcast(self.owner_doc());
+        let document = UnrootedDom::upcast::<Node>(self.owner_doc_unrooted(no_gc));
         let version = cmp::max(
             self.inclusive_descendants_version(),
-            doc.inclusive_descendants_version(),
+            document.inclusive_descendants_version(),
         ) + 1;
 
         for node in self.inclusive_ancestors_unrooted(no_gc, ShadowIncluding::No) {
             node.inclusive_descendants_version.set(version);
         }
-        doc.inclusive_descendants_version.set(version);
+        document.inclusive_descendants_version.set(version);
     }
 
     pub(crate) fn clear_layout_data(&self) {
@@ -914,7 +925,7 @@ impl Node {
                     .dirty(no_gc, NodeDamage::ContentOrHeritage);
 
                 if damage == NodeDamage::Other {
-                    self.add_pending_accessibility_damage(AccessibilityDamage::Node);
+                    self.add_pending_accessibility_damage(no_gc, AccessibilityDamage::Node);
                 }
             },
             NodeTypeId::Element(_) => self.downcast::<Element>().unwrap().restyle(no_gc, damage),
@@ -1135,18 +1146,18 @@ impl Node {
             .containing_block_node_query_without_reflow(self)
     }
 
-    pub(crate) fn padding(&self) -> Option<PhysicalSides> {
+    pub(crate) fn padding(&self) -> Option<PhysicalSides<Au>> {
         self.owner_window().padding_query_without_reflow(self)
     }
 
-    pub(crate) fn content_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn content_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Content, false)
+            .box_area_query(cx, self, BoxAreaType::Content, false)
     }
 
-    pub(crate) fn border_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn border_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Border, false)
+            .box_area_query(cx, self, BoxAreaType::Border, false)
     }
 
     pub(crate) fn border_box_without_reflow(&self) -> Option<Rect<Au, CSSPixel>> {
@@ -1154,9 +1165,9 @@ impl Node {
             .box_area_query_without_reflow(self, BoxAreaType::Border, false)
     }
 
-    pub(crate) fn padding_box(&self) -> Option<Rect<Au, CSSPixel>> {
+    pub(crate) fn padding_box(&self, cx: &mut JSContext) -> Option<Rect<Au, CSSPixel>> {
         self.owner_window()
-            .box_area_query(self, BoxAreaType::Padding, false)
+            .box_area_query(cx, self, BoxAreaType::Padding, false)
     }
 
     pub(crate) fn padding_box_without_reflow(&self) -> Option<Rect<Au, CSSPixel>> {
@@ -1801,8 +1812,11 @@ impl Node {
         self.owner_doc().is_html_document()
     }
 
-    pub(crate) fn is_connected_with_browsing_context(&self) -> bool {
-        self.is_connected() && self.owner_doc().browsing_context().is_some()
+    pub(crate) fn is_connected_with_browsing_context(&self, no_gc: &NoGC) -> bool {
+        self.is_connected() &&
+            self.owner_document_unrooted(no_gc)
+                .browsing_context()
+                .is_some()
     }
 
     pub(crate) fn children(&self) -> impl Iterator<Item = DomRoot<Node>> + use<> {
@@ -2704,10 +2718,10 @@ impl Node {
 
         // Script and layout blockers must be added after any early return.
         // `node.owner_doc()` may change during the algorithm.
-        let parent_document = parent.owner_doc();
-        let from_document = node.owner_doc();
-        from_document.add_script_and_layout_blocker();
+        let parent_document = parent.owner_document();
+        let from_document = node.owner_document();
         parent_document.add_script_and_layout_blocker();
+        from_document.add_script_and_layout_blocker();
 
         // Step 4. If node is a DocumentFragment node:
         if let NodeTypeId::DocumentFragment(_) = node.type_id() {
@@ -2731,11 +2745,10 @@ impl Node {
         if let Some(child) = child {
             // Step 5.1. The live range insert steps.
             let count = count.try_into().unwrap();
-            let document = parent.owner_doc_unrooted(cx.no_gc());
-            if let Some(selection) = document.selection() {
+            if let Some(selection) = parent_document.selection() {
                 selection.insert_steps(parent, child, count);
             }
-            document.live_range_insert_steps(cx.no_gc(), parent, child, count);
+            parent_document.live_range_insert_steps(cx.no_gc(), parent, child, count);
         }
 
         // Step 6. Let previousSibling be child’s previous sibling or parent’s last child if child is null.
@@ -2748,7 +2761,11 @@ impl Node {
         };
 
         // Step 10. Let staticNodeList be a list of nodes, initially « ».
-        let mut static_node_list: SmallVec<[_; 4]> = Default::default();
+        //
+        // This is incredibly hot code, so in an effort to avoiding rooting every single
+        // node in the `static_node_list`, this code only roots the entire list itself.
+        let mut static_node_list: Option<RootedTraceableBox<TraceableSmallVec<[Dom<Node>; 4]>>> =
+            None;
 
         let parent_shadow_root = parent.downcast::<Element>().and_then(Element::shadow_root);
         let parent_in_shadow_tree = parent.is_in_a_shadow_tree();
@@ -2757,7 +2774,7 @@ impl Node {
         // Step 7. For each node in nodes, in tree order:
         for kid in new_nodes {
             // Step 7.1. Adopt node into parent’s node document.
-            Node::adopt(cx, kid, &parent.owner_document());
+            Node::adopt(cx, kid, &parent_document);
 
             // Step 7.2. If child is null, then append node to parent’s children.
             // Step 7.3. Otherwise, insert node into parent’s children before child’s index.
@@ -2794,10 +2811,10 @@ impl Node {
 
                 // From <https://github.com/whatwg/dom/issues/833>:
                 // try_upgrade_element fires even for disconnected elements.
-                if let Some(element) = DomRoot::downcast::<Element>(descendant.clone()) &&
+                if let Some(element) = descendant.downcast::<Element>() &&
                     !element.is_custom()
                 {
-                    try_upgrade_element(cx, &element);
+                    try_upgrade_element(cx, element);
                 }
 
                 // Step 7.7.2. If inclusiveDescendant is not connected, then continue.
@@ -2806,7 +2823,7 @@ impl Node {
                 }
 
                 // Step 7.7.3. If inclusiveDescendant is an element
-                if let Some(element) = DomRoot::downcast::<Element>(descendant.clone()) {
+                if let Some(element) = descendant.downcast::<Element>() {
                     // and inclusiveDescendant’s custom element registry is non-null:
                     if let Some(registry) = element.custom_element_registry() {
                         // Step 7.7.3.1. If inclusiveDescendant’s custom element
@@ -2814,7 +2831,8 @@ impl Node {
                         // inclusiveDescendant’s node document to inclusiveDescendant’s
                         // custom element registry’s scoped document set.
                         if registry.is_scoped() {
-                            registry.add_scoped_document(&element.owner_document());
+                            registry
+                                .add_scoped_document(&element.owner_document_unrooted(cx.no_gc()));
                         }
                     }
                     // TODO: As per the spec, following steps should only be
@@ -2827,14 +2845,14 @@ impl Node {
                     if element.is_custom() {
                         ScriptThread::custom_element_reaction_stack().enqueue_callback_reaction(
                             cx,
-                            &element,
+                            element,
                             CallbackReaction::Connected,
                             None,
                         );
                     }
                     // Step 7.7.3.3. Otherwise, try to upgrade inclusiveDescendant.
                     else {
-                        try_upgrade_element(cx, &element);
+                        try_upgrade_element(cx, element);
                     }
                 }
                 // Step 7.7.4. Otherwise, if inclusiveDescendant is a shadow
@@ -2853,7 +2871,9 @@ impl Node {
 
                 // Step 11.1 For each shadow-including inclusive descendant inclusiveDescendant of node,
                 //           in shadow-including tree order, append inclusiveDescendant to staticNodeList.
-                static_node_list.push(descendant.clone());
+                static_node_list
+                    .get_or_insert_default()
+                    .push(descendant.as_traced());
             }
         }
 
@@ -2888,15 +2908,15 @@ impl Node {
         // 2) post_connection_steps from Node::insert,
         // we use a delayed task that will run as soon as Node::insert removes its
         // script/layout blocker.
-        if !static_node_list.is_empty() {
+        if let Some(static_node_list) = static_node_list {
             parent_document.add_delayed_task(
-                task!(PostConnectionSteps: |cx, static_node_list: SmallVec<[DomRoot<Node>; 4]>| {
+                task!(PostConnectionSteps: |cx, static_node_list: RootedTraceableBox<TraceableSmallVec<[Dom<Node>; 4]>>| {
                     // Step 12. For each node of staticNodeList, if node is connected, then run the
                     //          post-connection steps with node.
                     //
                     // Note: We only add the nodes to the static_node_list which are connected.
-                    for node in static_node_list {
-                        vtable_for(&node).post_connection_steps(cx);
+                    for node in static_node_list.iter() {
+                        vtable_for(node).post_connection_steps(cx);
                     }
                 }),
             );
@@ -2913,7 +2933,7 @@ impl Node {
         parent: &Node,
         inserted_nodes: &[&Node],
     ) {
-        let Some(selection) = parent.owner_document().selection() else {
+        let Some(selection) = parent.owner_document_unrooted(no_gc).selection() else {
             return;
         };
 
@@ -2932,7 +2952,8 @@ impl Node {
 
     /// <https://dom.spec.whatwg.org/#concept-node-replace-all>
     pub(crate) fn replace_all(cx: &mut JSContext, node: Option<&Node>, parent: &Node) {
-        parent.owner_doc().add_script_and_layout_blocker();
+        let document = parent.owner_document();
+        document.add_script_and_layout_blocker();
 
         // Step 1. Let removedNodes be parent’s children.
         rooted_vec!(let removed_nodes <- parent.children().map(|child| DomRoot::as_traced(&child)));
@@ -2975,7 +2996,7 @@ impl Node {
             });
             MutationObserver::queue_a_mutation_record(cx, parent, mutation);
         }
-        parent.owner_doc().remove_script_and_layout_blocker(cx);
+        document.remove_script_and_layout_blocker(cx);
     }
 
     /// <https://dom.spec.whatwg.org/multipage/#string-replace-all>
@@ -3023,7 +3044,8 @@ impl Node {
         parent: &Node,
         suppress_observers: SuppressObserver,
     ) {
-        parent.owner_doc().add_script_and_layout_blocker();
+        let document = parent.owner_document();
+        document.add_script_and_layout_blocker();
 
         // Step 1. Let parent be node’s parent.
         // Step 2. Assert: parent is non-null.
@@ -3106,7 +3128,7 @@ impl Node {
             });
             MutationObserver::queue_a_mutation_record(cx, parent, mutation);
         }
-        parent.owner_doc().remove_script_and_layout_blocker(cx);
+        document.remove_script_and_layout_blocker(cx);
     }
 
     /// <https://dom.spec.whatwg.org/#concept-node-clone>
@@ -3130,9 +3152,9 @@ impl Node {
                 let doctype = node.downcast::<DocumentType>().unwrap();
                 let doctype = DocumentType::new(
                     cx,
-                    doctype.name().clone(),
-                    Some(doctype.public_id().clone()),
-                    Some(doctype.system_id().clone()),
+                    doctype.Name(),
+                    Some(doctype.PublicId()),
+                    Some(doctype.SystemId()),
                     &document,
                 );
                 DomRoot::upcast::<Node>(doctype)
@@ -3699,7 +3721,7 @@ impl NodeMethods<crate::DomTypeHolder> for Node {
             NodeTypeId::CharacterData(CharacterDataTypeId::Comment) => {
                 DOMString::from_static("#comment")
             },
-            NodeTypeId::DocumentType => self.downcast::<DocumentType>().unwrap().name().clone(),
+            NodeTypeId::DocumentType => self.downcast::<DocumentType>().unwrap().Name(),
             NodeTypeId::DocumentFragment(_) => DOMString::from_static("#document-fragment"),
             NodeTypeId::Document(_) => DOMString::from_static("#document"),
         }
@@ -3732,7 +3754,7 @@ impl NodeMethods<crate::DomTypeHolder> for Node {
         }
 
         if self.is_connected() {
-            DomRoot::from_ref(self.owner_doc().upcast::<Node>())
+            DomRoot::upcast(self.owner_document())
         } else {
             self.inclusive_ancestors(ShadowIncluding::Yes)
                 .last()
@@ -4512,6 +4534,11 @@ pub(crate) trait NodeTraits {
     /// [`Document`] that the node was created in if it was adopted by a different
     /// [`Document`] (the owner).
     fn owner_document(&self) -> DomRoot<Document>;
+    /// Get the [`Document`] that owns this node. Note that this may differ from the
+    /// [`Document`] that the node was created in if it was adopted by a different
+    /// [`Document`] (the owner).
+    fn owner_document_unrooted<'no_gc>(&self, no_gc: &'no_gc NoGC)
+    -> UnrootedDom<'no_gc, Document>;
     /// Get the [`Window`] of the [`Document`] that owns this node. Note that this may
     /// differ from the [`Document`] that the node was created in if it was adopted by a
     /// different [`Document`] (the owner).
@@ -4530,6 +4557,13 @@ pub(crate) trait NodeTraits {
 impl<T: DerivedFrom<Node> + DomObject> NodeTraits for T {
     fn owner_document(&self) -> DomRoot<Document> {
         self.upcast().owner_doc()
+    }
+
+    fn owner_document_unrooted<'no_gc>(
+        &self,
+        no_gc: &'no_gc NoGC,
+    ) -> UnrootedDom<'no_gc, Document> {
+        self.upcast().owner_doc_unrooted(no_gc)
     }
 
     fn owner_window(&self) -> DomRoot<Window> {

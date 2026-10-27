@@ -79,4 +79,4 @@ fn count_running_threads() -> Option<u32> {
 
 #[unsafe(link_section = "__TEXT,__info_plist")]
 #[unsafe(no_mangle)]
-pub static INFO_PLIST: [u8; 1050] = *include_bytes!("Info.plist");
+pub static INFO_PLIST: [u8; 1051] = *include_bytes!("Info.plist");

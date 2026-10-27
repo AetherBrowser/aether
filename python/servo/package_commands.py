@@ -185,7 +185,7 @@ class PackageCommands(CommandBase):
             copy_packaged_resources(dir_to_root, dir_to_resources)
 
             variant = ":assemble" + arch_string + build_type_string
-            apk_task_name = ":servoapp" + variant
+            apk_task_name = ":aetherapp" + variant
             aar_task_name = ":servoview" + variant
             argv = ["./gradlew", "--no-daemon", apk_task_name, aar_task_name]
             try:
@@ -588,7 +588,7 @@ class PackageCommands(CommandBase):
             "support/windows/aether.wxs.mako": r'<Package(?:.|\n)*?\sVersion="(?P<version>[^"]*)"',
             "ports/aether/platform/macos/Info.plist": r"<key>CFBundleShortVersionString</key>\n\s*<string>(?P<version>.*?)</string>",
             "ports/servoshell/platform/macos/Info.plist": r"<key>CFBundleShortVersionString</key>\n\s*<string>(?P<version>.*?)</string>",
-            "support/android/apk/servoapp/build.gradle.kts": r'versionName\s*=\s*"(?P<version>.*?)"',
+            "support/android/apk/aetherapp/build.gradle.kts": r'versionName\s*=\s*"(?P<version>.*?)"',
             "support/openharmony/oh-package.json5": r'"version"\s*:\s*"(?P<version>.*?)"',
             "support/openharmony/entry/oh-package.json5": r'"version"\s*:\s*"(?P<version>.*?)"',
         }

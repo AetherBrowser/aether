@@ -93,6 +93,7 @@ encoding_rs = { version = "0.8", features = ["serde"] }
 env_filter = "0.1.4"
 env_logger = "0.11"
 euclid = "0.22"
+fft-convolver = "0.4"
 flate2 = "1.1"
 font-types = "0.12"
 fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
@@ -136,6 +137,7 @@ httparse = "1.9"
 hyper = "1.10"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "client-proxy", "http2", "tokio"] }
+icu_casemap = "2.1.0"
 icu_locale_core = "2.1.0"
 icu_properties = "2.1.0"
 icu_segmenter = "2.1.0"
@@ -146,7 +148,7 @@ inventory = "0.3.24"
 ipc-channel = "0.23"
 itertools = "0.15"
 jni = "0.22"
-js = { package = "mozjs", version = "=0.26.7", default-features = false, features = ["intl", "libz-sys"] }
+js = { package = "mozjs", version = "=0.26.9", default-features = false, features = ["intl", "libz-sys"] }
 k12 = "0.5"
 keccak = "0.2"
 keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
@@ -164,6 +166,7 @@ ml-kem = { version = "0.3", features = ["getrandom", "pkcs8", "zeroize"] }
 mozangle = "0.7"
 napi-derive-ohos = "1.2.0"
 napi-ohos = "1.2.0"
+ndk = { version = "0.9.0", features = ["api-level-29"] }
 nix = "0.30"
 nom = "8.0.0"
 nom-rfc8288 = "0.4.0"
@@ -227,14 +230,14 @@ rustls-pki-types = "1.14"
 rustls-platform-verifier = "0.7.0"
 sea-query = { version = "1.0.1", default-features = false, features = ["backend-sqlite", "derive"] }
 sea-query-rusqlite = "0.8.0"
-selectors = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
+selectors = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
 serde = "1.0.228"
 serde_bytes = "0.11"
 serde_core = "1.0.226"
 serde_json = "1.0"
 serde_test = "1.0"
 serde_with = "3.13"
-servo_arc = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
+servo_arc = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
 sha1 = "0.11"
 sha2 = "0.11"
 sha3 = "0.12"
@@ -245,19 +248,19 @@ speexdsp-resampler = "0.1.0"
 sponge-cursor = "0.1"
 string_cache = "0.11"
 strum = { version = "0.28", features = ["derive"] }
-stylo = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
-stylo_atoms = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
-stylo_dom = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
-stylo_malloc_size_of = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
-stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
-stylo_traits = { git = "https://github.com/servo/stylo", rev = "6091d92b1d6f06938572bfb49d27bb5272718d46" }
+stylo = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
+stylo_atoms = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
+stylo_dom = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
+stylo_malloc_size_of = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
+stylo_static_prefs = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
+stylo_traits = { git = "https://github.com/servo/stylo", rev = "633f43ad86de1372fd7106d265c00ffcdf022c35" }
 surfman = "0.14.0"
 svgtypes = "0.16"
 swapper = "0.1"
 syn = { version = "2", default-features = false, features = ["clone-impls", "derive", "parsing"] }
 synstructure = "0.13"
 sys-locale = "0.3"
-taffy = { version = "0.14.0", default-features = false, features = ["calc", "detailed_layout_info", "grid", "std"] }
+taffy = { version = "0.15.0", default-features = false, features = ["calc", "grid", "std"] }
 tempfile = "3"
 tendril = { version = "0.5", features = ["encoding_rs"] }
 tikv-jemalloc-sys = "0.6.1"
@@ -297,11 +300,11 @@ winit = "0.30.13"
 winresource = "0.1"
 wio = "0.2"
 wr_malloc_size_of = "0.2.2"
+writeable = "0.6"
 x-wing = { version = "0.1.0", features = ["zeroize"] }
 x25519-dalek = { version = "3.0", features = ["getrandom", "static_secrets", "zeroize"] }
 x448 = { version = "=0.14.0-pre.12", features = ["static_secrets"] }
 xcomponent-sys = "0.4.0"
-xml = "1.1"
 xml5ever = "0.40"
 yuv = { version = "0.8.14", features = ["rayon"] }
 zeroize = "1.8"

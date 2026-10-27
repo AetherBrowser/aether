@@ -36,7 +36,6 @@ use crate::dom::bindings::codegen::Bindings::PermissionStatusBinding::Permission
 use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding::WindowMethods;
 use crate::dom::bindings::codegen::Bindings::XMLHttpRequestBinding::BodyInit;
 use crate::dom::bindings::error::{Error, Fallible};
-use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
@@ -127,6 +126,7 @@ pub(crate) struct Navigator {
     #[cfg(feature = "webxr")]
     xr: MutNullableDom<XRSystem>,
     mediadevices: MutNullableDom<MediaDevices>,
+    geolocation: MutNullableDom<Geolocation>,
     /// <https://www.w3.org/TR/gamepad/#dfn-gamepads>
     #[cfg(feature = "gamepad")]
     gamepads: DomRefCell<Vec<MutNullableDom<Gamepad>>>,
@@ -157,6 +157,7 @@ impl Navigator {
             #[cfg(feature = "webxr")]
             xr: Default::default(),
             mediadevices: Default::default(),
+            geolocation: Default::default(),
             #[cfg(feature = "gamepad")]
             gamepads: Default::default(),
             permissions: Default::default(),
@@ -180,6 +181,11 @@ impl Navigator {
     #[cfg(feature = "webxr")]
     pub(crate) fn xr(&self) -> Option<DomRoot<XRSystem>> {
         self.xr.get()
+    }
+
+    /// The `Geolocation` object, if `navigator.geolocation` was ever accessed.
+    pub(crate) fn maybe_geolocation(&self) -> Option<DomRoot<Geolocation>> {
+        self.geolocation.get()
     }
 
     #[cfg(feature = "gamepad")]
@@ -365,7 +371,8 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
 
     /// <https://www.w3.org/TR/geolocation/#navigator_interface>
     fn Geolocation(&self, cx: &mut js::context::JSContext) -> DomRoot<Geolocation> {
-        Geolocation::new(cx, &self.global())
+        self.geolocation
+            .or_init(|| Geolocation::new(cx, &self.global()))
     }
 
     /// <https://html.spec.whatwg.org/multipage/#navigatorlanguage>
@@ -606,10 +613,7 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
         // Step 7.2. Fetch req.
         global.fetch(
             request,
-            BeaconFetchListener {
-                url,
-                global: Trusted::new(&global),
-            },
+            BeaconFetchListener { url },
             global.task_manager().networking_task_source().into(),
         );
         // Step 7. Set the return value to true, return the sendBeacon() call,
@@ -676,16 +680,15 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
 struct BeaconFetchListener {
     /// URL of this request.
     url: ServoUrl,
-    /// The global object fetching the report uri violation
-    global: Trusted<GlobalScope>,
 }
 
 impl FetchResponseListener for BeaconFetchListener {
-    fn process_request_body(&mut self, _: RequestId) {}
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         fetch_metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -695,6 +698,7 @@ impl FetchResponseListener for BeaconFetchListener {
     fn process_response_chunk(
         &mut self,
         _: &mut js::context::JSContext,
+        _: &GlobalScope,
         _: RequestId,
         chunk: Bytes,
     ) {
@@ -704,20 +708,21 @@ impl FetchResponseListener for BeaconFetchListener {
     fn process_response_eof(
         self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        submit_timing(cx, &self, &response, &timing);
+        submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 }
@@ -725,9 +730,5 @@ impl FetchResponseListener for BeaconFetchListener {
 impl ResourceTimingListener for BeaconFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Beacon, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.global.root()
     }
 }

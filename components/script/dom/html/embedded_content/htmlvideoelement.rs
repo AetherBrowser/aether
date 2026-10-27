@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use atomic_refcell::AtomicRefCell;
 use bytes::Bytes;
 use dom_struct::dom_struct;
 use euclid::default::Size2D;
@@ -31,6 +32,7 @@ use servo_media::player::video::VideoFrame;
 use servo_url::ServoUrl;
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
 
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::HTMLVideoElementBinding::HTMLVideoElementMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
@@ -60,14 +62,13 @@ pub(crate) struct HTMLVideoElement {
     video_height: Cell<Option<u32>>,
     /// <https://html.spec.whatwg.org/multipage/#dom-video-poster>
     #[no_trace]
-    poster_url: DomRefCell<Option<UrlWithBlobClaim>>,
+    poster_url: AtomicRefCell<Option<UrlWithBlobClaim>>,
     /// Incremented whenever tasks associated with this element are cancelled.
     generation_id: Cell<u32>,
     /// Load event blocker. Will block the load event while the poster frame
     /// is being fetched.
     load_blocker: DomRefCell<Option<LoadBlocker>>,
     /// A copy of the last frame
-    #[ignore_malloc_size_of = "VideoFrame"]
     #[no_trace]
     last_frame: DomRefCell<Option<VideoFrame>>,
     #[cfg(feature = "webgpu")]
@@ -489,13 +490,14 @@ struct PosterFrameFetchContext {
 }
 
 impl FetchResponseListener for PosterFrameFetchContext {
-    fn process_request_body(&mut self, _: RequestId) {
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {
         self.fetch_controller.ignore()
     }
 
     fn process_response(
         &mut self,
         _: &mut JSContext,
+        _: &GlobalScope,
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -516,7 +518,13 @@ impl FetchResponseListener for PosterFrameFetchContext {
         }
     }
 
-    fn process_response_chunk(&mut self, _: &mut JSContext, request_id: RequestId, payload: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        _: &mut JSContext,
+        _: &GlobalScope,
+        request_id: RequestId,
+        payload: Bytes,
+    ) {
         if self.cancelled {
             // An error was received previously, skip processing the payload.
             return;
@@ -531,6 +539,7 @@ impl FetchResponseListener for PosterFrameFetchContext {
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         request_id: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
@@ -539,16 +548,16 @@ impl FetchResponseListener for PosterFrameFetchContext {
             self.id,
             FetchResponseMsg::ProcessResponseEOF(request_id, response.clone(), timing.clone()),
         );
-        network_listener::submit_timing(cx, &self, &response, &timing);
+        network_listener::submit_timing(cx, global, &self, &response, &timing);
     }
 
     fn process_csp_violations(
         &mut self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -562,18 +571,9 @@ impl FetchResponseListener for PosterFrameFetchContext {
 
 impl ResourceTimingListener for PosterFrameFetchContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
-        let initiator_type = InitiatorType::LocalName(
-            self.elem
-                .root()
-                .upcast::<Element>()
-                .local_name()
-                .to_string(),
-        );
+        let initiator_type =
+            InitiatorType::LocalName(self.elem.root().upcast::<Element>().local_name().clone());
         (initiator_type, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.elem.root().owner_document().global()
     }
 }
 
@@ -598,7 +598,6 @@ impl PosterFrameFetchContext {
 }
 
 impl LayoutDom<'_, HTMLVideoElement> {
-    #[expect(unsafe_code)]
     pub(crate) fn data(self) -> HTMLMediaData {
         let video = self.unsafe_get();
 
@@ -617,15 +616,9 @@ impl LayoutDom<'_, HTMLVideoElement> {
             current_frame,
             metadata,
             poster_or_src_url: if video.htmlmediaelement.show_poster() {
-                unsafe {
-                    video
-                        .poster_url
-                        .borrow_for_layout()
-                        .clone()
-                        .map(|url| url.url())
-                }
+                video.poster_url.borrow().clone().map(|url| url.url())
             } else {
-                unsafe { video.htmlmediaelement.current_src_url() }
+                video.htmlmediaelement.current_src_url()
             },
         }
     }

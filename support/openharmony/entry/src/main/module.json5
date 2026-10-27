@@ -16,9 +16,9 @@
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
-        "icon": "$media:servo_1024",
+        "icon": "$media:aether_1024",
         "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:servo_64",
+        "startWindowIcon": "$media:aether_64",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "skills": [

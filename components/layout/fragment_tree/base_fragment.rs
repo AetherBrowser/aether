@@ -58,8 +58,7 @@ pub(crate) struct BaseFragment {
     pub flags: FragmentFlags,
 
     /// The content rect of this fragment in the parent fragment's content rectangle. This
-    /// does not include padding, border, or margin -- it only includes content. This is
-    /// relative to the parent containing block.
+    /// does not include padding, border, or margin -- it only includes content.
     rect: SyncPhysicalRectAu,
 
     /// A [`FragmentStatus`] used to track fragment reuse when collecting reflow statistics.
@@ -300,6 +299,17 @@ bitflags! {
         /// `containertimingignore` attribute, so that it and its descendants do not
         /// contribute to any enclosing container root.
         const IS_CONTAINER_TIMING_IGNORE = 1 << 15;
+    }
+}
+
+impl FragmentFlags {
+    /// Whether or not this is a compressible replaced element.
+    /// <https://drafts.csswg.org/css-sizing-3/#min-content-zero>
+    ///
+    /// TODO: `<marquee>` should also be compressible replaced.
+    pub(crate) fn is_compressible_replaced(self) -> bool {
+        self.contains(Self::IS_REPLACED) ||
+            (self.contains(Self::IS_WIDGET) && !self.contains(Self::IS_BUTTON))
     }
 }
 

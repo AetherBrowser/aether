@@ -20,7 +20,9 @@ workspace = true
 crossbeam-channel = { workspace = true }
 log = { workspace = true }
 rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 url = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
 tempfile = { workspace = true }

@@ -48,4 +48,6 @@ pub enum ConstellationToEmbedderMsg {
     ),
     /// The title of the active top-level document of a `WebView` has changed.
     PageTitleChanged(WebViewId, Option<String>),
+    /// A pipeline exited, whether cleanly or because its content process died.
+    PipelineExited(PipelineId),
 }

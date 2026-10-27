@@ -38,7 +38,7 @@ use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::glue::DumpJSStack;
 use js::jsapi::{
-    GCReason, GetObjectRealmOrNull, Heap, JSContext as RawJSContext, JSObject, SetRealmPrincipals,
+    GCReason, GetObjectRealmOrNull, JSContext as RawJSContext, JSObject, SetRealmPrincipals,
 };
 use js::jsval::{NullValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
@@ -70,6 +70,7 @@ use profile_traits::time::ProfilerChan as TimeProfilerChan;
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
 use script_bindings::js::{JS_DefineProperty, PropertyFlags};
 use script_bindings::like::Setlike;
@@ -140,9 +141,7 @@ use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
 use crate::dom::bindings::structuredclone;
-use crate::dom::bindings::trace::{
-    CustomTraceable, HashMapTracedValues, JSTraceable, RootedTraceableBox,
-};
+use crate::dom::bindings::trace::{CustomTraceable, HashMapTracedValues, JSTraceable};
 use crate::dom::bindings::utils::GlobalStaticData;
 use crate::dom::bindings::weakref::DOMTracker;
 #[cfg(feature = "bluetooth")]
@@ -161,6 +160,7 @@ use crate::dom::element::Element;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::fetchlaterresult::FetchLaterResult;
+use crate::dom::geolocation::Geolocation;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::history::History;
 use crate::dom::html::htmlcollection::{CollectionFilter, HTMLCollection};
@@ -315,7 +315,7 @@ pub(crate) struct Window {
     local_storage: MutNullableDom<Storage>,
     /// <https://cookiestore.spec.whatwg.org/#globals>
     cookie_store: MutNullableDom<CookieStore>,
-    status: DomRefCell<DOMString>,
+    status: DomRefCell<TracedDOMString>,
     trusted_types: MutNullableDom<TrustedTypePolicyFactory>,
 
     /// The start of something resembling
@@ -554,6 +554,7 @@ impl Window {
 
     #[expect(unsafe_code)]
     pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+        self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
         unsafe {
@@ -564,6 +565,19 @@ impl Window {
                 .task_manager()
                 .cancel_all_tasks_and_ignore_future_tasks();
         }
+    }
+
+    /// Tell the embedder to stop producing position updates for this `Window`, so that a
+    /// location subscription does not outlive the pipeline that asked for it.
+    fn stop_geolocation_watches(&self) {
+        if let Some(geolocation) = self.maybe_geolocation() {
+            geolocation.stop_all_watches();
+        }
+    }
+
+    /// The `Geolocation` object of this `Window`'s `Navigator`.
+    pub(crate) fn maybe_geolocation(&self) -> Option<DomRoot<Geolocation>> {
+        self.navigator.get()?.maybe_geolocation()
     }
 
     /// A convenience method for
@@ -970,20 +984,15 @@ impl Window {
             .task_manager()
             .dom_manipulation_task_source()
             .to_sendable();
-        let target_global = Trusted::new(global);
         let document = self.document_unrooted(no_gc);
         WebFontDocumentContext {
             policy_container: document.policy_container().clone(),
             request_client: self.request_client(Some(no_gc)),
             document_url: document.base_url(),
             csp_handler: Box::new(FontCspHandler {
-                global: target_global.clone(),
                 task_source: task_source.clone(),
             }),
-            network_timing_handler: Box::new(FontNetworkTimingHandler {
-                global: target_global,
-                task_source,
-            }),
+            network_timing_handler: Box::new(FontNetworkTimingHandler { task_source }),
         }
     }
 
@@ -1039,21 +1048,20 @@ impl Window {
 
 #[derive(Debug, MallocSizeOf)]
 struct FontCspHandler {
-    global: Trusted<GlobalScope>,
     task_source: SendableTaskSource,
 }
 
 impl CspViolationHandler for FontCspHandler {
     fn process_violations(&self, violations: Vec<Violation>) {
-        let global = self.global.clone();
         self.task_source.queue(task!(csp_violation: move |cx| {
-            global.root().report_csp_violations(cx, violations, None, None);
+            if let Some(global) = GlobalScope::current() {
+                global.report_csp_violations(cx, violations, None, None);
+            }
         }));
     }
 
     fn clone(&self) -> Box<dyn CspViolationHandler> {
         Box::new(Self {
-            global: self.global.clone(),
             task_source: self.task_source.clone(),
         })
     }
@@ -1061,19 +1069,21 @@ impl CspViolationHandler for FontCspHandler {
 
 #[derive(Debug, MallocSizeOf)]
 struct FontNetworkTimingHandler {
-    global: Trusted<GlobalScope>,
     task_source: SendableTaskSource,
 }
 
 impl NetworkTimingHandler for FontNetworkTimingHandler {
     fn submit_timing(&self, url: ServoUrl, response: ResourceFetchTiming) {
-        let global = self.global.clone();
         self.task_source.queue(task!(network_timing: move |cx| {
+            let Some(global) = GlobalScope::current() else {
+                return
+            };
+
             submit_timing(
                 cx,
+                &global,
                 &FontFetchListener {
                     url,
-                    global
                 },
                 &Ok(()),
                 &response,
@@ -1083,7 +1093,6 @@ impl NetworkTimingHandler for FontNetworkTimingHandler {
 
     fn clone(&self) -> Box<dyn NetworkTimingHandler> {
         Box::new(Self {
-            global: self.global.clone(),
             task_source: self.task_source.clone(),
         })
     }
@@ -1091,17 +1100,12 @@ impl NetworkTimingHandler for FontNetworkTimingHandler {
 
 #[derive(Debug)]
 struct FontFetchListener {
-    global: Trusted<GlobalScope>,
     url: ServoUrl,
 }
 
 impl ResourceTimingListener for FontFetchListener {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::Css, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.global.root()
     }
 }
 
@@ -1895,7 +1899,7 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
                 .parent
                 .transfer
                 .iter()
-                .map(|js: &RootedTraceableBox<Heap<*mut JSObject>>| js.get())
+                .map(|js| js.get())
                 .collect::<Vec<_>>());
 
         let incumbent = GlobalScope::incumbent().expect("no incumbent global?");
@@ -2224,12 +2228,12 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-status>
     fn Status(&self) -> DOMString {
-        self.status.borrow().clone()
+        self.status.borrow().clone().root()
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-window-status>
     fn SetStatus(&self, status: DOMString) {
-        *self.status.borrow_mut() = status
+        *self.status.borrow_mut() = status.traced()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-matchmedia>
@@ -2481,6 +2485,7 @@ impl Window {
     }
 
     pub(crate) fn clear_js_runtime(&self) {
+        self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
 
@@ -2998,12 +3003,16 @@ impl Window {
         }
     }
 
+    /// Trigger a reflow that is required by certain queries.
+    pub(crate) fn layout_reflow(&self, cx: &mut JSContext, query_msg: QueryMsg) {
+        self.reflow(cx, ReflowGoal::LayoutQuery(query_msg));
+    }
+
     /// Trigger a reflow that is required by a certain queries.
     #[expect(unsafe_code)]
-    pub(crate) fn layout_reflow(&self, query_msg: QueryMsg) {
+    pub(crate) fn layout_reflow_deprecated(&self, query_msg: QueryMsg) {
         // TODO https://github.com/servo/servo/issues/44499
         let mut cx = unsafe { script_bindings::script_runtime::temp_cx() };
-
         self.reflow(&mut cx, ReflowGoal::LayoutQuery(query_msg));
     }
 
@@ -3020,7 +3029,7 @@ impl Window {
         node: &Node,
         value: String,
     ) -> Option<ServoArc<Font>> {
-        self.layout_reflow(QueryMsg::ResolvedFontStyleQuery);
+        self.layout_reflow_deprecated(QueryMsg::ResolvedFontStyleQuery);
 
         let document = self.Document();
         let animations = document.animation_manager().sets();
@@ -3062,7 +3071,7 @@ impl Window {
     /// This is used for things like `ResizeObserver` which should observe the value
     /// from the most recent reflow, but do not need it to reflect the current state of
     /// the DOM / style.
-    pub(crate) fn padding_query_without_reflow(&self, node: &Node) -> Option<PhysicalSides> {
+    pub(crate) fn padding_query_without_reflow(&self, node: &Node) -> Option<PhysicalSides<Au>> {
         let layout = self.layout.borrow();
         layout.query_padding(node.to_trusted_node_address())
     }
@@ -3088,30 +3097,31 @@ impl Window {
 
     pub(crate) fn box_area_query(
         &self,
+        cx: &mut JSContext,
         node: &Node,
         area: BoxAreaType,
         exclude_transform_and_inline: bool,
     ) -> Option<Rect<Au, CSSPixel>> {
-        self.layout_reflow(QueryMsg::BoxArea);
+        self.layout_reflow(cx, QueryMsg::BoxArea);
         self.box_area_query_without_reflow(node, area, exclude_transform_and_inline)
     }
 
     pub(crate) fn box_areas_query(&self, node: &Node, area: BoxAreaType) -> CSSPixelRectVec {
-        self.layout_reflow(QueryMsg::BoxAreas);
+        self.layout_reflow_deprecated(QueryMsg::BoxAreas);
         self.layout
             .borrow()
             .query_box_areas(node.to_trusted_node_address(), area)
     }
 
     pub(crate) fn client_rect_query(&self, node: &Node) -> Rect<i32, CSSPixel> {
-        self.layout_reflow(QueryMsg::ClientRectQuery);
+        self.layout_reflow_deprecated(QueryMsg::ClientRectQuery);
         self.layout
             .borrow()
             .query_client_rect(node.to_trusted_node_address())
     }
 
     pub(crate) fn current_css_zoom_query(&self, node: &Node) -> f32 {
-        self.layout_reflow(QueryMsg::CurrentCSSZoomQuery);
+        self.layout_reflow_deprecated(QueryMsg::CurrentCSSZoomQuery);
         self.layout
             .borrow()
             .query_current_css_zoom(node.to_trusted_node_address())
@@ -3127,7 +3137,7 @@ impl Window {
     /// Find the scroll area of the given node, if it is not None. If the node
     /// is None, find the scroll area of the viewport.
     pub(crate) fn scrolling_area_query(&self, node: Option<&Node>) -> Rect<i32, CSSPixel> {
-        self.layout_reflow(QueryMsg::ScrollingAreaOrOffsetQuery);
+        self.layout_reflow_deprecated(QueryMsg::ScrollingAreaOrOffsetQuery);
         self.layout
             .borrow()
             .query_scrolling_area(node.map(Node::to_trusted_node_address))
@@ -3145,7 +3155,7 @@ impl Window {
         &self,
         external_scroll_id: ExternalScrollId,
     ) -> Vector2D<f32, LayoutPixel> {
-        self.layout_reflow(QueryMsg::ScrollingAreaOrOffsetQuery);
+        self.layout_reflow_deprecated(QueryMsg::ScrollingAreaOrOffsetQuery);
         self.scroll_offset_query_with_external_scroll_id_no_reflow(external_scroll_id)
     }
 
@@ -3189,7 +3199,7 @@ impl Window {
         pseudo: Option<PseudoElement>,
         property: PropertyId,
     ) -> DOMString {
-        self.layout_reflow(QueryMsg::ResolvedStyleQuery(property.clone()));
+        self.layout_reflow_deprecated(QueryMsg::ResolvedStyleQuery(property.clone()));
 
         let document = self.Document();
         let animations = document.animation_manager().sets();
@@ -3206,7 +3216,7 @@ impl Window {
         &self,
         element: TrustedNodeAddress,
     ) -> Option<accesskit::Node> {
-        self.layout_reflow(QueryMsg::AccessKitNodeQuery);
+        self.layout_reflow_deprecated(QueryMsg::AccessKitNodeQuery);
         self.layout.borrow().query_accesskit_node(element)
     }
 
@@ -3218,7 +3228,7 @@ impl Window {
         browsing_context_id: BrowsingContextId,
     ) -> Option<ViewportDetails> {
         // Reflow might fail, but do a best effort to return the right size.
-        self.layout_reflow(QueryMsg::InnerWindowDimensionsQuery);
+        self.layout_reflow_deprecated(QueryMsg::InnerWindowDimensionsQuery);
         self.Document()
             .iframes()
             .viewport_details(browsing_context_id)
@@ -3229,7 +3239,7 @@ impl Window {
         &self,
         node: &Node,
     ) -> (Option<DomRoot<Element>>, Rect<Au, CSSPixel>) {
-        self.layout_reflow(QueryMsg::OffsetParentQuery);
+        self.layout_reflow_deprecated(QueryMsg::OffsetParentQuery);
         let response = self
             .layout
             .borrow()
@@ -3246,7 +3256,7 @@ impl Window {
         node: Option<&Node>,
         flags: ScrollContainerQueryFlags,
     ) -> Option<ScrollContainerResponse> {
-        self.layout_reflow(QueryMsg::ScrollParentQuery);
+        self.layout_reflow_deprecated(QueryMsg::ScrollParentQuery);
         self.layout
             .borrow()
             .query_scroll_container(node.map(Node::to_trusted_node_address), flags)
@@ -3282,7 +3292,7 @@ impl Window {
         node: &Node,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(DomRoot<Node>, Utf32CodeUnits)> {
-        self.layout_reflow(QueryMsg::TextIndexOrSegmentQuery);
+        self.layout_reflow_deprecated(QueryMsg::TextIndexOrSegmentQuery);
         let result = self
             .layout
             .borrow()
@@ -3302,7 +3312,7 @@ impl Window {
         offset: Utf32CodeUnitsOrNodeOffset,
         granularity: SegmentGranularity,
     ) -> Option<(RootedSelectionBoundary, RootedSelectionBoundary)> {
-        self.layout_reflow(QueryMsg::TextIndexOrSegmentQuery);
+        self.layout_reflow_deprecated(QueryMsg::TextIndexOrSegmentQuery);
         let ((start_node, start_offset), (end_node, end_offset)) = self
             .layout()
             .query_text_segment(node.to_trusted_node_address(), offset, granularity)?;
@@ -3322,12 +3332,12 @@ impl Window {
         flags: HitTestFlags,
         point: LayoutPoint,
     ) -> layout_api::HitTestResult {
-        self.layout_reflow(QueryMsg::ElementsFromPoint);
+        self.layout_reflow_deprecated(QueryMsg::ElementsFromPoint);
         self.layout().hit_test(flags, point)
     }
 
     pub(crate) fn query_effective_overflow(&self, node: &Node) -> Option<AxesOverflow> {
-        self.layout_reflow(QueryMsg::EffectiveOverflow);
+        self.layout_reflow_deprecated(QueryMsg::EffectiveOverflow);
         self.query_effective_overflow_without_reflow(node)
     }
 
@@ -4074,7 +4084,7 @@ impl Window {
             session_storage: Default::default(),
             local_storage: Default::default(),
             cookie_store: Default::default(),
-            status: DomRefCell::new(DOMString::new()),
+            status: DomRefCell::new(DOMString::new().traced()),
             parent_info,
             dom_static: GlobalStaticData::new(),
             js_runtime: DomRefCell::new(Some(runtime)),

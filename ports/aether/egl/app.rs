@@ -9,6 +9,7 @@ use euclid::{Rect, Scale};
 use keyboard_types::{CompositionEvent, CompositionState, Key, KeyState, NamedKey};
 use log::{info, warn};
 use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
+use servo::protocol_handler::ProtocolRegistry;
 use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
@@ -20,6 +21,7 @@ use servo::{
 };
 use url::Url;
 
+use super::protocols;
 use crate::egl::host_trait::HostTrait;
 use crate::history::open_history;
 use crate::prefs::ServoShellPreferences;
@@ -311,10 +313,18 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.home_settings.clone(),
         );
-        let history = open_history(&init.opts);
+        crate::search::install_search_engines(
+            init.opts.config_dir.clone(),
+            init.servoshell_preferences.search_engines.clone(),
+        );
+        let (history, _) = open_history(&init.opts);
+        let mut protocol_registry = ProtocolRegistry::default();
+        let _ = protocol_registry.register("servo", protocols::ServoProtocolHandler);
+        let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)
             .preferences(init.preferences.clone())
+            .protocol_registry(protocol_registry)
             .event_loop_waker(init.event_loop_waker.clone());
         let servo = servo_builder.build();
         #[cfg(feature = "webxr")]

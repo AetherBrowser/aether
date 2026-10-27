@@ -3,7 +3,7 @@ name = "aether"
 build = "build.rs"
 # Product version (`aether --version`). Not inherited from the workspace:
 # `[workspace.package] version` stays the Servo version
-version = "0.1.0"
+version = "0.2.0"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -35,11 +35,21 @@ OriginalFilename = "aether.exe"
 ProductName = "Aether"
 
 [features]
-# Don't add new features to `default` directly. Add to `default_without_allocator` instead.
-default = ["default_without_allocator", "servo-allocator/use-jemalloc"]
+# Don't add new features to `default` directly. Add to `default_base` instead.
+default = ["default_base", "media-gstreamer"]
 # Feature groups:
-# default features, without a custom allocator.
-default_without_allocator = ["bundled", "default_web_features", "default_tooling", "max_log_level", "multiprocess", "js_jit"]
+# Base default features, without GStreamer media support.
+default_base = [
+    "bundled",
+    "default_web_features",
+    "default_tooling",
+    "jemalloc",
+    "max_log_level",
+    "multiprocess",
+    "js_jit",
+]
+# Enable jemalloc on platforms that support it (not OHOS and not Windows).
+jemalloc = ["servo-allocator/use-jemalloc"]
 # Default web features should be kept in sync with the list in servo/Cargo.toml.
 # We also need to enable our own features, since we also have `cfg` gated code here.
 default_web_features = ["servo/default_web_features", "gamepad", "webgpu", "webgl", "webxr"]
@@ -96,6 +106,10 @@ tracing-subscriber = { workspace = true, optional = true, features = ["env-filte
 url = { workspace = true }
 webdriver_server = { workspace = true }
 
+[dev-dependencies]
+futures = { workspace = true, features = ["executor"] }
+tempfile = { workspace = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = { workspace = true }
 jni = { workspace = true }
@@ -126,6 +140,7 @@ ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
 xcomponent-sys = { workspace = true, features = ["api-20", "keyboard-types"] }
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
+http = { workspace = true }
 nix = { workspace = true, features = ["fs"] }
 serde_json = { workspace = true }
 servo-base = { workspace = true }

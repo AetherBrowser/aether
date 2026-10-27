@@ -3,11 +3,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::ffi::CStr;
+use std::os::raw::c_uint;
+use std::ptr;
 
 use bitflags::bitflags;
 use js::context::JSContext;
-use js::jsapi::{ExceptionStackBehavior, JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY};
-use js::rust::{HandleObject, HandleValue};
+use js::jsapi::{
+    ExceptionStackBehavior, JSClass, JSObject, JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY,
+    MutableHandleIdVector, PropertyDescriptor, jsid,
+};
+use js::rust::{
+    HandleId, HandleObject, HandleValue, MutableHandle, MutableHandleObject, MutableHandleValue,
+};
 
 bitflags! {
     /// Flags for property definitions in JavaScript.
@@ -69,6 +76,91 @@ pub fn JS_SetPendingException(
 #[inline]
 pub fn JS_IsExceptionPending(cx: &mut JSContext) -> bool {
     unsafe { js::rust::wrappers2::JS_IsExceptionPending(cx) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_IdToValue`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_IdToValue(cx: &mut JSContext, id: jsid, vp: MutableHandleValue) -> bool {
+    unsafe { js::rust::wrappers2::JS_IdToValue(cx, id, vp) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_GetPropertyById`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_GetPropertyById(
+    cx: &mut JSContext,
+    obj: HandleObject,
+    id: HandleId,
+    vp: MutableHandleValue,
+) -> bool {
+    unsafe { js::rust::wrappers2::JS_GetPropertyById(cx, obj, id, vp) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_NewObject`].
+/// Passing `None` for `clasp` creates a plain object.
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_NewObject(cx: &mut JSContext, clasp: Option<&'static JSClass>) -> *mut JSObject {
+    let clasp = clasp.map_or(ptr::null(), |clasp| clasp as *const JSClass);
+    unsafe { js::rust::wrappers2::JS_NewObject(cx, clasp) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_NewObjectWithGivenProto`].
+/// Passing `None` for `clasp` creates a plain object.
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_NewObjectWithGivenProto(
+    cx: &mut JSContext,
+    clasp: Option<&'static JSClass>,
+    proto: HandleObject,
+) -> *mut JSObject {
+    let clasp = clasp.map_or(ptr::null(), |clasp| clasp as *const JSClass);
+    unsafe { js::rust::wrappers2::JS_NewObjectWithGivenProto(cx, clasp, proto) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_GetProperty`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_GetProperty(
+    cx: &mut JSContext,
+    obj: HandleObject,
+    name: &CStr,
+    vp: MutableHandleValue,
+) -> bool {
+    unsafe { js::rust::wrappers2::JS_GetProperty(cx, obj, name.as_ptr(), vp) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_GetPrototype`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_GetPrototype(cx: &mut JSContext, obj: HandleObject, result: MutableHandleObject) -> bool {
+    unsafe { js::rust::wrappers2::JS_GetPrototype(cx, obj, result) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::GetPropertyKeys`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn GetPropertyKeys(
+    cx: &mut JSContext,
+    obj: HandleObject,
+    flags: c_uint,
+    props: MutableHandleIdVector,
+) -> bool {
+    unsafe { js::rust::wrappers2::GetPropertyKeys(cx, obj, flags, props) }
+}
+
+/// Safe wrapper around [`js::rust::wrappers2::JS_GetOwnPropertyDescriptorById`].
+#[allow(non_snake_case)]
+#[inline]
+pub fn JS_GetOwnPropertyDescriptorById(
+    cx: &mut JSContext,
+    obj: HandleObject,
+    id: HandleId,
+    desc: MutableHandle<PropertyDescriptor>,
+    is_none: &mut bool,
+) -> bool {
+    unsafe { js::rust::wrappers2::JS_GetOwnPropertyDescriptorById(cx, obj, id, desc, is_none) }
 }
 
 #[cfg(test)]

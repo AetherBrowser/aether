@@ -133,11 +133,10 @@ fn load_cjk_fonts(font_candidates: &[(&str, &str)]) -> FontDefinitions {
         }
     }
 
-    if !loaded_font_names.is_empty() {
-        let proportional = fonts.families.get_mut(&FontFamily::Proportional).unwrap();
-        for font_name in loaded_font_names.iter() {
-            proportional.insert(0, font_name.clone());
-        }
+    if !loaded_font_names.is_empty() &&
+        let Some(proportional) = fonts.families.get_mut(&FontFamily::Proportional)
+    {
+        proportional.append(&mut loaded_font_names);
     }
 
     fonts
@@ -361,10 +360,8 @@ impl Gui {
 
             let tab = tab_frame
                 .content_ui
-                .add(Button::selectable(
-                    active,
-                    truncate_with_ellipsis(&label, 20),
-                ))
+                // No frame: its interact rect is taller than the tab, so only the tab frame is filled.
+                .add(Button::selectable(active, truncate_with_ellipsis(&label, 20)).frame(false))
                 .on_hover_ui(|ui| {
                     ui.label(&label);
                 });

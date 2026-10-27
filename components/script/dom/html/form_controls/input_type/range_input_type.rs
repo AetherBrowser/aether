@@ -72,7 +72,7 @@ impl RangeInputType {
         }
 
         // Don't capture the pointer for a widget that has no box to drag a thumb along.
-        let Some(axis) = SliderAxis::new(input) else {
+        let Some(axis) = SliderAxis::new(cx, input) else {
             return ValueChangeEvents::empty();
         };
 
@@ -355,8 +355,8 @@ struct SliderAxis {
 
 impl SliderAxis {
     /// The axis at the start of a drag, flushing layout so the geometry is current.
-    fn new(input: &HTMLInputElement) -> Option<Self> {
-        Self::from_padding_box(input, input.upcast::<Node>().padding_box()?)
+    fn new(cx: &mut JSContext, input: &HTMLInputElement) -> Option<Self> {
+        Self::from_padding_box(input, input.upcast::<Node>().padding_box(cx)?)
     }
 
     /// The axis for the moves that follow, without forcing a layout.
@@ -502,7 +502,8 @@ impl SpecificShadowTree<HTMLInputElement, RangeInputType> for RangeInputShadowTr
 
 impl UAShadowRoot<RangeInputShadowTree> for RangeInputType {
     fn store_for_shadow_tree(&self, cx: &mut JSContext, shadow_root: DomRoot<ShadowRoot>) {
-        *self.shadow_tree.borrow_mut() = Some(RangeInputShadowTree::new(cx, shadow_root.upcast()));
+        *self.shadow_tree.safe_borrow_mut(cx.no_gc()) =
+            Some(RangeInputShadowTree::new(cx, shadow_root.upcast()));
     }
 
     fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<RangeInputShadowTree>> {

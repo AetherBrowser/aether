@@ -51,9 +51,12 @@ impl UAShadowRoot<ShadowTree> for HTMLMeterElement {
             .AppendChild(cx, container.upcast::<Node>())
             .expect("Must always be able to append to shadow root");
 
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            meter_value: container.as_traced(),
-        });
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                meter_value: container.as_traced(),
+            });
     }
 
     fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
@@ -137,8 +140,9 @@ impl HTMLMeterElement {
 
         // Set the correct pseudo class
         self.upcast::<Element>()
-            .set_state(ElementState::METER_OPTIMUM_STATES, false);
-        self.upcast::<Element>().set_state(element_state, true);
+            .set_state(cx.no_gc(), ElementState::METER_OPTIMUM_STATES, false);
+        self.upcast::<Element>()
+            .set_state(cx.no_gc(), element_state, true);
 
         // Update the visual width of the meter
         let shadow_tree = self.shadow_tree(cx);

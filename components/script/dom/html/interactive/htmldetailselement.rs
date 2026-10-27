@@ -11,7 +11,7 @@ use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::JSContext;
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
-use script_bindings::domstring::DOMString;
+use script_bindings::domstring::{DOMString, TracedDOMString};
 use style::selector_parser::PseudoElement;
 
 use crate::dom::bindings::codegen::Bindings::HTMLDetailsElementBinding::HTMLDetailsElementMethods;
@@ -41,7 +41,7 @@ use crate::dom::text::Text;
 use crate::dom::toggleevent::ToggleEvent;
 
 /// The summary that should be presented if no `<summary>` element is present
-const DEFAULT_SUMMARY: &str = "Details";
+static DEFAULT_SUMMARY: &str = "Details";
 
 /// Holds handles to all slots in the UA shadow tree
 ///
@@ -68,7 +68,7 @@ impl UAShadowRoot<ShadowTree> for HTMLDetailsElement {
         let fallback_summary = DomRoot::downcast::<HTMLElement>(fallback_summary).unwrap();
         fallback_summary
             .upcast::<Node>()
-            .set_text_content_for_element(cx, Some(DEFAULT_SUMMARY.into()));
+            .set_text_content_for_element(cx, Some(DOMString::from_static(DEFAULT_SUMMARY)));
         summary
             .upcast::<Node>()
             .AppendChild(cx, fallback_summary.upcast::<Node>())
@@ -82,11 +82,14 @@ impl UAShadowRoot<ShadowTree> for HTMLDetailsElement {
             .upcast::<Node>()
             .set_implemented_pseudo_element(PseudoElement::DetailsContent);
 
-        let _ = self.shadow_tree.borrow_mut().insert(ShadowTree {
-            summary: summary.as_traced(),
-            details_content: details_content.as_traced(),
-            implicit_summary: fallback_summary.as_traced(),
-        });
+        let _ = self
+            .shadow_tree
+            .safe_borrow_mut(cx.no_gc())
+            .insert(ShadowTree {
+                summary: summary.as_traced(),
+                details_content: details_content.as_traced(),
+                implicit_summary: fallback_summary.as_traced(),
+            });
     }
 
     fn borrow_for_shadow_tree(&self) -> Ref<'_, Option<ShadowTree>> {
@@ -109,7 +112,7 @@ pub(crate) struct HTMLDetailsElement {
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct DetailsNameGroups {
     /// Map from `name` attribute to a list of details elements.
-    pub(crate) groups: HashMap<DOMString, Vec<Dom<HTMLDetailsElement>>>,
+    pub(crate) groups: HashMap<TracedDOMString, Vec<Dom<HTMLDetailsElement>>>,
 }
 
 /// Describes how to proceed in case two details elements in the same
@@ -129,7 +132,7 @@ impl DetailsNameGroups {
         }
 
         debug!("Registering details element with name={name:?}");
-        let details_elements_with_the_same_name = self.groups.entry(name).or_default();
+        let details_elements_with_the_same_name = self.groups.entry(name.traced()).or_default();
 
         // The spec tells us to keep the list in tree order, but that's not actually necessary.
         details_elements_with_the_same_name.push(Dom::from_ref(details_element));
@@ -145,7 +148,7 @@ impl DetailsNameGroups {
         }
 
         debug!("Unregistering details element with name={name:?}");
-        let Entry::Occupied(mut entry) = self.groups.entry(name) else {
+        let Entry::Occupied(mut entry) = self.groups.entry(name.traced()) else {
             panic!("details element is not registered");
         };
         entry
@@ -455,7 +458,8 @@ impl VirtualMethods for HTMLDetailsElement {
                 );
             }
 
-            self.upcast::<Element>().set_open_state(self.Open());
+            self.upcast::<Element>()
+                .set_open_state(cx.no_gc(), self.Open());
         }
     }
 

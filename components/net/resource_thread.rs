@@ -217,6 +217,7 @@ fn create_http_states(
         hsts_list: RwLock::new(hsts_list),
         cookie_jar: RwLock::new(cookie_jar),
         auth_cache: RwLock::new(auth_cache),
+        cors_cache: RwLock::new(CorsCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Public),
         client: create_http_client(create_tls_config(
@@ -233,6 +234,7 @@ fn create_http_states(
         hsts_list: RwLock::new(HstsList::default()),
         cookie_jar: RwLock::new(CookieStorage::new(150)),
         auth_cache: RwLock::new(AuthCache::default()),
+        cors_cache: RwLock::new(CorsCache::default()),
         history_states: RwLock::new(FxHashMap::default()),
         http_cache: HttpCache::new(HttpCacheAssignment::Private),
         client: create_http_client(create_tls_config(
@@ -852,7 +854,6 @@ impl CoreResourceManager {
                 file_token,
                 request_interceptor: Arc::new(TokioMutex::new(request_interceptor)),
                 cancellation_listener,
-                timing: ResourceFetchTiming::new(request.timing_type()).into(),
                 protocols,
                 websocket_chan: None,
                 ca_certificates,
@@ -865,12 +866,12 @@ impl CoreResourceManager {
                 Some(res_init) => {
                     let response = Response::from_init(res_init, timing_type);
 
-                    let mut fetch_params = FetchParams::new(request);
+                    let timing = ResourceFetchTiming::new(request.timing_type()).into();
+                    let mut fetch_params = FetchParams::new(request, timing);
                     let mut request_body_stream_closer =
                         AutoRequestBodyStreamCloser::new(fetch_params.request.body.as_ref());
                     let response = http_redirect_fetch(
                         &mut fetch_params,
-                        &mut CorsCache::default(),
                         response,
                         true,
                         &mut sender,
@@ -950,7 +951,6 @@ impl CoreResourceManager {
                         file_token: FileTokenCheck::NotRequired,
                         request_interceptor: Arc::new(TokioMutex::new(request_interceptor)),
                         cancellation_listener,
-                        timing: ResourceFetchTiming::new(request.timing_type()).into(),
                         protocols: protocols.clone(),
                         websocket_chan: Some(Arc::new(Mutex::new(WebSocketChannel::new(
                             event_sender.clone(),

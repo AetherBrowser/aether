@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use atomic_refcell::AtomicRefCell;
 use bytes::{Bytes, BytesMut};
+use crossbeam_channel::RecvTimeoutError;
 use data_url::mime::Mime;
 use dom_struct::dom_struct;
 use encoding_rs::{Encoding, UTF_8};
@@ -117,13 +118,12 @@ struct XHRContext {
 }
 
 impl FetchResponseListener for XHRContext {
-    fn process_request_body(&mut self, _: RequestId) {
-        // todo
-    }
+    fn process_request_body(&mut self, _: &GlobalScope, _: RequestId) {}
 
     fn process_response(
         &mut self,
         cx: &mut JSContext,
+        _: &GlobalScope,
         _: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
@@ -134,7 +134,13 @@ impl FetchResponseListener for XHRContext {
         }
     }
 
-    fn process_response_chunk(&mut self, cx: &mut JSContext, _: RequestId, chunk: Bytes) {
+    fn process_response_chunk(
+        &mut self,
+        cx: &mut JSContext,
+        _: &GlobalScope,
+        _: RequestId,
+        chunk: Bytes,
+    ) {
         self.xhr
             .root()
             .process_data_available(cx, self.gen_id, chunk);
@@ -143,11 +149,12 @@ impl FetchResponseListener for XHRContext {
     fn process_response_eof(
         self,
         cx: &mut JSContext,
+        global: &GlobalScope,
         _: RequestId,
         response: Result<(), NetworkError>,
         timing: ResourceFetchTiming,
     ) {
-        network_listener::submit_timing(cx, &self, &response, &timing);
+        network_listener::submit_timing(cx, global, &self, &response, &timing);
 
         let rv = self
             .xhr
@@ -159,10 +166,10 @@ impl FetchResponseListener for XHRContext {
     fn process_csp_violations(
         &mut self,
         cx: &mut js::context::JSContext,
+        global: &GlobalScope,
         _request_id: RequestId,
         violations: Vec<Violation>,
     ) {
-        let global = &self.resource_timing_global();
         global.report_csp_violations(cx, violations, None, None);
     }
 
@@ -174,10 +181,6 @@ impl FetchResponseListener for XHRContext {
 impl ResourceTimingListener for XHRContext {
     fn resource_timing_information(&self) -> (InitiatorType, ServoUrl) {
         (InitiatorType::XMLHttpRequest, self.url.clone())
-    }
-
-    fn resource_timing_global(&self) -> DomRoot<GlobalScope> {
-        self.xhr.root().global()
     }
 }
 
@@ -1670,8 +1673,31 @@ impl XMLHttpRequest {
         global.fetch(request_builder, context, task_source);
 
         if let Some(script_port) = script_port {
+            // The timer scheduled by `set_timeout` cannot fire while this loop blocks the event
+            // loop, so the timeout of a synchronous request has to be enforced here instead.
+            let timeout = self.timeout.get();
+            let deadline = (!timeout.is_zero()).then(|| self.fetch_time.get() + timeout);
             loop {
-                if !global.process_event(cx, script_port.recv().unwrap()) {
+                let message = match deadline {
+                    None => script_port.recv().unwrap(),
+                    Some(deadline) => match script_port.recv_deadline(deadline) {
+                        Err(RecvTimeoutError::Timeout) => {
+                            // <https://xhr.spec.whatwg.org/#dom-xmlhttprequest-send>
+                            // Step 12.6. If processedResponse is false, then set this’s timed out
+                            // to true and terminate this’s fetch controller.
+                            self.controller.safe_borrow_mut(cx.no_gc()).terminate();
+                            self.process_partial_response(
+                                cx,
+                                XHRProgress::Errored(self.generation_id.get(), ErrorType::Timeout),
+                            );
+                            return Err(Error::Timeout(Some(
+                                "Synchronous request timed out".into(),
+                            )));
+                        },
+                        message => message.unwrap(),
+                    },
+                };
+                if !global.process_event(cx, message) {
                     // We're exiting.
                     return Err(Error::Abort(None));
                 }

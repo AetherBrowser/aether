@@ -90,13 +90,17 @@ impl App {
             self.servoshell_preferences.home_settings.clone(),
         );
 
+        let (history, history_page) = open_history(&self.opts);
+
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
             "urlinfo",
             protocols::urlinfo::UrlInfoProtocolHander::default(),
         );
-        let _ =
-            protocol_registry.register("servo", protocols::servo::ServoProtocolHandler::default());
+        let _ = protocol_registry.register(
+            "servo",
+            protocols::servo::ServoProtocolHandler::new(history_page),
+        );
         let _ = protocol_registry.register(
             "resource",
             protocols::resource::ResourceProtocolHandler::default(),
@@ -143,13 +147,21 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
-            open_history(&self.opts),
+            history,
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()
                 .map(ServoshellGamepadDelegate::new)
                 .map(Rc::new),
         ));
+        let url_given = self
+            .servoshell_preferences
+            .url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty());
+        if !url_given {
+            platform_window.focus_location_bar();
+        }
         let initial_url = self.initial_url.as_url().clone();
         running_state.open_window(
             platform_window,

@@ -49,7 +49,6 @@ use crate::traits::{
 #[dom_struct]
 pub struct GPUQueue<D: DomTypes> {
     reflector_: Reflector,
-    #[ignore_malloc_size_of = "defined in webgpu"]
     #[no_trace]
     channel: WebGPU,
     device: MutNullableDom<GPUDevice<D>>,
@@ -278,7 +277,9 @@ where
         let (source_image_width, source_image_height) = match source_image {
             GPUCopyExternalImageSource::ImageBitmap(inner) => (inner.Width(), inner.Height()),
             GPUCopyExternalImageSource::ImageData(inner) => (inner.Width(), inner.Height()),
-            GPUCopyExternalImageSource::HTMLImageElement(inner) => (inner.Width(), inner.Height()),
+            GPUCopyExternalImageSource::HTMLImageElement(inner) => {
+                (inner.Width(cx), inner.Height(cx))
+            },
             GPUCopyExternalImageSource::HTMLVideoElement(inner) => (inner.Width(), inner.Height()),
             GPUCopyExternalImageSource::HTMLCanvasElement(inner) => (inner.Width(), inner.Height()),
             GPUCopyExternalImageSource::OffscreenCanvas(inner) => {

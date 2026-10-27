@@ -12,15 +12,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use euclid::{Angle, Length, Point2D, Rect, Rotation3D, Scale, Size2D, UnknownUnit, Vector3D};
-use keyboard_types::ShortcutMatcher;
 use log::{debug, info};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, Cursor, DeviceIndependentIntRect,
     DeviceIndependentPixel, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint,
     EmbedderControl, EmbedderControlId, ImeEvent, InputEvent, InputEventId, InputEventResult,
-    InputMethodControl, Key, KeyState, KeyboardEvent, Modifiers, MouseButton as ServoMouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NamedKey,
+    InputMethodControl, Key, KeyState, KeyboardEvent, MouseButton as ServoMouseButton,
+    MouseButtonAction, MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent,
     OffscreenRenderingContext, PermissionRequest, RenderingContext, ScreenGeometry, Theme,
     TouchEvent, TouchEventType, TouchId, TouchPointerType, WebRenderDebugOption, WebView,
     WebViewId, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
@@ -44,17 +43,18 @@ use {
 };
 
 use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
-use super::keyutils::{CMD_OR_ALT, keyboard_event_from_winit};
+use super::keyutils::keyboard_event_from_winit;
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::gui::Gui;
-use crate::desktop::keyutils::CMD_OR_CONTROL;
+use crate::desktop::shortcuts::{BrowserAction, Dispatch, is_text_editing_key, shortcut_for};
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     LINE_HEIGHT, LINE_WIDTH, MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow,
-    ServoShellWindowId, TopLevelWebViewCreationRequest, new_tab_url,
+    ServoShellWindowId, TopLevelWebViewCreationRequest, history_url, new_tab_url, new_window_url,
+    processes_url, settings_url, view_source_url,
 };
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
@@ -137,7 +137,7 @@ impl HeadedWindow {
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            let icon_bytes = include_bytes!("../../../resources/servo_64.png");
+            let icon_bytes = include_bytes!("../../../resources/aether_64.png");
             winit_window.set_window_icon(Some(load_icon(icon_bytes)));
         }
 
@@ -229,7 +229,7 @@ impl HeadedWindow {
     ) {
         // First, handle servoshell key bindings that are not overridable by, or visible to, the page.
         let keyboard_event = keyboard_event_from_winit(&winit_event, self.modifiers_state.get());
-        if self.handle_intercepted_key_bindings(state, window, &keyboard_event) {
+        if self.handle_intercepted_key_bindings(&state, window, &keyboard_event) {
             return;
         }
 
@@ -348,95 +348,157 @@ impl HeadedWindow {
     /// Handle key events before sending them to Servo.
     fn handle_intercepted_key_bindings(
         &self,
-        state: Rc<RunningAppState>,
-        window: &Rc<ServoShellWindow>,
+        state: &RunningAppState,
+        window: &ServoShellWindow,
         key_event: &KeyboardEvent,
     ) -> bool {
-        let Some(active_webview) = window.active_webview() else {
+        match shortcut_for(&key_event.event) {
+            Some((action, Dispatch::Reserved)) => {
+                self.run_shortcut(state, window, key_event, action)
+            },
+            _ => false,
+        }
+    }
+
+    /// Handle a key typed in the browser interface, which the page never sees.
+    fn handle_browser_interface_key_bindings(
+        &self,
+        state: &RunningAppState,
+        window: &ServoShellWindow,
+        winit_event: &KeyEvent,
+    ) -> bool {
+        let key_event = keyboard_event_from_winit(winit_event, self.modifiers_state.get());
+        let Some((action, _)) = shortcut_for(&key_event.event) else {
             return false;
         };
+        if self.gui.borrow().is_editing_text() && is_text_editing_key(&key_event.event.key) {
+            return false;
+        }
+        self.run_shortcut(state, window, &key_event, action)
+    }
 
-        let mut handled = true;
-        ShortcutMatcher::from_event(key_event.event.clone())
-            .shortcut(CMD_OR_CONTROL, 'W', || {
-                window.close_webview(active_webview.id());
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F9), || {
-                active_webview.capture_webrender();
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F10), || {
-                active_webview.toggle_webrender_debugging(WebRenderDebugOption::RenderTargetDebug);
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F11), || {
-                active_webview.toggle_webrender_debugging(WebRenderDebugOption::TextureCacheDebug);
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::F12), || {
-                active_webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler);
-            })
-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowRight), || {
-                active_webview.go_forward(1);
-            })
-            .optional_shortcut(
-                cfg!(not(target_os = "windows")),
-                CMD_OR_CONTROL,
-                ']',
-                || {
-                    active_webview.go_forward(1);
-                },
-            )
-            .shortcut(CMD_OR_ALT, Key::Named(NamedKey::ArrowLeft), || {
-                active_webview.go_back(1);
-            })
-            .optional_shortcut(
-                cfg!(not(target_os = "windows")),
-                CMD_OR_CONTROL,
-                '[',
-                || {
-                    active_webview.go_back(1);
-                },
-            )
-            .optional_shortcut(
-                self.get_fullscreen(),
-                Modifiers::empty(),
-                Key::Named(NamedKey::Escape),
-                || active_webview.exit_fullscreen(),
-            )
-            // Select the first 8 tabs via shortcuts
-            .shortcut(CMD_OR_CONTROL, '1', || window.activate_webview_by_index(0))
-            .shortcut(CMD_OR_CONTROL, '2', || window.activate_webview_by_index(1))
-            .shortcut(CMD_OR_CONTROL, '3', || window.activate_webview_by_index(2))
-            .shortcut(CMD_OR_CONTROL, '4', || window.activate_webview_by_index(3))
-            .shortcut(CMD_OR_CONTROL, '5', || window.activate_webview_by_index(4))
-            .shortcut(CMD_OR_CONTROL, '6', || window.activate_webview_by_index(5))
-            .shortcut(CMD_OR_CONTROL, '7', || window.activate_webview_by_index(6))
-            .shortcut(CMD_OR_CONTROL, '8', || window.activate_webview_by_index(7))
-            // Cmd/Ctrl 9 is a bit different in that it focuses the last tab instead of the 9th
-            .shortcut(CMD_OR_CONTROL, '9', || {
-                let len = window.webviews().len();
-                if len > 0 {
-                    window.activate_webview_by_index(len - 1)
+    /// Performs `action` when its key is pressed. Returns false if the key should go on
+    /// to the page instead.
+    fn run_shortcut(
+        &self,
+        state: &RunningAppState,
+        window: &ServoShellWindow,
+        key_event: &KeyboardEvent,
+        action: BrowserAction,
+    ) -> bool {
+        if action == BrowserAction::ExitDocumentFullscreen && !self.fullscreen_from_document.get() {
+            return false;
+        }
+        if key_event.event.state == KeyState::Down {
+            self.perform_browser_action(state, window, action);
+        }
+        true
+    }
+
+    /// Performs an action chosen with a keyboard shortcut or the application menu.
+    fn perform_browser_action(
+        &self,
+        state: &RunningAppState,
+        window: &ServoShellWindow,
+        action: BrowserAction,
+    ) {
+        let Some(webview) = window.active_webview() else {
+            return;
+        };
+        let queue = |command| window.queue_user_interface_command(command);
+        let open_in_new_tab = |url| {
+            queue(UserInterfaceCommand::NewWebView(
+                TopLevelWebViewCreationRequest::WithUrl(url),
+            ))
+        };
+        let shows_toolbar = !self.fullscreen_from_document.get();
+        // Like other browsers, changing tabs gives the keyboard back to the page.
+        if matches!(
+            action,
+            BrowserAction::CloseTab |
+                BrowserAction::ReopenClosedTab |
+                BrowserAction::NextTab |
+                BrowserAction::PreviousTab |
+                BrowserAction::SelectTab(_) |
+                BrowserAction::SelectLastTab
+        ) {
+            self.gui.borrow().surrender_focus();
+        }
+        match action {
+            BrowserAction::NewTab => {
+                open_in_new_tab(new_tab_url());
+                self.focus_location_bar();
+            },
+            BrowserAction::CloseTab => queue(UserInterfaceCommand::CloseWebView(webview.id())),
+            BrowserAction::ReopenClosedTab => queue(UserInterfaceCommand::ReopenClosedTab),
+            BrowserAction::NextTab => window.activate_adjacent_webview(true),
+            BrowserAction::PreviousTab => window.activate_adjacent_webview(false),
+            BrowserAction::SelectTab(index) => window.activate_webview_by_index(index),
+            BrowserAction::SelectLastTab => {
+                window.activate_webview_by_index(window.webview_ids().len() - 1)
+            },
+            BrowserAction::MoveTabLeft => window.move_active_webview(false),
+            BrowserAction::MoveTabRight => window.move_active_webview(true),
+            BrowserAction::NewWindow => queue(UserInterfaceCommand::NewWindow(
+                TopLevelWebViewCreationRequest::WithUrl(new_window_url()),
+            )),
+            BrowserAction::CloseWindow => window.schedule_close(),
+            BrowserAction::Quit => state.schedule_exit(),
+            BrowserAction::Back => queue(UserInterfaceCommand::Back),
+            BrowserAction::Forward => queue(UserInterfaceCommand::Forward),
+            BrowserAction::Reload => queue(UserInterfaceCommand::Reload),
+            BrowserAction::Home => queue(UserInterfaceCommand::Home),
+            BrowserAction::FocusLocationBar => self.focus_location_bar(),
+            BrowserAction::ZoomIn => webview.set_page_zoom(webview.page_zoom() + 0.1),
+            BrowserAction::ZoomOut => webview.set_page_zoom(webview.page_zoom() - 0.1),
+            BrowserAction::ResetZoom => webview.set_page_zoom(1.0),
+            BrowserAction::ToggleFullscreen if self.fullscreen_from_document.get() => {
+                webview.exit_fullscreen()
+            },
+            BrowserAction::ToggleFullscreen => self.set_window_fullscreen(!self.get_fullscreen()),
+            BrowserAction::ExitDocumentFullscreen => webview.exit_fullscreen(),
+            BrowserAction::History => window.activate_or_open_tab(history_url()),
+            BrowserAction::Settings => window.activate_or_open_tab(settings_url()),
+            BrowserAction::Processes => window.activate_or_open_tab(processes_url()),
+            BrowserAction::ViewSource => {
+                if let Some(url) = webview.url().as_ref().and_then(view_source_url) {
+                    open_in_new_tab(url);
                 }
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::PageDown), || {
-                if let Some(index) = window.get_active_webview_index() {
-                    window.activate_webview_by_index((index + 1) % window.webviews().len())
-                }
-            })
-            .shortcut(Modifiers::CONTROL, Key::Named(NamedKey::PageUp), || {
-                if let Some(index) = window.get_active_webview_index() {
-                    let len = window.webviews().len();
-                    window.activate_webview_by_index((index + len - 1) % len);
-                }
-            })
-            .shortcut(CMD_OR_CONTROL, 'T', || {
-                window.create_and_activate_toplevel_webview(
-                    state.clone(),
-                    TopLevelWebViewCreationRequest::WithUrl(new_tab_url()),
-                );
-            })
-            .shortcut(CMD_OR_CONTROL, 'Q', || state.schedule_exit())
-            .otherwise(|| handled = false);
-        handled
+            },
+            BrowserAction::ToggleDeveloperTools => self.gui.borrow_mut().toggle_developer_tools(),
+            BrowserAction::ToggleAppMenu if shows_toolbar => {
+                self.gui.borrow_mut().toggle_app_menu()
+            },
+            BrowserAction::ToggleAppMenu => {},
+            BrowserAction::CaptureWebRender => webview.capture_webrender(),
+            BrowserAction::ToggleRenderTargetDebug => {
+                webview.toggle_webrender_debugging(WebRenderDebugOption::RenderTargetDebug)
+            },
+            BrowserAction::ToggleTextureCacheDebug => {
+                webview.toggle_webrender_debugging(WebRenderDebugOption::TextureCacheDebug)
+            },
+            BrowserAction::ToggleProfiler => {
+                webview.toggle_webrender_debugging(WebRenderDebugOption::Profiler)
+            },
+        }
+        self.winit_window.request_redraw();
+    }
+
+    /// Enters or leaves fullscreen without the page asking for it, as F11 does.
+    fn set_window_fullscreen(&self, state: bool) {
+        let monitor = self
+            .winit_window()
+            .current_monitor()
+            .or_else(|| self.winit_window.available_monitors().nth(0))
+            .expect("No monitor detected");
+        if self.fullscreen.get() != state {
+            self.winit_window.set_fullscreen(if state {
+                Some(winit::window::Fullscreen::Borderless(Some(monitor)))
+            } else {
+                None
+            });
+        }
+        self.fullscreen.set(state);
     }
 
     #[cfg_attr(not(target_os = "macos"), expect(unused_variables))]
@@ -546,6 +608,10 @@ impl HeadedWindow {
             gui.update(&state, &window, self);
             gui.paint(&self.winit_window);
         }
+        let app_menu_action = self.gui.borrow_mut().take_app_menu_action();
+        if let Some(action) = app_menu_action {
+            self.perform_browser_action(&state, &window, action);
+        }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse_position.set(Some(
@@ -569,6 +635,16 @@ impl HeadedWindow {
                 .get()
                 .is_none_or(|point| self.gui.borrow().is_in_egui_toolbar_rect(point))
         };
+
+        if let WindowEvent::KeyboardInput {
+            event: ref key_event,
+            ..
+        } = event &&
+            (self.gui.borrow().has_keyboard_focus() || self.gui.borrow().is_app_menu_open()) &&
+            self.handle_browser_interface_key_bindings(&state, &window, key_event)
+        {
+            return;
+        }
 
         // Handle the event
         let mut consumed = false;
@@ -958,19 +1034,7 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn set_fullscreen(&self, state: bool) {
-        let monitor = self
-            .winit_window()
-            .current_monitor()
-            .or_else(|| self.winit_window.available_monitors().nth(0))
-            .expect("No monitor detected");
-        if self.fullscreen.get() != state {
-            self.winit_window.set_fullscreen(if state {
-                Some(winit::window::Fullscreen::Borderless(Some(monitor)))
-            } else {
-                None
-            });
-        }
-        self.fullscreen.set(state);
+        self.set_window_fullscreen(state);
         self.fullscreen_from_document.set(state);
     }
 
@@ -1069,7 +1133,9 @@ impl PlatformWindow for HeadedWindow {
     /// Handle servoshell key bindings that may have been prevented by the page in the active webview.
     fn notify_input_event_handled(
         &self,
-        webview: &WebView,
+        state: &RunningAppState,
+        window: &ServoShellWindow,
+        _webview: &WebView,
         id: InputEventId,
         result: InputEventResult,
     ) {
@@ -1079,28 +1145,20 @@ impl PlatformWindow for HeadedWindow {
         if result.intersects(InputEventResult::DefaultPrevented | InputEventResult::Consumed) {
             return;
         }
-
-        ShortcutMatcher::from_event(keyboard_event.event)
-            .shortcut(CMD_OR_CONTROL, '=', || {
-                webview.set_page_zoom(webview.page_zoom() + 0.1);
-            })
-            .shortcut(CMD_OR_CONTROL, '+', || {
-                webview.set_page_zoom(webview.page_zoom() + 0.1);
-            })
-            .shortcut(CMD_OR_CONTROL, '-', || {
-                webview.set_page_zoom(webview.page_zoom() - 0.1);
-            })
-            .shortcut(CMD_OR_CONTROL, '0', || {
-                webview.set_page_zoom(1.0);
-            })
-            .shortcut(CMD_OR_CONTROL, 'R', || webview.reload())
-            .shortcut(Modifiers::empty(), Key::Named(NamedKey::F5), || {
-                webview.reload()
-            });
+        if let Some((action, Dispatch::PageFirst)) = shortcut_for(&keyboard_event.event) {
+            self.run_shortcut(state, window, &keyboard_event, action);
+        }
     }
 
     fn has_platform_focus(&self) -> bool {
         self.winit_window.has_focus()
+    }
+
+    fn focus_location_bar(&self) {
+        if !self.fullscreen_from_document.get() {
+            self.gui.borrow_mut().focus_location_bar();
+            self.winit_window.request_redraw();
+        }
     }
 
     fn show_embedder_control(&self, webview_id: WebViewId, embedder_control: EmbedderControl) {

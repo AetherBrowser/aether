@@ -4,7 +4,7 @@
 
 use std::ffi::CString;
 use std::ops::ControlFlow;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::sync::LazyLock;
 
 use cssparser::Parser;
@@ -14,9 +14,8 @@ use js::conversions::{
     ConversionResult, FromJSValConvertible, ToJSValConvertible, jsstr_to_string,
 };
 use js::gc::{HandleValue, RootedVec};
-use js::jsapi::{HandleId, Heap, JS_GetPropertyById, JSITER_OWNONLY, JSObject};
+use js::jsapi::{Heap, JS_GetPropertyById, JSITER_OWNONLY, JSObject};
 use js::jsval::{ObjectValue, UndefinedValue};
-use js::rust::wrappers2::{GetPropertyKeys, JS_IdToValue, JS_NewObject};
 use js::rust::{
     ForOfIterationFailure, HandleObject, IdVector, IntoHandle, IntoMutableHandle, for_of,
 };
@@ -30,7 +29,9 @@ use script_bindings::codegen::GenericUnionTypes::UnrestrictedDoubleOrKeyframeEff
 use script_bindings::conversions::StringificationBehavior;
 use script_bindings::error::{Error, Fallible};
 use script_bindings::inheritance::Castable;
-use script_bindings::js::{JS_DefineProperty, PropertyFlags};
+use script_bindings::js::{
+    GetPropertyKeys, JS_DefineProperty, JS_IdToValue, JS_NewObject, PropertyFlags,
+};
 use script_bindings::num::Finite;
 use script_bindings::reflector::reflect_dom_object_with_proto;
 use script_bindings::root::DomRoot;
@@ -134,7 +135,6 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
     }
 
     /// <https://drafts.csswg.org/web-animations-1/#dom-keyframeeffect-getkeyframes>
-    #[expect(unsafe_code)]
     fn GetKeyframes(
         &self,
         cx: &mut JSContext,
@@ -168,7 +168,7 @@ impl KeyframeEffectMethods<crate::DomTypeHolder> for KeyframeEffect {
                 computedOffset: keyframe.offset,
                 easing: keyframe.easing_function.clone(),
             };
-            rooted!(&in(cx) let mut output_keyframe = unsafe { JS_NewObject(cx, ptr::null()) });
+            rooted!(&in(cx) let mut output_keyframe = JS_NewObject(cx, None));
             base_keyframe.to_jsobject(cx, output_keyframe.handle_mut());
 
             // Step 3.3 For each animation property-value pair declaration in keyframe, perform the following steps:
@@ -402,7 +402,7 @@ fn get_property_declarations(
     // on the object. Instead we can iterate over the own properties of the object and see
     // if they're animated properties, that's easier.
     let mut ids = IdVector::new(cx);
-    if !unsafe { GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) } {
+    if !GetPropertyKeys(cx, object, JSITER_OWNONLY, ids.handle_mut()) {
         return Ok(Vec::new());
     }
 
@@ -415,8 +415,7 @@ fn get_property_declarations(
             continue;
         }
         rooted!(&in(cx) let mut key_value = UndefinedValue());
-        let raw_id: HandleId = id.handle().into();
-        if !unsafe { JS_IdToValue(cx, *raw_id.ptr, key_value.handle_mut()) } {
+        if !JS_IdToValue(cx, id.handle().get(), key_value.handle_mut()) {
             continue;
         }
         rooted!(&in(cx) let js_string = key_value.to_string());
