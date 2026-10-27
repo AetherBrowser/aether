@@ -66,6 +66,11 @@ impl MpvPlayer {
         options: Arc<[(&'static str, &'static str)]>,
         sender: GenericCallback<PlayerEvent>,
     ) -> MpvPlayer {
+        // Servo keeps what it fetches until the player asks for it with `NeedData` (its
+        // `BufferedDataSource` starts locked), as GStreamer's appsrc does when it starts.
+        // Servo starts its fetch right after creating the player, in the same task: this
+        // event reaches it once the fetch exists.
+        let _ = sender.send(PlayerEvent::NeedData);
         MpvPlayer {
             id,
             context_id,
@@ -168,11 +173,17 @@ impl BridgeObserver for Notifier {
                             "MPV backend: the media cannot be fetched from byte {offset}"
                         )));
                     }
+                    let sender = self.sender.clone();
                     return SeekReply {
                         data_will_come,
                         // Servo waits for this before pushing the data from `offset`.
                         ack: Box::new(move || {
                             let _ = ack.send(());
+                            // The seek started a new fetch, whose data Servo keeps until
+                            // it is asked for it again.
+                            if data_will_come {
+                                let _ = sender.send(PlayerEvent::NeedData);
+                            }
                         }),
                     };
                 },
