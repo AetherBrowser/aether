@@ -1285,6 +1285,8 @@ pub enum NetworkError {
     BlobURLStoreError(String),
     HttpError(String),
     DecompressionError,
+    /// The request matched the user's network filter.
+    ContentBlocked,
 }
 
 impl fmt::Debug for NetworkError {
@@ -1333,6 +1335,7 @@ impl fmt::Debug for NetworkError {
             },
             NetworkError::HttpError(s) => write!(f, "HTTP failure: {}", s),
             NetworkError::DecompressionError => write!(f, "Decompression error"),
+            NetworkError::ContentBlocked => write!(f, "Blocked by the network filter"),
         }
     }
 }
@@ -1354,7 +1357,8 @@ impl NetworkError {
                 NetworkError::CorsMethod |
                 NetworkError::CorsAuthorization |
                 NetworkError::CorsHeaders |
-                NetworkError::UnsupportedScheme
+                NetworkError::UnsupportedScheme |
+                NetworkError::ContentBlocked
         )
     }
 

@@ -128,10 +128,16 @@
       #builtin-engine,
       #new-windows,
       #new-tabs,
-      #homepage-url {
+      #homepage-url,
+      #blocklist {
         width: 100%;
         box-sizing: border-box;
         margin-bottom: 8px;
+      }
+
+      #blocklist {
+        min-height: 12rem;
+        resize: vertical;
       }
 
       #search-error {
@@ -190,9 +196,16 @@
       }
 
       #home-error,
-      #homepage-url-error {
+      #homepage-url-error,
+      #network-error {
         color: #b42318;
         min-height: 1.2em;
+      }
+
+      #save-blocklist {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
       }
 
       #about dl {
@@ -227,6 +240,7 @@
       <nav aria-label="Settings sections">
         <a href="#home">Home and startup</a>
         <a href="#search">Search</a>
+        <a href="#network">Network</a>
         <a href="#download">Downloads</a>
         <a href="#appearance">Appearance</a>
         <a href="#about">About</a>
@@ -297,6 +311,23 @@
           <button type="button" id="add-builtin">Add</button>
         </div>
       </section>
+        <section id="network" hidden>
+          <h2>Network</h2>
+          <p id="network-error" role="alert"></p>
+          <p class="hint">
+            Requests to a listed site or URL are refused before they are sent.
+            <code>example.com</code> blocks that site and its subdomains. A full URL
+            blocks that address. Start a line with <code>@@</code> to allow it again.
+            Lines starting with <code>!</code> are comments.
+          </p>
+          <label class="check" for="filter-enabled">
+            <input id="filter-enabled" type="checkbox" checked />
+            Block sites from this list
+          </label>
+          <label for="blocklist">Sites and URLs</label>
+          <textarea id="blocklist" spellcheck="false" placeholder="ads.example"></textarea>
+          <button type="button" id="save-blocklist">Save</button>
+        </section>
         <section id="download" hidden>
           <h2>Downloads</h2>
         </section>
@@ -508,7 +539,59 @@
       const searchPane = document.getElementById("search");
       const aboutPane = document.getElementById("about");
       const aboutError = document.getElementById("about-error");
-      const sectionIds = ["home", "search", "download", "appearance", "about"];
+      const networkPane = document.getElementById("network");
+      const networkError = document.getElementById("network-error");
+      const filterEnabled = document.getElementById("filter-enabled");
+      const blocklist = document.getElementById("blocklist");
+      const sectionIds = ["home", "search", "network", "download", "appearance", "about"];
+      let networkReady = false;
+
+      function renderNetwork(data) {
+        filterEnabled.checked = !!data.enabled;
+        blocklist.value = data.blocklist || "";
+      }
+
+      async function loadNetwork() {
+        try {
+          const response = await fetch("servo:content-filter");
+          const data = await response.json();
+          if (data.error) {
+            networkError.textContent = data.error;
+            return;
+          }
+          networkError.textContent = "";
+          renderNetwork(data);
+          networkReady = true;
+        } catch (error) {
+          networkError.textContent = "Could not load the network filter.";
+        }
+      }
+
+      async function saveNetwork() {
+        if (!networkReady) {
+          return;
+        }
+        const query =
+          "enabled=" +
+          filterEnabled.checked +
+          "&blocklist=" +
+          encodeURIComponent(blocklist.value);
+        try {
+          const response = await fetch("servo:content-filter?" + query);
+          const data = await response.json();
+          if (data.error) {
+            networkError.textContent = data.error;
+            return;
+          }
+          networkError.textContent = "";
+          renderNetwork(data);
+        } catch (error) {
+          networkError.textContent = "Could not save the network filter.";
+        }
+      }
+
+      filterEnabled.addEventListener("change", saveNetwork);
+      document.getElementById("save-blocklist").addEventListener("click", saveNetwork);
 
       async function loadAbout() {
         aboutPane.dataset.loading = "1";
@@ -551,6 +634,10 @@
         if (showSearchPane && !searchPane.dataset.loaded) {
           searchPane.dataset.loaded = "1";
           apply();
+        }
+        if (current === "network" && !networkPane.dataset.loaded) {
+          networkPane.dataset.loaded = "1";
+          loadNetwork();
         }
         if (
           current === "about" &&

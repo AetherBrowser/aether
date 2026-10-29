@@ -9262,6 +9262,7 @@ dependencies = [
  "sea-query",
  "sea-query-rusqlite",
  "serde",
+ "serde_json",
  "servo-base",
  "servo-config",
  "servo-default-resources",

@@ -317,6 +317,7 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.search_engines.clone(),
         );
+        crate::content_filter::install_content_filter(init.opts.config_dir.clone());
         let (history, _) = open_history(&init.opts);
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("servo", protocols::ServoProtocolHandler);

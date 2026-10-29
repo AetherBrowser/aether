@@ -79,6 +79,7 @@ use crate::async_runtime::spawn_task;
 use crate::connector::{
     CertificateErrorOverrideManager, ServoClient, TlsHandshakeInfo, create_tls_config,
 };
+use crate::content_filter::ContentFilter;
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::decoder::Decoder;
@@ -129,6 +130,9 @@ pub struct HttpState {
     pub client: ServoClient,
     pub override_manager: CertificateErrorOverrideManager,
     pub embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
+    /// Sites and URLs the user asked not to load. Shared by the public and
+    /// private states so both honor the same list.
+    pub content_filter: StdArc<RwLock<ContentFilter>>,
 }
 
 impl HttpState {
@@ -180,6 +184,25 @@ impl HttpState {
                 sender,
             ));
         receiver.await.ok()?
+    }
+
+    pub(crate) fn request_is_blocked(&self, request: &Request) -> bool {
+        let url = request.current_url();
+        let source = request
+            .source_document_url
+            .as_ref()
+            .or_else(|| request.referrer.to_url())
+            .map(|source| source.as_str().to_owned());
+        let destination = request.destination;
+        {
+            let filter = self.content_filter.read();
+            if !filter.is_stale() {
+                return filter.blocks(url.as_str(), source.as_deref(), destination);
+            }
+        }
+        let mut filter = self.content_filter.write();
+        filter.reload_if_stale();
+        filter.blocks(url.as_str(), source.as_deref(), destination)
     }
 }
 
@@ -892,6 +915,11 @@ pub(crate) async fn http_fetch(
     *done_chan = None;
     // Step 1. Let request be fetchParams’s request.
     let request = &mut fetch_params.request;
+
+    if context.state.request_is_blocked(request) {
+        info!("Network filter blocked {}", request.current_url());
+        return Response::network_error(NetworkError::ContentBlocked);
+    }
 
     // Step 2. Let response and internalResponse be null.
     let mut response: Option<Response> = None;

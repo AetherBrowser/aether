@@ -1584,6 +1584,10 @@ impl ParserContext {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &format!("{:?}", error))
                 },
+                NetworkError::ContentBlocked => {
+                    let page = resources::read_string(Resource::NetErrorHTML);
+                    page.replace("${reason}", "Blocked by the network filter")
+                },
                 NetworkError::LoadCancelled => {
                     // The next load will show a page
                     return;

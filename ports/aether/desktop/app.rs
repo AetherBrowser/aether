@@ -89,6 +89,7 @@ impl App {
             self.opts.config_dir.clone(),
             self.servoshell_preferences.home_settings.clone(),
         );
+        crate::content_filter::install_content_filter(self.opts.config_dir.clone());
 
         let (history, history_page) = open_history(&self.opts);
 
