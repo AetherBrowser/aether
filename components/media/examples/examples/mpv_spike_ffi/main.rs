@@ -200,7 +200,7 @@ fn test_commands_and_events() {
         let test_path = format!("{}/examples/mpv_spike_ffi/test.mp3", test_dir);
         let loadfile = CString::new("loadfile").unwrap();
         let path_c = CString::new(test_path.as_str()).unwrap();
-        let args: [*const i8; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
+        let args: [*const c_char; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, args.as_ptr());
         assert_eq!(rc, 0, "mpv_command(loadfile) failed");
         println!("[OK] mpv_command([\"loadfile\", \"{}\"])", test_path);
@@ -236,7 +236,7 @@ fn test_commands_and_events() {
         let seek_cmd = CString::new("seek").unwrap();
         let seek_pos = CString::new("0").unwrap();
         let seek_mode = CString::new("absolute").unwrap();
-        let seek_args: [*const i8; 4] = [
+        let seek_args: [*const c_char; 4] = [
             seek_cmd.as_ptr(),
             seek_pos.as_ptr(),
             seek_mode.as_ptr(),
@@ -249,7 +249,7 @@ fn test_commands_and_events() {
         drain_events(mpv, 2.0);
 
         let stop_cmd = CString::new("stop").unwrap();
-        let stop_args: [*const i8; 2] = [stop_cmd.as_ptr(), ptr::null()];
+        let stop_args: [*const c_char; 2] = [stop_cmd.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, stop_args.as_ptr());
         assert_eq!(rc, 0, "mpv_command(stop) failed");
         println!("[OK] stop");
@@ -419,7 +419,7 @@ fn test_stream_cb() {
 
         let loadfile = CString::new("loadfile").unwrap();
         let url = CString::new("spike://test").unwrap();
-        let args: [*const i8; 3] = [loadfile.as_ptr(), url.as_ptr(), ptr::null()];
+        let args: [*const c_char; 3] = [loadfile.as_ptr(), url.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, args.as_ptr());
         assert_eq!(rc, 0, "mpv_command(loadfile spike://test) failed");
         println!("[OK] mpv_command([\"loadfile\", \"spike://test\"])");
@@ -444,7 +444,7 @@ fn test_stream_cb() {
         let seek_cmd = CString::new("seek").unwrap();
         let seek_pos = CString::new("0").unwrap();
         let seek_mode = CString::new("absolute").unwrap();
-        let seek_args: [*const i8; 4] = [
+        let seek_args: [*const c_char; 4] = [
             seek_cmd.as_ptr(),
             seek_pos.as_ptr(),
             seek_mode.as_ptr(),
@@ -469,7 +469,7 @@ fn test_stream_cb() {
         drain_events(mpv, 1.0);
 
         let stop_cmd = CString::new("stop").unwrap();
-        let stop_args: [*const i8; 2] = [stop_cmd.as_ptr(), ptr::null()];
+        let stop_args: [*const c_char; 2] = [stop_cmd.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, stop_args.as_ptr());
         assert_eq!(rc, 0, "stop failed");
         println!("[OK] stop via custom protocol");
@@ -549,7 +549,7 @@ fn test_sw_render() {
         let video_path = format!("{}/examples/resources/mov_bbb.mp4", test_dir);
         let loadfile = CString::new("loadfile").unwrap();
         let path_c = CString::new(video_path.as_str()).unwrap();
-        let args: [*const i8; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
+        let args: [*const c_char; 3] = [loadfile.as_ptr(), path_c.as_ptr(), ptr::null()];
         let rc = ffi::mpv_command(mpv, args.as_ptr());
         assert_eq!(rc, 0, "loadfile failed");
 
