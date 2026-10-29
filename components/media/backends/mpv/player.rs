@@ -928,7 +928,8 @@ mod tests {
     fn html_volume_is_converted_to_mpv_cubic_volume() {
         assert_eq!(html_to_mpv_volume(0.0), 0.0);
         assert_eq!(html_to_mpv_volume(1.0), 100.0);
-        assert_eq!(html_to_mpv_volume(0.125), 50.0);
+        // cbrt(1/8) is 1/2, but libm's cbrt is not correctly rounded.
+        assert!((html_to_mpv_volume(0.125) - 50.0).abs() < 1e-12);
         assert_eq!(mpv_to_html_volume(50.0), 0.125);
         assert_eq!(html_to_mpv_volume(-1.0), 0.0);
         assert_eq!(html_to_mpv_volume(2.0), 100.0);
