@@ -155,8 +155,9 @@ unsafe extern "C" {
 /// actually play media are compiled out in that case (`has_libmpv`).
 #[cfg(not(has_libmpv))]
 mod missing_libmpv {
-    use super::*;
     use std::ptr;
+
+    use super::*;
 
     pub unsafe fn mpv_client_api_version() -> c_ulong {
         0
