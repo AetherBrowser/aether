@@ -621,7 +621,7 @@ fn test_sw_render() {
             pixel_buf.len()
         );
 
-        let ppm_path = format!("{}/examples/mpv_spike_ffi/frame.ppm", test_dir);
+        let ppm_path = std::env::temp_dir().join("frame.ppm");
         let mut ppm = Vec::new();
         ppm.extend_from_slice(format!("P6\n{} {}\n255\n", width, height).as_bytes());
         for pixel in pixel_buf.chunks(4) {
@@ -630,7 +630,7 @@ fn test_sw_render() {
             ppm.push(pixel[0]);
         }
         std::fs::write(&ppm_path, &ppm).expect("Failed to write frame.ppm");
-        println!("[OK] saved frame to {}", ppm_path);
+        println!("[OK] saved frame to {}", ppm_path.display());
 
         ffi::mpv_render_context_free(render_ctx);
         ffi::mpv_terminate_destroy(mpv);
