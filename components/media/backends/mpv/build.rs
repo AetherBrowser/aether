@@ -7,16 +7,19 @@
 const MIN_CLIENT_API: &str = "2.0";
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(has_libmpv)");
     match pkg_config::Config::new()
         .atleast_version(MIN_CLIENT_API)
         .probe("mpv")
     {
-        Ok(_) => {},
+        Ok(_) => {
+            println!("cargo::rustc-cfg=has_libmpv");
+        },
         Err(error) => {
             // Do not fail the build: type-checking and linting the crate does not need
-            // libmpv. Linking anything that uses it will fail with a clear linker error.
+            // libmpv. Tests that call into it are gated on `has_libmpv`, so
+            // `cargo test --workspace` can run on machines without the library.
             println!("cargo:warning=libmpv >= {MIN_CLIENT_API} not found via pkg-config: {error}");
-            println!("cargo:rustc-link-lib=mpv");
         },
     }
 }

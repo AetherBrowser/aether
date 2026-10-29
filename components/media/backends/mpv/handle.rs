@@ -554,7 +554,7 @@ impl Drop for MpvHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_libmpv))]
 mod tests {
     use std::path::Path;
     use std::sync::mpsc;

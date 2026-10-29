@@ -449,7 +449,7 @@ impl Drop for MpvPlayer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, has_libmpv))]
 mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};

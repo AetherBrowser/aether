@@ -4,6 +4,8 @@
 
 //! Tests against the libmpv installed on the machine.
 
+#![cfg(has_libmpv)]
+
 use aether_media_mpv::MpvBackend;
 use servo_media::{BackendInit, SupportsMediaType};
 

@@ -104,6 +104,7 @@ pub struct mpv_event_end_file {
     pub playlist_insert_num_entries: c_int,
 }
 
+#[cfg(has_libmpv)]
 unsafe extern "C" {
     pub fn mpv_client_api_version() -> c_ulong;
     pub fn mpv_error_string(error: c_int) -> *const c_char;
@@ -149,6 +150,97 @@ unsafe extern "C" {
         open_fn: mpv_stream_cb_open_ro_fn,
     ) -> c_int;
 }
+
+/// Stand-ins so the crate still links when pkg-config cannot find libmpv. Tests that
+/// actually play media are compiled out in that case (`has_libmpv`).
+#[cfg(not(has_libmpv))]
+mod missing_libmpv {
+    use super::*;
+    use std::ptr;
+
+    pub unsafe fn mpv_client_api_version() -> c_ulong {
+        0
+    }
+
+    pub unsafe fn mpv_error_string(_error: c_int) -> *const c_char {
+        c"libmpv is not available".as_ptr()
+    }
+
+    pub unsafe fn mpv_create() -> *mut mpv_handle {
+        ptr::null_mut()
+    }
+
+    pub unsafe fn mpv_initialize(_ctx: *mut mpv_handle) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_terminate_destroy(_ctx: *mut mpv_handle) {}
+
+    pub unsafe fn mpv_set_option_string(
+        _ctx: *mut mpv_handle,
+        _name: *const c_char,
+        _data: *const c_char,
+    ) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_set_property(
+        _ctx: *mut mpv_handle,
+        _name: *const c_char,
+        _format: mpv_format,
+        _data: *mut c_void,
+    ) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_command(_ctx: *mut mpv_handle, _args: *mut *const c_char) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_get_property(
+        _ctx: *mut mpv_handle,
+        _name: *const c_char,
+        _format: mpv_format,
+        _data: *mut c_void,
+    ) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_free_node_contents(_node: *mut mpv_node) {}
+
+    pub unsafe fn mpv_observe_property(
+        _ctx: *mut mpv_handle,
+        _reply_userdata: u64,
+        _name: *const c_char,
+        _format: mpv_format,
+    ) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+
+    pub unsafe fn mpv_wait_event(_ctx: *mut mpv_handle, _timeout: f64) -> *mut mpv_event {
+        static mut NONE_EVENT: mpv_event = mpv_event {
+            event_id: MPV_EVENT_NONE,
+            error: 0,
+            reply_userdata: 0,
+            data: ptr::null_mut(),
+        };
+        &raw mut NONE_EVENT
+    }
+
+    pub unsafe fn mpv_wakeup(_ctx: *mut mpv_handle) {}
+
+    pub unsafe fn mpv_stream_cb_add_ro(
+        _ctx: *mut mpv_handle,
+        _protocol: *const c_char,
+        _user_data: *mut c_void,
+        _open_fn: mpv_stream_cb_open_ro_fn,
+    ) -> c_int {
+        MPV_ERROR_GENERIC
+    }
+}
+
+#[cfg(not(has_libmpv))]
+pub use missing_libmpv::*;
 
 // stream_cb.h. Every callback may be NULL except `read_fn` and `close_fn`.
 

@@ -395,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(has_libmpv)]
     fn restarts_before_a_file_is_loaded_are_not_seeks() {
         let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
         let mut translator = EventTranslator::default();
@@ -406,6 +407,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(has_libmpv)]
     fn end_of_file_reasons_are_mapped() {
         let handle = MpvHandle::new(&[("ao", "null"), ("vid", "no")]).unwrap();
         let end = |reason| {
