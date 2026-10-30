@@ -143,6 +143,7 @@ use crate::dom::document::{
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::{HTMLIFrameElement, IframeContext, ProcessingMode};
+use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::{Node, NodeTraits};
 use crate::dom::servoparser::{ParserContext, ServoParser};
 #[cfg(feature = "devtools")]
@@ -2651,6 +2652,7 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::GetComputedRole(node_id, reply) => {
                 webdriver_handlers::handle_get_computed_role(
+                    cx,
                     &documents,
                     pipeline_id,
                     node_id,
@@ -2712,7 +2714,7 @@ impl ScriptThread {
                 )
             },
             WebDriverScriptCommand::GetElementText(node_id, reply) => {
-                webdriver_handlers::handle_get_text(&documents, pipeline_id, node_id, reply)
+                webdriver_handlers::handle_get_text(cx, &documents, pipeline_id, node_id, reply)
             },
             WebDriverScriptCommand::GetElementInViewCenterPoint(node_id, reply) => {
                 webdriver_handlers::handle_get_element_in_view_center_point(
@@ -3038,6 +3040,7 @@ impl ScriptThread {
             old_focus_chain,
             &focusable_area,
             false, /* for_system_focus_change */
+            FocusTrigger::Script,
         );
 
         document.refresh_focus_rendering();
@@ -3099,6 +3102,7 @@ impl ScriptThread {
             old_focus_chain,
             &FocusableArea::Viewport,
             false, /* for_system_focus_change */
+            FocusTrigger::Script,
         );
 
         document.refresh_focus_rendering();

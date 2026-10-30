@@ -61,8 +61,6 @@ internal class JNIServo {
 
     external fun resumePainting(surface: Surface, size: Size)
 
-    external fun mediaSessionAction(action: Int)
-
     external fun setExperimentalMode(enable: Boolean)
 
     external fun homeSettings(query: String): String?
@@ -91,11 +89,5 @@ internal class JNIServo {
         fun onImeShow()
 
         fun onImeHide()
-
-        fun onMediaSessionMetadata(title: String, artist: String, album: String)
-
-        fun onMediaSessionPlaybackStateChange(state: Int)
-
-        fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float)
     }
 }

@@ -69,7 +69,6 @@ import org.servo.servoview.ServoNavigator
 class MainActivity : ComponentActivity(), Servo.Client {
     private val urlTextFieldState = TextFieldState()
     private var isRefreshing by mutableStateOf(false)
-    private lateinit var mediaSession: MediaSession
     private lateinit var historyManager: HistoryManager
     private var currentUrl = ""
     private var currentTitle = ""
@@ -84,22 +83,21 @@ class MainActivity : ComponentActivity(), Servo.Client {
         super.onCreate(savedInstanceState)
 
         val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        var settings = Settings(sharedPreferences)
-        var experimental = settings.experimental
+        val settings = Settings(sharedPreferences)
         val navigator = ServoNavigator()
+        var experimentalModeEnabled by mutableStateOf(settings.experimental)
         val servo =
             Servo(
                 args = intent.getStringExtra("servoargs"),
                 url = if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
                 logStr = intent.getStringExtra("servolog"),
-                experimentalMode = settings.experimental,
+                experimentalMode = experimentalModeEnabled,
                 scope = lifecycleScope,
                 client = this,
                 context = this,
                 navigator = navigator,
             )
 
-        mediaSession = MediaSession(servo, applicationContext)
         historyManager = HistoryManager(this)
 
         val historyActivityResultLauncher =
@@ -115,15 +113,8 @@ class MainActivity : ComponentActivity(), Servo.Client {
             }
 
         setContent {
-            var experimentalEnabled by remember { mutableStateOf(experimental) }
             LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-                val updatedSettings = Settings(sharedPreferences)
-                experimentalEnabled = updatedSettings.experimental
-                if (updatedSettings.experimental != settings.experimental) {
-                    servo.setExperimentalMode(updatedSettings.experimental)
-                }
-                settings = updatedSettings
-                experimental = updatedSettings.experimental
+                experimentalModeEnabled = Settings(sharedPreferences).experimental
             }
 
             val servoFocusRequester = remember { FocusRequester() }
@@ -197,13 +188,10 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                     closeMenu()
                                     onSettingsMenuItemClicked()
                                 },
-                                experimental = experimentalEnabled,
+                                experimental = experimentalModeEnabled,
                                 onExperimentalChange = { enabled ->
-                                    experimentalEnabled = enabled
-                                    experimental = enabled
-                                    settings.experimental = enabled
+                                    experimentalModeEnabled = enabled
                                     sharedPreferences.edit { putBoolean("experimental", enabled) }
-                                    servo.setExperimentalMode(enabled)
                                     navigator.reload()
                                 },
                                 onExit = {
@@ -216,6 +204,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                 }
             ) { innerPadding ->
                 Servo(
+                    experimentalModeEnabled = experimentalModeEnabled,
                     softKeyboardVisible = softKeyboardVisible,
                     servo = servo,
                     navigator = navigator,
@@ -251,11 +240,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         } catch (e: ErrnoException) {
             e.printStackTrace()
         }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        mediaSession.hideMediaSessionControls()
     }
 
     private fun onHistoryBackMenuItemClicked(navigator: ServoNavigator) {
@@ -322,35 +306,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
     override fun onUrlChanged(url: String) {
         urlTextFieldState.edit { replace(0, length, url) }
         currentUrl = url
-    }
-
-    override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
-        Log.d("onMediaSessionMetadata", "$title $artist $album")
-        mediaSession.updateMetadata(title, artist, album)
-    }
-
-    override fun onMediaSessionPlaybackStateChange(state: Int) {
-        Log.d("onMediaSessionPlaybackStateChange", state.toString())
-        mediaSession.setPlaybackState(state)
-
-        if (state == MediaSession.PLAYBACK_STATE_NONE) {
-            mediaSession.hideMediaSessionControls()
-            return
-        }
-        if (
-            state == MediaSession.PLAYBACK_STATE_PLAYING ||
-                state == MediaSession.PLAYBACK_STATE_PAUSED
-        ) {
-            mediaSession.showMediaSessionControls()
-        }
-    }
-
-    override fun onMediaSessionSetPositionState(
-        duration: Float,
-        position: Float,
-        playbackRate: Float,
-    ) {
-        Log.d("onMediaSessionSetPositionState", "$duration $position $playbackRate")
     }
 
     companion object {
