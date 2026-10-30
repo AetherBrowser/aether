@@ -14,8 +14,8 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, MediaSessionEvent, NavigationType, PermissionRequest, RenderingContext,
-    ScreenGeometry, ServoUrl, WebView, WebViewBuilder, WebViewId,
+    InputEventResult, NavigationType, PermissionRequest, RenderingContext, ScreenGeometry, ServoUrl,
+    WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
@@ -666,7 +666,6 @@ pub(crate) trait PlatformWindow {
     ) {
     }
 
-    fn notify_media_session_event(&self, _: MediaSessionEvent) {}
     fn notify_crashed(&self, _: WebView, _reason: String, _backtrace: Option<String>) {}
     fn show_console_message(&self, _level: ConsoleLogLevel, _message: &str) {}
 
