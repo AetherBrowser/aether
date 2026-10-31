@@ -1206,9 +1206,9 @@ mod tests {
     #[test]
     fn location_bar_is_empty_on_the_new_tab_page() {
         let url = |url: &str| Url::parse(url).unwrap();
-        assert_eq!(location_text(&url("servo:newtab")), "");
+        assert_eq!(location_text(&url("about:newtab")), "");
         assert_eq!(location_text(&url("about:blank")), "");
-        assert_eq!(location_text(&url("servo:history")), "servo:history");
+        assert_eq!(location_text(&url("about:history")), "about:history");
         assert_eq!(
             location_text(&url("https://example.com/")),
             "https://example.com/"

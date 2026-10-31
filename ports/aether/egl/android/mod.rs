@@ -261,7 +261,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_setExperimentalMode<'local>(
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// Homepage and new-tab settings, the same JSON `servo:home` returns on desktop.
+/// Homepage and new-tab settings, the same JSON `about:home` returns on desktop.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_homeSettings<'local>(
     mut env: EnvUnowned<'local>,
@@ -276,7 +276,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_homeSettings<'local>(
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// Configured search engines, the same JSON `servo:search-engines` returns on desktop.
+/// Configured search engines, the same JSON `about:search-engines` returns on desktop.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_searchEngines<'local>(
     mut env: EnvUnowned<'local>,
@@ -291,7 +291,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_searchEngines<'local>(
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// Version, channel, and architecture, the same JSON `servo:about` returns on desktop.
+/// Version, channel, and architecture, the same JSON `about:about` returns on desktop.
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_aboutInfo<'local>(
     mut env: EnvUnowned<'local>,

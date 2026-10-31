@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
   <head>
-    <title>servo:preferences</title>
+    <title>about:preferences</title>
     <style>
       ul {
           list-style: none;
@@ -103,13 +103,13 @@
       }
 
       function initExperimentalPrefs() {
-          return fetch("servo:experimental-preferences")
+          return fetch("about:experimental-preferences")
               .then(response => response.json())
               .then(prefList => prefs["experimental"] = prefList)
       }
 
       function initDefaultUserAgent() {
-          return fetch("servo:default-user-agent")
+          return fetch("about:default-user-agent")
               .then(response => response.json())
               .then(userAgent => userAgents["servo"] = userAgent);
       }

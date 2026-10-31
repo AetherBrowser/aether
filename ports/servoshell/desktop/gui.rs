@@ -592,7 +592,7 @@ impl Gui {
                                         info
                                     });
                                     if new_window_button.clicked() {
-                                        let url = Url::parse("servo:newtab").expect("Should be able to unconditionally parse 'servo:newtab' as URL");
+                                        let url = Url::parse("about:newtab").expect("Should be able to unconditionally parse 'about:newtab' as URL");
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::NewWindow(TopLevelWebViewCreationRequest::WithUrl(url)),
                                         );

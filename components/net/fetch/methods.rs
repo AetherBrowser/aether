@@ -520,12 +520,13 @@ pub async fn main_fetch(
             .get_referrer_policy();
     }
 
-    // `servo:` pages have an opaque origin. Script passes their document URL as
-    // the referrer so protocol handlers can recognize `servo:settings`. Record
-    // it, then drop the referrer so no `Referer` header is sent.
+    // Internal pages (`servo:` and `about:` other than `about:blank` /
+    // `about:srcdoc`) have an opaque origin. Script passes their document URL
+    // as the referrer so protocol handlers can recognize `about:settings`.
+    // Record it, then drop the referrer so no `Referer` header is sent.
     if request.source_document_url.is_none() {
         let servo_document = match &request.referrer {
-            Referrer::Client(url) | Referrer::ReferrerUrl(url) if url.scheme() == "servo" => {
+            Referrer::Client(url) | Referrer::ReferrerUrl(url) if is_internal_page(url) => {
                 Some(url.clone())
             },
             _ => None,
@@ -1090,6 +1091,16 @@ fn handle_allowcert_request(request: &mut Request, context: &FetchContext) -> io
         .override_manager
         .add_override(&CertificateDer::from_slice(&cert_bytes).into_owned());
     Ok(())
+}
+
+/// Pages served by an embedder protocol handler. `about:blank` and
+/// `about:srcdoc` stay ordinary documents.
+fn is_internal_page(url: &ServoUrl) -> bool {
+    match url.scheme() {
+        "servo" => true,
+        "about" => !matches!(url.path(), "blank" | "srcdoc"),
+        _ => false,
+    }
 }
 
 /// [Scheme fetch](https://fetch.spec.whatwg.org#scheme-fetch)

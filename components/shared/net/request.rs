@@ -837,10 +837,11 @@ pub struct Request {
     pub origin: Origin,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
-    /// Document URL when this request was started by a `servo:` page.
+    /// Document URL when this request was started by an internal page
+    /// (`servo:` or `about:`, other than `about:blank` and `about:srcdoc`).
     ///
     /// Those pages have an opaque origin, so the referrer is omitted and a
-    /// protocol handler cannot tell `servo:settings` from `file:` or another
+    /// protocol handler cannot tell `about:settings` from `file:` or another
     /// opaque caller. `main_fetch` records the URL here and still sends no
     /// `Referer` header.
     pub source_document_url: Option<ServoUrl>,
