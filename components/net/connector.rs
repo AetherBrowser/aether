@@ -677,5 +677,10 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
         // limit controls the maximum idle connections per host, which we still don't want to grow
         // without bound.
         .pool_max_idle_per_host(6)
+        // hyper's default SETTINGS_MAX_HEADER_LIST_SIZE is 16 KiB. YouTube's
+        // response header block is larger than that (CSP and
+        // connection-allowlist), and h2 then resets the stream with
+        // PROTOCOL_ERROR. 256 KiB matches Chromium.
+        .http2_max_header_list_size(256 * 1024)
         .build(InstrumentedConnector::from(connector))
 }
