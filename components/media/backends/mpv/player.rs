@@ -210,7 +210,11 @@ impl Player for MpvPlayer {
     }
 
     fn pause(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("pause"))
+        self.handle()?
+            .set_flag("pause", true)
+            .map_err(backend_error)?;
+        self.resume_after_suspend.set(false);
+        Ok(())
     }
 
     fn paused(&self) -> bool {
@@ -353,12 +357,7 @@ impl MediaInstance for MpvPlayer {
         if self.paused() {
             return Ok(());
         }
-        let Some(handle) = self.handle.get() else {
-            return Ok(());
-        };
-        handle
-            .set_flag("pause", true)
-            .map_err(|_| MediaInstanceError)?;
+        self.pause().map_err(|_| MediaInstanceError)?;
         self.resume_after_suspend.set(true);
         Ok(())
     }
@@ -719,6 +718,17 @@ mod tests {
     }
 
     #[test]
+    fn pause_pauses_libmpv() {
+        let player = player();
+        player.play().unwrap();
+        assert!(!player.paused());
+        player.pause().unwrap();
+        assert!(player.paused());
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+    }
+
+    #[test]
     fn paused_does_not_start_libmpv() {
         let player = player();
         assert!(player.paused());
@@ -735,6 +745,27 @@ mod tests {
         player.resume().unwrap();
         assert!(!player.paused());
         assert!(!player.can_resume());
+    }
+
+    #[test]
+    fn resume_keeps_a_media_paused_by_the_page_paused() {
+        let player = player();
+        player.play().unwrap();
+        player.pause().unwrap();
+        player.suspend().unwrap();
+        assert!(!player.can_resume());
+        player.resume().unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn a_page_action_after_suspend_cancels_the_resume() {
+        let player = player();
+        player.play().unwrap();
+        player.suspend().unwrap();
+        player.pause().unwrap();
+        player.resume().unwrap();
+        assert!(player.paused());
     }
 
     #[test]
