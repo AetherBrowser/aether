@@ -98,7 +98,7 @@ impl App {
             protocols::urlinfo::UrlInfoProtocolHander::default(),
         );
         let _ = protocol_registry.register(
-            "servo",
+            "about",
             protocols::servo::ServoProtocolHandler::new(history_page),
         );
         let _ = protocol_registry.register(
@@ -286,6 +286,11 @@ impl ApplicationHandler<AppEvent> for App {
                     let Some(headed_window) = window.platform_window().as_headed_window()
                 {
                     headed_window.handle_winit_app_event(state.clone(), app_event);
+                }
+            },
+            AppEvent::RequestRepaint(window_id) => {
+                if let Some(window) = state.window(window_id) {
+                    window.set_needs_repaint();
                 }
             },
             #[cfg(feature = "gamepad")]

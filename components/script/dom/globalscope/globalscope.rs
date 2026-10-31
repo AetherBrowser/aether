@@ -2312,6 +2312,7 @@ impl GlobalScope {
             is_nested_browsing_context: false,
             insecure_requests_policy: self.insecure_requests_policy(),
             has_trustworthy_ancestor_origin: false,
+            network_partition_key: None,
         }
     }
 
@@ -2394,10 +2395,12 @@ impl GlobalScope {
             // Substep 3."client".2.2. If document’s origin is an opaque origin, return no referrer.
             if let ImmutableOrigin::Opaque(_) = document.origin().immutable() {
                 let url = document.url();
-                // `servo:` documents are opaque, so this step would drop the page
+                // Internal pages are opaque, so this step would drop the page
                 // URL. Return it so `main_fetch` can record `source_document_url`
                 // for internal protocol checks. That step still sends no Referer.
-                if url.scheme() == "servo" {
+                if url.scheme() == "servo" ||
+                    (url.scheme() == "about" && !matches!(url.path(), "blank" | "srcdoc"))
+                {
                     return Referrer::Client(url);
                 }
                 return Referrer::NoReferrer;

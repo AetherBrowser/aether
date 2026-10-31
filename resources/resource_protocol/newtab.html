@@ -16,7 +16,7 @@
       <button type="submit">Go!</button>
     </form>
     <script>
-      fetch("servo:home")
+      fetch("about:home")
         .then((response) => response.json())
         .then((data) => {
           document.getElementById("home-logo").hidden = data.showLogo === false;

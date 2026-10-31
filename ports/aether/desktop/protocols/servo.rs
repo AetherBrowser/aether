@@ -4,19 +4,19 @@
 
 //! Loads resources using a mapping from well-known shortcuts to resource: urls.
 //! Recognized shortcuts:
-//! - servo:default-user-agent
-//! - servo:experimental-preferences
-//! - servo:config
-//! - servo:newtab
-//! - servo:preferences
-//! - servo:processes
-//! - servo:process-list
-//! - servo:history
-//! - servo:settings
-//! - servo:home
-//! - servo:about
-//! - servo:search-engines
-//! - servo:history-data
+//! - about:default-user-agent
+//! - about:experimental-preferences
+//! - about:config
+//! - about:newtab
+//! - about:preferences
+//! - about:processes
+//! - about:process-list
+//! - about:history
+//! - about:settings
+//! - about:home
+//! - about:about
+//! - about:search-engines
+//! - about:history-data
 
 use std::future::Future;
 use std::pin::Pin;
@@ -82,7 +82,7 @@ impl ProtocolHandler for ServoProtocolHandler {
             // Internal JSON used by `settings.html` and `newtab.html`. A
             // navigation would show that JSON to the user. Web pages can also
             // fetch this scheme, because `is_fetchable` is true. A non-empty
-            // query persists settings, so only `servo:settings` may send one.
+            // query persists settings, so only `about:settings` may send one.
             // `newtab.html` reads with an empty query.
             "home" => {
                 if !internal_json_request_is_allowed(request, url.query()) {
@@ -175,7 +175,7 @@ fn request_is_from_settings_page(request: &Request) -> bool {
 }
 
 fn is_settings_page_url(url: &url::Url) -> bool {
-    url.scheme() == "servo" && url.path() == "settings"
+    url.scheme() == "about" && url.path() == "settings"
 }
 
 fn request_is_from_history_page(request: &Request) -> bool {
@@ -186,7 +186,7 @@ fn request_is_from_history_page(request: &Request) -> bool {
 }
 
 fn is_history_page_url(url: &url::Url) -> bool {
-    url.scheme() == "servo" && url.path() == "history"
+    url.scheme() == "about" && url.path() == "history"
 }
 
 /// Loads an internal page, which web pages cannot show in a frame.
@@ -258,10 +258,10 @@ mod tests {
 
     #[test]
     fn settings_page_url_is_the_settings_path() {
-        let settings = Url::parse("servo:settings#home").unwrap();
+        let settings = Url::parse("about:settings#home").unwrap();
         assert!(is_settings_page_url(&settings));
 
-        let newtab = Url::parse("servo:newtab").unwrap();
+        let newtab = Url::parse("about:newtab").unwrap();
         assert!(!is_settings_page_url(&newtab));
 
         let file = Url::parse("file:///tmp/page.html").unwrap();
@@ -270,9 +270,9 @@ mod tests {
 
     #[test]
     fn history_page_url_is_the_history_path() {
-        assert!(is_history_page_url(&Url::parse("servo:history").unwrap()));
+        assert!(is_history_page_url(&Url::parse("about:history").unwrap()));
         assert!(!is_history_page_url(
-            &Url::parse("servo:history-data").unwrap()
+            &Url::parse("about:history-data").unwrap()
         ));
         assert!(!is_history_page_url(
             &Url::parse("https://example.com/history").unwrap()

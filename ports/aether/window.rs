@@ -14,8 +14,8 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, MediaSessionEvent, NavigationType, PermissionRequest, RenderingContext,
-    ScreenGeometry, ServoUrl, WebView, WebViewBuilder, WebViewId,
+    InputEventResult, NavigationType, PermissionRequest, RenderingContext, ScreenGeometry,
+    ServoUrl, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
@@ -34,24 +34,24 @@ pub(crate) fn new_window_url() -> Url {
 }
 
 /// The history page opened from the application menu.
-pub(crate) const HISTORY_URL: &str = "servo:history";
+pub(crate) const HISTORY_URL: &str = "about:history";
 
 pub(crate) fn history_url() -> Url {
-    Url::parse(HISTORY_URL).expect("Should always be able to parse 'servo:history' as URL")
+    Url::parse(HISTORY_URL).expect("Should always be able to parse 'about:history' as URL")
 }
 
 /// The settings page opened from the application menu.
-pub(crate) const SETTINGS_URL: &str = "servo:settings";
+pub(crate) const SETTINGS_URL: &str = "about:settings";
 
 pub(crate) fn settings_url() -> Url {
-    Url::parse(SETTINGS_URL).expect("Should always be able to parse 'servo:settings' as URL")
+    Url::parse(SETTINGS_URL).expect("Should always be able to parse 'about:settings' as URL")
 }
 
 /// The process list opened from More Tools.
-pub(crate) const PROCESSES_URL: &str = "servo:processes";
+pub(crate) const PROCESSES_URL: &str = "about:processes";
 
 pub(crate) fn processes_url() -> Url {
-    Url::parse(PROCESSES_URL).expect("Should always be able to parse 'servo:processes' as URL")
+    Url::parse(PROCESSES_URL).expect("Should always be able to parse 'about:processes' as URL")
 }
 
 /// The scheme of the page source view opened from More Tools.
@@ -666,7 +666,6 @@ pub(crate) trait PlatformWindow {
     ) {
     }
 
-    fn notify_media_session_event(&self, _: MediaSessionEvent) {}
     fn notify_crashed(&self, _: WebView, _reason: String, _backtrace: Option<String>) {}
     fn show_console_message(&self, _level: ConsoleLogLevel, _message: &str) {}
 

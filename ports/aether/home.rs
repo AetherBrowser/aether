@@ -12,8 +12,8 @@
 //! - `browser.newtabpage.activity-stream.logowordmark.alwaysVisible`
 //!
 //! Aether keeps the same names in plain JSON at `{config_dir}/home.json`.
-//! `about:home` is the Aether home page (`servo:newtab`). Changes from
-//! `servo:settings#home` are written back to that file.
+//! `about:home` is the Aether home page (`about:newtab`). Changes from
+//! `about:settings#home` are written back to that file.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub(crate) const HOME_SETTINGS_FILE: &str = "home.json";
 const ABOUT_HOME: &str = "about:home";
 
 /// Page shown for the Aether home page.
-pub(crate) const AETHER_HOME_URL: &str = "servo:newtab";
+pub(crate) const AETHER_HOME_URL: &str = "about:newtab";
 pub(crate) const BLANK_URL: &str = "about:blank";
 
 /// `browser.startup.page`: show a blank page. Deprecated in Firefox; a blank
@@ -134,7 +134,7 @@ struct InstalledHomeSettings {
 
 static INSTALLED: Mutex<Option<InstalledHomeSettings>> = Mutex::new(None);
 
-/// Remember the settings loaded at startup so `servo:settings#home` and new
+/// Remember the settings loaded at startup so `about:settings#home` and new
 /// tabs share one copy.
 pub(crate) fn install_home_settings(config_dir: Option<PathBuf>, settings: HomeSettings) {
     *INSTALLED
@@ -169,7 +169,7 @@ fn parse_page_url(url: &str) -> Url {
         .unwrap_or_else(|_| Url::parse(AETHER_HOME_URL).expect("Aether home URL should parse"))
 }
 
-/// Answer `servo:home`. A query string applies one change and saves it.
+/// Answer `about:home`. A query string applies one change and saves it.
 pub(crate) fn handle_home_request(query: Option<&str>) -> String {
     let mut installed = INSTALLED
         .lock()

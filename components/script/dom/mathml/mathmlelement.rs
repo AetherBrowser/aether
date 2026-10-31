@@ -199,7 +199,7 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
         parse: F,
         push: &mut impl FnMut(PropertyDeclaration),
     ) where
-        F: for<'i, 't> FnOnce(
+        F: for<'i> FnOnce(
             &ParserContext,
             &mut cssparser::Parser<'i>,
         ) -> Result<PropertyDeclaration, style_traits::ParseError>,
@@ -216,7 +216,7 @@ impl<'dom> LayoutDom<'dom, MathMLElement> {
         push: &mut impl FnMut(PropertyDeclaration),
     ) where
         P: FnOnce(&PropertyDeclaration) -> bool,
-        F: for<'i, 't> FnOnce(
+        F: for<'i> FnOnce(
             &ParserContext,
             &mut cssparser::Parser<'i>,
         ) -> Result<PropertyDeclaration, style_traits::ParseError>,
@@ -258,7 +258,7 @@ impl MathMLElementMethods<crate::DomTypeHolder> for MathMLElement {
     fn Focus(&self, cx: &mut JSContext, options: &FocusOptions) {
         if !self
             .upcast::<Node>()
-            .run_the_focusing_steps(cx, None, FocusTrigger::Other)
+            .run_the_focusing_steps(cx, None, FocusTrigger::Script)
         {
             return;
         }
@@ -284,9 +284,11 @@ impl MathMLElementMethods<crate::DomTypeHolder> for MathMLElement {
         if !self.as_element().focus_state() {
             return;
         }
-        self.owner_document()
-            .focus_handler()
-            .focus(cx, &FocusableArea::Viewport);
+        self.owner_document().focus_handler().focus(
+            cx,
+            &FocusableArea::Viewport,
+            FocusTrigger::Script,
+        );
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-tabindex>

@@ -13,11 +13,10 @@ use servo::protocol_handler::ProtocolRegistry;
 use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
-    KeyboardEvent, LoadStatus, MediaSessionActionType, MediaSessionEvent, MouseButton,
-    MouseButtonAction, MouseButtonEvent, MouseMoveEvent, Opts, Preferences, RefreshDriver,
-    RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog, TouchEvent,
-    TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
-    WindowRenderingContext, convert_rect_to_css_pixel,
+    KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
+    Opts, Preferences, RefreshDriver, RenderingContext, ScreenGeometry, Scroll, Servo,
+    ServoBuilder, SimpleDialog, TouchEvent, TouchEventType, TouchId, TouchPointerType,
+    UserContentManager, WebView, WebViewId, WindowRenderingContext, convert_rect_to_css_pixel,
 };
 use url::Url;
 
@@ -212,25 +211,6 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         }
     }
 
-    fn notify_media_session_event(&self, event: MediaSessionEvent) {
-        match event {
-            MediaSessionEvent::SetMetadata(metadata) => {
-                self.host
-                    .on_media_session_metadata(metadata.title, metadata.artist, metadata.album)
-            },
-            MediaSessionEvent::PlaybackStateChange(state) => {
-                self.host.on_media_session_playback_state_change(state)
-            },
-            MediaSessionEvent::SetPositionState(position_state) => {
-                self.host.on_media_session_set_position_state(
-                    position_state.duration,
-                    position_state.position,
-                    position_state.playback_rate,
-                )
-            },
-        };
-    }
-
     fn notify_crashed(&self, _webview: WebView, reason: String, backtrace: Option<String>) {
         self.host.on_panic(reason, backtrace);
     }
@@ -319,7 +299,7 @@ impl App {
         );
         let (history, _) = open_history(&init.opts);
         let mut protocol_registry = ProtocolRegistry::default();
-        let _ = protocol_registry.register("servo", protocols::ServoProtocolHandler);
+        let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)
@@ -664,13 +644,6 @@ impl App {
             Key::Named(NamedKey::Process),
         )));
         self.spin_event_loop();
-    }
-
-    pub fn media_session_action(&self, action: MediaSessionActionType) {
-        if let Some(webview) = self.active_or_newest_webview() {
-            webview.notify_media_session_action_event(action);
-            self.spin_event_loop();
-        }
     }
 
     pub fn ime_dismissed(&self) {

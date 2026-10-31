@@ -42,7 +42,7 @@ use js::jsapi::{
 };
 use js::jsval::{NullValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
-use js::rust::wrappers2::JS_GC;
+use js::rust::wrappers2::{JS_GC, JS_MaybeGC};
 use js::rust::{
     CustomAutoRooterGuard, HandleObject, HandleValue, MutableHandleObject, MutableHandleValue,
 };
@@ -146,6 +146,7 @@ use crate::dom::bindings::utils::GlobalStaticData;
 use crate::dom::bindings::weakref::DOMTracker;
 #[cfg(feature = "bluetooth")]
 use crate::dom::bluetooth::BluetoothExtraPermissionData;
+use crate::dom::closewatchermanager::CloseWatcherManager;
 use crate::dom::cookiestore::cookiestore::CookieStore;
 use crate::dom::csp::GlobalCspReporting;
 use crate::dom::css::cssstyledeclaration::{
@@ -173,6 +174,7 @@ use crate::dom::mediaquerylist::{MediaQueryList, MediaQueryListMatchState};
 use crate::dom::mediaquerylistevent::MediaQueryListEvent;
 use crate::dom::messageevent::MessageEvent;
 use crate::dom::navigator::Navigator;
+use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::{Node, NodeDamage, NodeTraits, from_untrusted_node_address};
 use crate::dom::performance::performance::Performance;
 use crate::dom::performanceresourcetiming::InitiatorType;
@@ -506,6 +508,13 @@ pub(crate) struct Window {
 
     /// <https://wicg.github.io/event-timing/#has-dispatched-input-event>
     has_dispatched_input_event: Cell<bool>,
+
+    /// <https://html.spec.whatwg.org/multipage/#last-history-action-activation-timestamp>
+    #[no_trace]
+    last_history_action_activation_timestamp: Cell<UserActivationTimestamp>,
+
+    /// <https://html.spec.whatwg.org/multipage/#close-watcher-manager>
+    close_watcher_manager: CloseWatcherManager,
 }
 
 impl Window {
@@ -552,19 +561,23 @@ impl Window {
         self.exists_mut_observer.set(true);
     }
 
-    #[expect(unsafe_code)]
-    pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+    fn clear_js_runtime_common(&self) {
         self.stop_geolocation_watches();
         self.as_global_scope()
             .remove_web_messaging_and_dedicated_workers_infra();
+        self.current_state.set(WindowState::Zombie);
+        self.as_global_scope()
+            .task_manager()
+            .cancel_all_tasks_and_ignore_future_tasks();
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn clear_js_runtime_for_script_deallocation(&self) {
+        self.clear_js_runtime_common();
         unsafe {
             *self.js_runtime.borrow_for_script_deallocation() = None;
-            self.window_proxy.set(None);
-            self.current_state.set(WindowState::Zombie);
-            self.as_global_scope()
-                .task_manager()
-                .cancel_all_tasks_and_ignore_future_tasks();
         }
+        self.window_proxy.set(None);
     }
 
     /// Tell the embedder to stop producing position updates for this `Window`, so that a
@@ -726,12 +739,6 @@ impl Window {
 
     #[cfg(feature = "webgl")]
     pub(crate) fn webgl_chan(&self) -> Option<WebGLChan> {
-        self.webgl_chan.clone()
-    }
-
-    // TODO: rename the function to webgl_chan after the existing `webgl_chan` function is removed.
-    #[cfg(feature = "webgl")]
-    pub(crate) fn webgl_chan_value(&self) -> Option<WebGLChan> {
         self.webgl_chan.clone()
     }
 
@@ -974,6 +981,25 @@ impl Window {
         false
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#notify-the-close-watcher-manager-about-user-activation>
+    pub(crate) fn notify_the_close_watcher_manager_about_user_activation(&self) {
+        // Step 1. Let manager be window's close watcher manager.
+        let manager = self.close_watcher_manager();
+
+        // Step 2. If manager's next user interaction allows a new group is true, then increment
+        // manager's allowed number of groups.
+        if manager.next_user_interaction_allows_a_new_group() {
+            manager.increment_allowed_number_of_groups();
+        }
+
+        // Step 3. Set manager's next user interaction allows a new group to false.
+        manager.set_next_user_interaction_allows_a_new_group(false);
+    }
+
+    pub(crate) fn close_watcher_manager(&self) -> &CloseWatcherManager {
+        &self.close_watcher_manager
+    }
+
     pub(crate) fn perform_a_microtask_checkpoint(&self, cx: &mut JSContext) {
         self.script_thread().perform_a_microtask_checkpoint(cx);
     }
@@ -1006,6 +1032,7 @@ impl Window {
             has_trustworthy_ancestor_origin,
             policy_container,
             origin,
+            network_partition_key,
         ) = if let Some(no_gc) = no_gc {
             let document = self.document_unrooted(no_gc);
             (
@@ -1014,6 +1041,7 @@ impl Window {
                 document.has_trustworthy_ancestor_or_current_origin(),
                 document.policy_container().clone(),
                 document.origin().clone(),
+                document.determine_the_network_partition_key(),
             )
         } else {
             let document = self.Document();
@@ -1023,6 +1051,7 @@ impl Window {
                 document.has_trustworthy_ancestor_or_current_origin(),
                 document.policy_container().clone(),
                 document.origin().clone(),
+                document.determine_the_network_partition_key(),
             )
         };
         RequestClient {
@@ -1032,12 +1061,18 @@ impl Window {
             is_nested_browsing_context: !self.is_top_level(),
             insecure_requests_policy,
             has_trustworthy_ancestor_origin,
+            network_partition_key,
         }
     }
 
     #[expect(unsafe_code)]
     pub(crate) fn gc(&self, cx: &mut JSContext) {
         unsafe { JS_GC(cx, GCReason::API) };
+    }
+
+    #[expect(unsafe_code)]
+    pub(crate) fn maybe_gc(&self, cx: &mut JSContext) {
+        unsafe { JS_MaybeGC(cx) };
     }
 
     pub(crate) fn with_timers<T>(&self, f: impl FnOnce(&OneshotTimers) -> T) -> T {
@@ -1389,7 +1424,9 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         // TODO: Implement this.
 
         // Step 4. Run the focusing steps with current.
-        document.focus_handler().focus(cx, &FocusableArea::Viewport);
+        document
+            .focus_handler()
+            .focus(cx, &FocusableArea::Viewport, FocusTrigger::Script);
 
         // Step 5. If current is a top-level traversable, user agents are encouraged to trigger some
         // sort of notification to indicate to the user that the page is attempting to gain focus.
@@ -2485,24 +2522,17 @@ impl Window {
     }
 
     pub(crate) fn clear_js_runtime(&self) {
-        self.stop_geolocation_watches();
-        self.as_global_scope()
-            .remove_web_messaging_and_dedicated_workers_infra();
+        self.clear_js_runtime_common();
 
         // Clean up any active promises
         // https://github.com/servo/servo/issues/15318
         self.Document().teardown_custom_element_registry();
 
-        self.current_state.set(WindowState::Zombie);
         *self.js_runtime.borrow_mut() = None;
 
         if let Some(performance) = self.performance.get() {
             performance.clear_and_disable_performance_entry_buffer();
         }
-
-        self.as_global_scope()
-            .task_manager()
-            .cancel_all_tasks_and_ignore_future_tasks();
 
         // From <https://w3c.github.io/IndexedDB/#database-connection>
         // > The connection can be closed through several means. If the execution context where
@@ -3026,10 +3056,11 @@ impl Window {
 
     pub(crate) fn resolved_font_style_query(
         &self,
+        cx: &mut JSContext,
         node: &Node,
         value: String,
     ) -> Option<ServoArc<Font>> {
-        self.layout_reflow_deprecated(QueryMsg::ResolvedFontStyleQuery);
+        self.layout_reflow(cx, QueryMsg::ResolvedFontStyleQuery);
 
         let document = self.Document();
         let animations = document.animation_manager().sets();
@@ -3120,8 +3151,8 @@ impl Window {
             .query_client_rect(node.to_trusted_node_address())
     }
 
-    pub(crate) fn current_css_zoom_query(&self, node: &Node) -> f32 {
-        self.layout_reflow_deprecated(QueryMsg::CurrentCSSZoomQuery);
+    pub(crate) fn current_css_zoom_query(&self, cx: &mut JSContext, node: &Node) -> f32 {
+        self.layout_reflow(cx, QueryMsg::CurrentCSSZoomQuery);
         self.layout
             .borrow()
             .query_current_css_zoom(node.to_trusted_node_address())
@@ -3214,9 +3245,10 @@ impl Window {
 
     pub(crate) fn accesskit_node_query(
         &self,
+        cx: &mut JSContext,
         element: TrustedNodeAddress,
     ) -> Option<accesskit::Node> {
-        self.layout_reflow_deprecated(QueryMsg::AccessKitNodeQuery);
+        self.layout_reflow(cx, QueryMsg::AccessKitNodeQuery);
         self.layout.borrow().query_accesskit_node(element)
     }
 
@@ -3225,10 +3257,11 @@ impl Window {
     /// Otherwise, return `None`.
     pub(crate) fn get_iframe_viewport_details_if_known(
         &self,
+        cx: &mut JSContext,
         browsing_context_id: BrowsingContextId,
     ) -> Option<ViewportDetails> {
         // Reflow might fail, but do a best effort to return the right size.
-        self.layout_reflow_deprecated(QueryMsg::InnerWindowDimensionsQuery);
+        self.layout_reflow(cx, QueryMsg::InnerWindowDimensionsQuery);
         self.Document()
             .iframes()
             .viewport_details(browsing_context_id)
@@ -3289,10 +3322,11 @@ impl Window {
     #[expect(unsafe_code)]
     pub(crate) fn text_index_query_on_node_for_event(
         &self,
+        cx: &mut JSContext,
         node: &Node,
         point_in_viewport: Point2D<Au, CSSPixel>,
     ) -> Option<(DomRoot<Node>, Utf32CodeUnits)> {
-        self.layout_reflow_deprecated(QueryMsg::TextIndexOrSegmentQuery);
+        self.layout_reflow(cx, QueryMsg::TextIndexOrSegmentQuery);
         let result = self
             .layout
             .borrow()
@@ -3308,11 +3342,12 @@ impl Window {
     #[expect(unsafe_code)]
     pub(crate) fn query_text_segment(
         &self,
+        cx: &mut JSContext,
         node: &Node,
         offset: Utf32CodeUnitsOrNodeOffset,
         granularity: SegmentGranularity,
     ) -> Option<(RootedSelectionBoundary, RootedSelectionBoundary)> {
-        self.layout_reflow_deprecated(QueryMsg::TextIndexOrSegmentQuery);
+        self.layout_reflow(cx, QueryMsg::TextIndexOrSegmentQuery);
         let ((start_node, start_offset), (end_node, end_offset)) = self
             .layout()
             .query_text_segment(node.to_trusted_node_address(), offset, granularity)?;
@@ -3574,7 +3609,7 @@ impl Window {
         // GC any unreachable objects generated by user script,
         // or unattached DOM nodes. Attached DOM nodes can't be GCd yet,
         // as the document might be reactivated later.
-        self.gc(cx);
+        self.maybe_gc(cx);
     }
 
     pub(crate) fn resume(&self, cx: &mut JSContext) {
@@ -3743,6 +3778,13 @@ impl Window {
 
     pub(crate) fn set_last_activation_timestamp(&self, time: UserActivationTimestamp) {
         self.last_activation_timestamp.set(time);
+    }
+
+    pub(crate) fn set_last_history_action_activation_timestamp(
+        &self,
+        time: UserActivationTimestamp,
+    ) {
+        self.last_history_action_activation_timestamp.set(time);
     }
 
     pub(crate) fn send_to_embedder(&self, msg: EmbedderMsg) {
@@ -3959,6 +4001,14 @@ impl Window {
             self.last_activation_timestamp.get()
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#history-action-activation>
+    pub(crate) fn has_history_action_activation(&self) -> bool {
+        // > When the last history-action activation timestamp of W
+        // > is not equal to the last activation timestamp of W,
+        // > then W is said to have history-action activation.
+        self.last_history_action_activation_timestamp.get() != self.last_activation_timestamp.get()
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#transient-activation>
     pub(crate) fn has_transient_activation(&self) -> bool {
         // > When the current high resolution time given W is greater than or equal to the last activation timestamp in W, and less than the last activation
@@ -4003,6 +4053,39 @@ impl Window {
             .consume_last_activation_timestamp();
         for document in SameOriginDescendantNavigablesIterator::new(&top_level_document) {
             document.window().consume_last_activation_timestamp();
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#consume-history-action-user-activation>
+    pub(crate) fn consume_history_action_user_activation(&self) {
+        // Step 1. If W's navigable is null, then return.
+        if self.undiscarded_window_proxy().is_none() {
+            return;
+        }
+
+        // Step 2. Let top be W's navigable's top-level traversable.
+        // TODO: This wouldn't work if top level document is in another ScriptThread.
+        let Some(top_level_document) = self.top_level_document_if_local() else {
+            return;
+        };
+
+        // Step 3. Let navigables be the inclusive descendant navigables of top's active document.
+        // Step 4. Let windows be the list of Window objects constructed by taking the active window
+        // of each item in navigables.
+        // Step 5. For each window in windows, set window's last history-action activation timestamp
+        // to window's last activation timestamp.
+        // TODO: this would not work for disimilar origin descendant, since we doesn't store the document in this script thread.
+        top_level_document
+            .window()
+            .set_last_history_action_activation_timestamp(
+                top_level_document.window().last_activation_timestamp.get(),
+            );
+        for document in SameOriginDescendantNavigablesIterator::new(&top_level_document) {
+            document
+                .window()
+                .set_last_history_action_activation_timestamp(
+                    document.window().last_activation_timestamp.get(),
+                );
         }
     }
 
@@ -4142,6 +4225,13 @@ impl Window {
             devtools_wants_updates: Default::default(),
             has_dispatched_scroll_event: Cell::new(false),
             has_dispatched_input_event: Cell::new(false),
+            // https://html.spec.whatwg.org/multipage/#last-history-action-activation-timestamp
+            // > A last history-action activation timestamp, which is either a DOMHighResTimeStamp
+            // > or positive infinity, initially positive infinity.
+            last_history_action_activation_timestamp: Cell::new(
+                UserActivationTimestamp::PositiveInfinity,
+            ),
+            close_watcher_manager: CloseWatcherManager::new(),
         });
 
         WindowBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, win)
