@@ -299,7 +299,7 @@ impl App {
         );
         let (history, _) = open_history(&init.opts);
         let mut protocol_registry = ProtocolRegistry::default();
-        let _ = protocol_registry.register("servo", protocols::ServoProtocolHandler);
+        let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)

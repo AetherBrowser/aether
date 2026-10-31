@@ -118,10 +118,10 @@ fn test_cmdline_and_location_bar_url() {
         "data:text/html,a",
     );
     test_url(
-        "servo:config",
-        "servo:config",
-        "servo:config",
-        "servo:config",
+        "about:config",
+        "about:config",
+        "about:config",
+        "about:config",
     );
     test_url(
         "README.md",
@@ -183,10 +183,10 @@ fn test_cmdline_and_location_bar_url() {
         "data:text/html,a",
     );
     test_url(
-        "servo:config",
-        "servo:config",
-        "servo:config",
-        "servo:config",
+        "about:config",
+        "about:config",
+        "about:config",
+        "about:config",
     );
     test_url(
         "README.md",
@@ -324,7 +324,7 @@ fn test_issue_35754() {
 fn test_home_url_is_new_tab_page() {
     let home = crate::window::new_tab_url();
     assert_eq!(home.as_str(), crate::home::AETHER_HOME_URL);
-    assert_eq!(home.as_str(), "servo:newtab");
+    assert_eq!(home.as_str(), "about:newtab");
 }
 
 #[test]
@@ -334,7 +334,7 @@ fn test_location_bar_accepts_new_tab_url() {
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("new tab URL should parse");
-    assert_eq!(url.as_str(), "servo:newtab");
+    assert_eq!(url.as_str(), "about:newtab");
 }
 
 #[test]
@@ -344,14 +344,14 @@ fn test_location_bar_accepts_processes_url() {
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("processes URL should parse");
-    assert_eq!(url.as_str(), "servo:processes");
+    assert_eq!(url.as_str(), "about:processes");
 }
 
 #[test]
 fn test_processes_url_is_processes_page() {
     let processes = crate::window::processes_url();
     assert_eq!(processes.as_str(), crate::window::PROCESSES_URL);
-    assert_eq!(processes.as_str(), "servo:processes");
+    assert_eq!(processes.as_str(), "about:processes");
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn test_view_source_url_does_not_stack() {
 
 #[test]
 fn test_view_source_url_refuses_unviewable_schemes() {
-    for url in ["servo:newtab", "servo:history", "about:blank"] {
+    for url in ["about:newtab", "about:history", "about:blank"] {
         let url = Url::parse(url).expect("URL should parse");
         assert!(
             !crate::window::can_view_source(&url),
@@ -387,7 +387,7 @@ fn test_view_source_url_refuses_unviewable_schemes() {
 fn test_history_url_is_history_page() {
     let history = crate::window::history_url();
     assert_eq!(history.as_str(), crate::window::HISTORY_URL);
-    assert_eq!(history.as_str(), "servo:history");
+    assert_eq!(history.as_str(), "about:history");
 }
 
 #[test]
@@ -397,14 +397,14 @@ fn test_location_bar_accepts_history_url() {
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("history URL should parse");
-    assert_eq!(url.as_str(), "servo:history");
+    assert_eq!(url.as_str(), "about:history");
 }
 
 #[test]
 fn test_settings_url_is_settings_page() {
     let settings = crate::window::settings_url();
     assert_eq!(settings.as_str(), crate::window::SETTINGS_URL);
-    assert_eq!(settings.as_str(), "servo:settings");
+    assert_eq!(settings.as_str(), "about:settings");
 }
 
 #[test]
@@ -414,7 +414,7 @@ fn test_location_bar_accepts_settings_url() {
         "https://duckduckgo.com/html/?q=%s",
     )
     .expect("settings URL should parse");
-    assert_eq!(url.as_str(), "servo:settings");
+    assert_eq!(url.as_str(), "about:settings");
 }
 
 #[test]
@@ -429,7 +429,7 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("href=\"#about\""));
     assert!(html.contains("<section id=\"about\" hidden>"));
     assert!(html.contains(">About<"));
-    assert!(html.contains("servo:about"));
+    assert!(html.contains("about:about"));
     assert!(html.contains(">Version<"));
     assert!(html.contains(">Channel<"));
     assert!(html.contains(">Architecture<"));
@@ -441,14 +441,14 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("id=\"new-tabs\""));
     assert!(html.contains("id=\"show-search\""));
     assert!(html.contains("Aether logo"));
-    assert!(html.contains("servo:home"));
+    assert!(html.contains("about:home"));
     assert!(html.contains("id=\"homepage-url-error\""));
     assert!(html.contains("addEventListener(\"blur\", commitHomepageUrl)"));
     assert!(html.contains("Enter a valid homepage URL"));
     assert!(html.contains(">Downloads<"));
     assert!(html.contains(">Appearance<"));
     assert!(html.contains("location.hash === \"#search\""));
-    assert!(html.contains("servo:search-engines"));
+    assert!(html.contains("about:search-engines"));
     assert!(html.contains("Default search engine"));
     assert!(html.contains("Add a search engine"));
 }
@@ -457,7 +457,7 @@ fn settings_page_has_a_search_section() {
 fn history_page_has_its_settings_and_a_delete_dialog() {
     let html = include_str!("../../resources/resource_protocol/history.html");
     assert!(html.contains("<title>History</title>"));
-    assert!(html.contains("servo:history-data"));
+    assert!(html.contains("about:history-data"));
     assert!(html.contains("Keep history for"));
     assert!(html.contains("<option value=\"90\">3 months</option>"));
     assert!(html.contains("<dialog id=\"delete-dialog\""));
@@ -470,7 +470,7 @@ fn new_tab_page_follows_home_content_preferences() {
     let css = include_str!("../../resources/resource_protocol/newtab.css");
     assert!(html.contains("id=\"home-logo\""));
     assert!(html.contains("id=\"home-search\""));
-    assert!(html.contains("servo:home"));
+    assert!(html.contains("about:home"));
     assert!(html.contains("showLogo"));
     assert!(html.contains("showSearch"));
     // `form { display: flex }` would otherwise keep a hidden search bar visible.
@@ -483,7 +483,7 @@ fn processes_page_lists_sortable_columns_and_json_endpoint() {
     assert!(html.contains("data-sort=\"name\""));
     assert!(html.contains("data-sort=\"memory\""));
     assert!(html.contains("data-sort=\"cpu\""));
-    assert!(html.contains("servo:process-list"));
+    assert!(html.contains("about:process-list"));
     assert!(html.contains("text-overflow: ellipsis"));
     assert!(
         !html.contains("Updating every second"),

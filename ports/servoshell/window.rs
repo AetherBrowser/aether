@@ -363,7 +363,7 @@ impl ServoShellWindow {
                 },
                 UserInterfaceCommand::NewWebView => {
                     self.set_needs_update();
-                    let url = Url::parse("servo:newtab").expect("Should always be able to parse");
+                    let url = Url::parse("about:newtab").expect("Should always be able to parse");
                     self.create_and_activate_toplevel_webview(
                         state.clone(),
                         TopLevelWebViewCreationRequest::WithUrl(url),
@@ -380,7 +380,7 @@ impl ServoShellWindow {
                     let url = match &creation_request {
                         TopLevelWebViewCreationRequest::WithUrl(url) => url.clone(),
                         TopLevelWebViewCreationRequest::WithCreateRequest(..) => {
-                            Url::parse("servo:newtab").unwrap()
+                            Url::parse("about:newtab").unwrap()
                         },
                     };
                     let platform_window = create_platform_window(url);

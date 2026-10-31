@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Snapshot of the browser process tree for `servo:processes`.
+//! Snapshot of the browser process tree for `about:processes`.
 
 #[cfg(any(test, target_os = "linux", target_os = "windows"))]
 use std::collections::VecDeque;
@@ -23,7 +23,7 @@ pub(crate) struct EmbedderTab {
     pub url: String,
 }
 
-/// Replace the list of open tabs shown on `servo:processes`.
+/// Replace the list of open tabs shown on `about:processes`.
 pub(crate) fn publish_embedder_tabs(tabs: Vec<EmbedderTab>) {
     match EMBEDDER_TABS.lock() {
         Ok(mut current) => *current = tabs,
@@ -1176,7 +1176,7 @@ mod tests {
     fn display_url_prefers_host_then_path() {
         assert_eq!(display_url("https://example.com/path?q=1"), "example.com");
         assert_eq!(display_url("file:///tmp/page.html"), "/tmp/page.html");
-        assert_eq!(display_url("servo:processes"), "processes");
+        assert_eq!(display_url("about:processes"), "processes");
         assert_eq!(display_url("not a url"), "not a url");
     }
 

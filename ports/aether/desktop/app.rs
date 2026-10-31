@@ -98,7 +98,7 @@ impl App {
             protocols::urlinfo::UrlInfoProtocolHander::default(),
         );
         let _ = protocol_registry.register(
-            "servo",
+            "about",
             protocols::servo::ServoProtocolHandler::new(history_page),
         );
         let _ = protocol_registry.register(

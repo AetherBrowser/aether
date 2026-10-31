@@ -366,7 +366,7 @@
       }
 
       async function apply(query) {
-        const url = query ? "servo:search-engines?" + query : "servo:search-engines";
+        const url = query ? "about:search-engines?" + query : "about:search-engines";
         try {
           const response = await fetch(url);
           const data = await response.json();
@@ -446,7 +446,7 @@
       }
 
       async function applyHome(query) {
-        const url = query ? "servo:home?" + query : "servo:home";
+        const url = query ? "about:home?" + query : "about:home";
         try {
           const response = await fetch(url);
           const data = await response.json();
@@ -513,7 +513,7 @@
       async function loadAbout() {
         aboutPane.dataset.loading = "1";
         try {
-          const response = await fetch("servo:about");
+          const response = await fetch("about:about");
           if (!response.ok) {
             throw new Error(response.statusText);
           }

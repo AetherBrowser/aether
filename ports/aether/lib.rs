@@ -116,7 +116,7 @@ pub fn init_tracing(filter_directives: Option<&str>) {
     }
 }
 
-/// Product version reported by `--version` and `servo:settings#about`.
+/// Product version reported by `--version` and `about:settings#about`.
 ///
 /// Aether's number is this package's `version` in `Cargo.toml`. The Servo number
 /// is [`servo::SERVO_VERSION`], which follows `[workspace.package] version`.

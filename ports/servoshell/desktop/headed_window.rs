@@ -413,8 +413,8 @@ impl HeadedWindow {
                 }
             })
             .shortcut(CMD_OR_CONTROL, 'T', || {
-                let url = Url::parse("servo:newtab")
-                    .expect("Should be able to unconditionally parse 'servo:newtab' as URL");
+                let url = Url::parse("about:newtab")
+                    .expect("Should be able to unconditionally parse 'about:newtab' as URL");
                 window.create_and_activate_toplevel_webview(
                     state.clone(),
                     TopLevelWebViewCreationRequest::WithUrl(url),
