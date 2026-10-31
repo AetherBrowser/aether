@@ -10,6 +10,8 @@ import android.util.Size
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.View
+import android.view.KeyEvent as AndroidKeyEvent
 import android.view.inputmethod.BaseInputConnection
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.Interaction
@@ -72,7 +74,7 @@ fun Servo(
             modifier
                 .focusRequester(focusRequester)
                 .focusable()
-                .softKeyboardVisible(softKeyboardVisible)
+                .softKeyboardVisible(softKeyboardVisible, servo)
                 .onKeyEvent { keyEvent ->
                     when (keyEvent.type) {
                         KeyEventType.KeyDown if keyEvent.key != Key.Back -> {
@@ -174,31 +176,94 @@ class ServoNavigator {
     }
 }
 
-private fun Modifier.softKeyboardVisible(visible: Boolean) = this then SoftKeyboardVisible(visible)
+private fun Modifier.softKeyboardVisible(visible: Boolean, servo: Servo) =
+    this then SoftKeyboardVisible(visible, servo)
 
-private data class SoftKeyboardVisible(val visible: Boolean) :
+private data class SoftKeyboardVisible(val visible: Boolean, val servo: Servo) :
     ModifierNodeElement<SoftKeyboardVisibleNode>() {
-    override fun create() = SoftKeyboardVisibleNode()
+    override fun create() = SoftKeyboardVisibleNode(servo)
 
     override fun update(node: SoftKeyboardVisibleNode) {
+        node.servo = servo
         node.update(visible)
     }
 }
 
-private class SoftKeyboardVisibleNode : Modifier.Node(), PlatformTextInputModifierNode {
+private class SoftKeyboardVisibleNode(var servo: Servo) :
+    Modifier.Node(), PlatformTextInputModifierNode {
     private var textInputSessionJob: Job? = null
 
     fun update(visible: Boolean) {
         textInputSessionJob?.cancel()
         if (visible) {
+            val servo = servo
             textInputSessionJob = coroutineScope.launch {
                 establishTextInputSession {
-                    startInputMethod { _ -> BaseInputConnection(view, true) }
+                    startInputMethod { _ -> ServoInputConnection(view, servo) }
                 }
             }
         }
     }
 }
+
+/**
+ * Soft keyboards deliver typed text here, not as key events. The previous
+ * [BaseInputConnection] dropped that text, so only Enter (as a newline) reached
+ * the field and was stored as a space.
+ */
+private class ServoInputConnection(view: View, private val servo: Servo) :
+    BaseInputConnection(view, true) {
+    private var composing = false
+    private var composingText = ""
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        val raw = text?.toString().orEmpty()
+        val value = raw.replace("\r", "").replace("\n", "")
+        if (value.isNotEmpty()) {
+            if (!composing) {
+                servo.imeComposition(COMPOSITION_START, "")
+            }
+            servo.imeComposition(COMPOSITION_UPDATE, value)
+            servo.imeComposition(COMPOSITION_END, value)
+            composing = false
+            composingText = ""
+        }
+        if (raw.contains('\n') || raw.contains('\r')) {
+            servo.sendKey(AndroidKeyEvent.KEYCODE_ENTER, 0)
+        }
+        return true
+    }
+
+    override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        val value = text?.toString().orEmpty()
+        if (!composing) {
+            servo.imeComposition(COMPOSITION_START, "")
+            composing = true
+        }
+        composingText = value
+        servo.imeComposition(COMPOSITION_UPDATE, value)
+        return true
+    }
+
+    override fun finishComposingText(): Boolean {
+        if (composing) {
+            servo.imeComposition(COMPOSITION_END, composingText)
+            composing = false
+            composingText = ""
+        }
+        return true
+    }
+
+    override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+        repeat(beforeLength) { servo.sendKey(AndroidKeyEvent.KEYCODE_DEL, 0) }
+        repeat(afterLength) { servo.sendKey(AndroidKeyEvent.KEYCODE_FORWARD_DEL, 0) }
+        return true
+    }
+}
+
+private const val COMPOSITION_START = 0
+private const val COMPOSITION_UPDATE = 1
+private const val COMPOSITION_END = 2
 
 class Servo(
     args: String?,
@@ -267,6 +332,14 @@ class Servo(
 
     fun onKeyDown(keyCode: Int, event: KeyEvent) {
         scope.launch(glDispatcher) { jni.keydown(keyCode, event.unicodeChar) }
+    }
+
+    fun sendKey(keyCode: Int, unicode: Int) {
+        scope.launch(glDispatcher) { jni.keydown(keyCode, unicode) }
+    }
+
+    fun imeComposition(state: Int, text: String) {
+        scope.launch(glDispatcher) { jni.imeComposition(state, text) }
     }
 
     fun onKeyUp(keyCode: Int, event: KeyEvent) {
