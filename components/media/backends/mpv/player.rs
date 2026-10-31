@@ -233,7 +233,19 @@ impl Player for MpvPlayer {
     }
 
     fn stop(&self) -> Result<(), PlayerError> {
-        Err(not_implemented("stop"))
+        // Without a libmpv instance nothing ever played: there is nothing to stop.
+        let Some(handle) = self.handle.get() else {
+            return Ok(());
+        };
+        handle.set_flag("pause", true).map_err(backend_error)?;
+        self.resume_after_suspend.set(false);
+        // Seeking needs a loaded file. When mpv is idle, pausing is all there is to do.
+        if !handle.get_flag("idle-active").map_err(backend_error)? {
+            handle
+                .command(&["seek", "0", "absolute"])
+                .map_err(backend_error)?;
+        }
+        Ok(())
     }
 
     fn seek(&self, time: f64) -> Result<(), PlayerError> {
@@ -805,6 +817,38 @@ mod tests {
     }
 
     #[test]
+    fn stop_without_libmpv_does_not_start_it() {
+        let player = player();
+        player.stop().unwrap();
+        assert!(player.handle.get().is_none());
+    }
+
+    #[test]
+    fn stop_without_a_file_only_pauses() {
+        let player = player();
+        player.play().unwrap();
+        player.stop().unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn stop_pauses_and_rewinds_a_loaded_file() {
+        let player = player();
+        let handle = load_test_file(&player);
+        player.play().unwrap();
+        wait_until("playback to advance", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 0.2)
+        });
+
+        player.stop().unwrap();
+        assert!(player.paused());
+        assert!(!player.can_resume());
+        wait_until("the rewind", || {
+            time_pos(handle).is_some_and(|seconds| seconds < 0.05)
+        });
+    }
+
+    #[test]
     fn loading_a_file_reports_its_metadata_then_its_state() {
         let (player, events) = player_with_events();
         load_test_file(&player);
@@ -1029,8 +1073,9 @@ mod tests {
         wait_until("playback to advance", || {
             time_pos(handle).is_some_and(|seconds| seconds > 0.5)
         });
-        // A seek may not wait for Servo.
+        // Neither a seek nor a stop may wait for Servo.
         handle.command(&["seek", "250", "absolute"]).unwrap();
+        player.stop().unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
         while let Ok(event) = servo
             .events
@@ -1038,6 +1083,29 @@ mod tests {
         {
             assert!(!matches!(event, PlayerEvent::SeekData(..)));
         }
+    }
+
+    #[test]
+    fn stop_rewinds_from_the_cache() {
+        let (player, servo) = load_seekable(SeekAnswer::Fetch);
+        let handle = player.handle.get().unwrap();
+        player.play().unwrap();
+        wait_until("playback to advance", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 1.0)
+        });
+
+        player.stop().unwrap();
+        wait_until("the rewind", || {
+            time_pos(handle).is_some_and(|seconds| seconds < 0.05)
+        });
+        // The start of the media is still in libmpv's cache: nothing is fetched again.
+        while let Ok(event) = servo.events.recv_timeout(Duration::from_millis(500)) {
+            assert!(!matches!(event, PlayerEvent::SeekData(..)));
+        }
+        player.play().unwrap();
+        wait_until("playback to start again", || {
+            time_pos(handle).is_some_and(|seconds| seconds > 0.2)
+        });
     }
 
     #[test]
