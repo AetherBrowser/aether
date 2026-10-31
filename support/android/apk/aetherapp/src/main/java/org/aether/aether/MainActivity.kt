@@ -304,9 +304,17 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     override fun onUrlChanged(url: String) {
-        urlTextFieldState.edit { replace(0, length, url) }
         currentUrl = url
+        urlTextFieldState.edit { replace(0, length, locationText(url)) }
     }
+
+    /** Location-bar text: empty on the new tab and blank pages, as on desktop. */
+    private fun locationText(url: String): String =
+        when (url) {
+            "about:newtab",
+            "about:blank" -> ""
+            else -> url
+        }
 
     companion object {
         private const val TAG = "MainActivity"
@@ -421,15 +429,15 @@ private fun homeUrl(): String {
     return when (value.optString("newWindows", "home")) {
         "blank" -> "about:blank"
         "url" -> value.optString("homepage").ifBlank { "about:blank" }
-        else -> "servo:newtab"
+        else -> "about:newtab"
     }
 }
 
 private fun newTabUrl(): String {
-    val value = homeSettings() ?: return "servo:newtab"
+    val value = homeSettings() ?: return "about:newtab"
     return when (value.optString("newTabs", "home")) {
         "blank" -> "about:blank"
-        else -> "servo:newtab"
+        else -> "about:newtab"
     }
 }
 
