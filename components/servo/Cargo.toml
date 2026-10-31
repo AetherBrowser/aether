@@ -70,6 +70,7 @@ js_jit = ["script/js_jit"]
 # The `dep:` prefixes here mean that these do nothing on Android and OHOS, where these
 # dependencies aren't declared.
 media-gstreamer = ["dep:servo-media-gstreamer", "dep:gstreamer"]
+media-mpv = ["dep:aether-media-mpv"]
 
 # Allows multiprocess and ipc mode. If enabled this still needs the correct preference flags to use multi process mode.
 multiprocess = ["servo-base/multiprocess", "servo-constellation/multiprocess"]
@@ -125,6 +126,7 @@ webxr = [
 
 [dependencies]
 accesskit = { workspace = true }
+aether-media-mpv = { workspace = true, optional = true }
 bitflags = { workspace = true }
 cookie = { workspace = true }
 crossbeam-channel = { workspace = true }

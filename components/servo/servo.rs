@@ -157,7 +157,20 @@ mod media_platform {
     }
 }
 
-#[cfg(target_env = "ohos")]
+#[cfg(all(feature = "media-gstreamer", feature = "media-mpv"))]
+compile_error!("The `media-gstreamer` and `media-mpv` features are mutually exclusive.");
+
+#[cfg(feature = "media-mpv")]
+mod media_platform {
+    use aether_media_mpv::MpvBackend;
+
+    use super::ServoMedia;
+    pub fn init() {
+        ServoMedia::init::<MpvBackend>();
+    }
+}
+
+#[cfg(all(target_env = "ohos", not(feature = "media-mpv")))]
 mod media_platform {
     use servo_media_ohos::OhosBackend;
 
@@ -169,6 +182,7 @@ mod media_platform {
 
 #[cfg(all(
     not(target_env = "ohos"),
+    not(feature = "media-mpv"),
     not(all(feature = "media-gstreamer", not(target_os = "android")))
 ))]
 mod media_platform {

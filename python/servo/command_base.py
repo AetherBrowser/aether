@@ -272,7 +272,7 @@ class CommandBase(object):
 
     def __init__(self, context: Any) -> None:
         self.context = context
-        self.enable_media = False
+        self.media_stack = "dummy"
         self.enable_code_coverage = False
         self.features = []
 
@@ -400,7 +400,7 @@ class CommandBase(object):
 
         # If we are installing on MacOS and Windows, we need to make sure that GStreamer's
         # `pkg-config` is on the path and takes precedence over other `pkg-config`s.
-        if self.enable_media:
+        if self.media_stack == "gstreamer":
             platform = servo.platform.get()
             gstreamer_root = platform.gstreamer_root(self.target)
             if gstreamer_root:
@@ -529,7 +529,7 @@ class CommandBase(object):
                     "--media-stack",
                     default=None,
                     group="Feature Selection",
-                    choices=["gstreamer", "dummy"],
+                    choices=["gstreamer", "mpv", "dummy"],
                     help="Which media stack to use",
                 ),
                 CommandArgument(
@@ -618,7 +618,7 @@ class CommandBase(object):
                 if build_configuration:
                     self.configure_build_target(kwargs)
                     self.features = kwargs.get("features", None) or []
-                    self.enable_media = self.is_media_enabled(kwargs["media_stack"])
+                    self.media_stack = self.resolve_media_stack(kwargs["media_stack"])
 
                 if build_configuration or binary_selection:
                     self.enable_code_coverage = kwargs.pop("coverage", False)
@@ -763,23 +763,47 @@ class CommandBase(object):
 
         self.context.port = self.port
 
-    def is_media_enabled(self, media_stack: Optional[str]) -> bool:
-        """Determine whether media is enabled based on the value of the build target
+    def resolve_media_stack(self, media_stack: Optional[str]) -> str:
+        """Determine which media stack to build based on the value of the build target
         platform and the value of the '--media-stack' command-line argument.
-        Returns true if media is enabled."""
+        Returns one of "gstreamer", "mpv" or "dummy"."""
         if not media_stack:
             if self.config["build"]["media-stack"] != "auto":
                 media_stack = self.config["build"]["media-stack"]
                 assert media_stack
+            else:
+                # GStreamer is a default feature of the ports. On Android and OHOS, it does
+                # nothing (see `media-gstreamer` in components/servo/Cargo.toml).
+                media_stack = "gstreamer"
 
         # This is a workaround for Ubuntu 20.04, which doesn't support a new enough GStreamer.
         # Once we drop support for this platform (it's currently needed for wpt.fyi runners),
         # we can remove this workaround and officially only support Ubuntu 22.04 and up.
         platform = servo.platform.get()
-        if not self.target.is_cross_build() and platform.is_linux and not platform.is_gstreamer_installed(self.target):
-            return False
+        if (
+            media_stack == "gstreamer"
+            and not self.target.is_cross_build()
+            and platform.is_linux
+            and not platform.is_gstreamer_installed(self.target)
+        ):
+            return "dummy"
 
-        return media_stack != "dummy"
+        return media_stack
+
+    @staticmethod
+    def is_libmpv_installed(env: dict[str, str]) -> bool:
+        try:
+            return (
+                subprocess.call(
+                    ["pkg-config", "--atleast-version=2.0", "mpv"],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                == 0
+            )
+        except FileNotFoundError:
+            return False
 
     def run_cargo_build_like_command(
         self,
@@ -801,9 +825,17 @@ class CommandBase(object):
         # NB: On non-Linux platforms we cannot check whether GStreamer is installed until
         # environment variables are set via `self.build_env()`.
         platform = servo.platform.get()
-        if not self.target.is_cross_build() and self.enable_media and not platform.is_gstreamer_installed(self.target):
+        if (
+            self.media_stack == "gstreamer"
+            and not self.target.is_cross_build()
+            and not platform.is_gstreamer_installed(self.target)
+        ):
             raise FileNotFoundError(
                 "GStreamer libraries not found (>= version 1.18).Please see installation instructions in README.md"
+            )
+        if self.media_stack == "mpv" and not self.is_libmpv_installed(env):
+            raise FileNotFoundError(
+                "libmpv not found (>= client API 2.0, i.e. mpv >= 0.35). Please install the mpv development package."
             )
 
         args = []
@@ -845,16 +877,20 @@ class CommandBase(object):
         if "-p" not in cargo_args:  # We're building specific package, that may not have features
             features += list(self.features)
 
-            if not self.enable_media:
+            # GStreamer is a default feature of the ports: the other media stacks build
+            # without the default features, then add them back without GStreamer.
+            if self.media_stack != "gstreamer":
                 if "--no-default-features" not in cargo_args:
                     cargo_args.append("--no-default-features")
                     features.append("default_base")
                 else:
                     print(
-                        "Info: Explicit `--no-default-features` passed in a `--media-stack dummy` build."
+                        f"Info: Explicit `--no-default-features` passed in a `--media-stack {self.media_stack}` build."
                         " Skipping `mach` override of default features. If you are not sure what"
                         " you are doing, consider removing `--no-default-features` from your invocation."
                     )
+            if self.media_stack == "mpv":
+                features.append("media-mpv")
 
             if self.config["build"]["debug-mozjs"] or debug_mozjs:
                 features.append("debugmozjs")
