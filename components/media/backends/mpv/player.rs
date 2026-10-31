@@ -1417,6 +1417,75 @@ mod tests {
     }
 
     #[test]
+    fn aac_in_mp4_plays() {
+        plays_to_its_end(
+            &format!("{WPT}media-source/mp4/test-a-128k-44100Hz-1ch.mp4"),
+            "aac",
+            None,
+        );
+    }
+
+    #[test]
+    fn raw_aac_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx.adts"), "aac", None);
+    }
+
+    #[test]
+    fn flac_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx.flac"), "flac", None);
+    }
+
+    #[test]
+    fn wav_plays() {
+        plays_to_its_end(&format!("{WPT}media/speech.wav"), "pcm_s16le", None);
+    }
+
+    #[test]
+    fn opus_plays() {
+        plays_to_its_end(&format!("{WPT}webcodecs/sfx-opus.ogg"), "opus", None);
+    }
+
+    #[test]
+    fn ogg_vorbis_plays() {
+        plays_to_its_end(&format!("{WPT}media/sound_5.oga"), "vorbis", None);
+    }
+
+    #[test]
+    fn h264_mp4_plays() {
+        plays_to_its_end(&format!("{WPT}media/movie_5.mp4"), "aac", Some("h264"));
+    }
+
+    #[test]
+    fn mp4_with_its_index_at_the_end_plays() {
+        // libmpv must read the index (`moov`) at the end before playing. The file is small
+        // enough for libmpv to buffer it whole, so this does not go through `SeekData`.
+        plays_to_its_end(&format!("{WPT}media/test-1s.mp4"), "aac", Some("h264"));
+    }
+
+    #[test]
+    fn vp8_webm_plays() {
+        plays_to_its_end(
+            &format!("{WPT}media/test-av-384k-44100Hz-1ch-320x240-30fps-10kfr.webm"),
+            "vorbis",
+            Some("vp8"),
+        );
+    }
+
+    #[test]
+    fn vp9_webm_plays() {
+        plays_to_its_end(&format!("{WPT}media/A4.webm"), "opus", Some("vp9"));
+    }
+
+    #[test]
+    fn av1_mp4_plays() {
+        plays_to_its_end(
+            &format!("{WPT}speculation-rules/prerender/resources/bear-av1-opus.mp4"),
+            "opus",
+            Some("av1"),
+        );
+    }
+
+    #[test]
     fn libmpv_failures_are_reported_as_backend_errors() {
         let player = player_with(&[("not-an-option", "1")]);
         let Err(PlayerError::Backend(message)) = player.play() else {
