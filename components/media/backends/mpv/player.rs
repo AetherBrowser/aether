@@ -20,7 +20,6 @@ use crate::handle::{MpvError, MpvHandle, Node};
 use crate::stream::{BridgeObserver, SeekReply, StreamBridge};
 
 const DEFAULT_PAUSED: bool = true;
-const DEFAULT_MUTED: bool = false;
 const DEFAULT_VOLUME: f64 = 1.0;
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
 
@@ -52,8 +51,6 @@ pub struct MpvPlayer {
     /// Whether this player was playing when its page got suspended, so `resume` restarts
     /// it. A media paused by the page stays paused when the page is resumed.
     resume_after_suspend: Cell<bool>,
-    /// The requested mute state, applied to libmpv once its instance exists.
-    muted: Cell<bool>,
     /// The requested HTML volume, applied to libmpv once its instance exists.
     volume: Cell<f64>,
 }
@@ -82,7 +79,6 @@ impl MpvPlayer {
             seekable: Cell::new(false),
             handle: OnceCell::new(),
             resume_after_suspend: Cell::new(false),
-            muted: Cell::new(DEFAULT_MUTED),
             volume: Cell::new(DEFAULT_VOLUME),
         }
     }
@@ -93,11 +89,6 @@ impl MpvPlayer {
             return Ok(handle);
         }
         let handle = Arc::new(MpvHandle::new(&self.options).map_err(backend_error)?);
-        if self.muted.get() != DEFAULT_MUTED {
-            handle
-                .set_flag("mute", self.muted.get())
-                .map_err(backend_error)?;
-        }
         if self.volume.get() != DEFAULT_VOLUME {
             handle
                 .set_double("volume", html_to_mpv_volume(self.volume.get()))
@@ -302,19 +293,12 @@ impl Player for MpvPlayer {
         }
     }
 
-    fn set_mute(&self, muted: bool) -> Result<(), PlayerError> {
-        if let Some(handle) = self.handle.get() {
-            handle.set_flag("mute", muted).map_err(backend_error)?;
-        }
-        self.muted.set(muted);
-        Ok(())
+    fn set_mute(&self, _muted: bool) -> Result<(), PlayerError> {
+        Err(not_implemented("set_mute"))
     }
 
     fn muted(&self) -> bool {
-        match self.handle.get().map(|handle| handle.get_node("mute")) {
-            Some(Ok(Node::Flag(muted))) => muted,
-            _ => self.muted.get(),
-        }
+        false
     }
 
     fn set_volume(&self, volume: f64) -> Result<(), PlayerError> {
@@ -890,38 +874,6 @@ mod tests {
         wait_until("the rewind", || {
             time_pos(handle).is_some_and(|seconds| seconds < 0.05)
         });
-    }
-
-    #[test]
-    fn muting_does_not_start_libmpv() {
-        let player = player();
-        player.set_mute(true).unwrap();
-        assert!(player.handle.get().is_none());
-        assert!(player.muted());
-    }
-
-    #[test]
-    fn mute_requested_before_start_is_applied_to_libmpv() {
-        let player = player();
-        player.set_mute(true).unwrap();
-        player.play().unwrap();
-        let handle = player.handle.get().unwrap();
-        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(true)));
-    }
-
-    #[test]
-    fn set_mute_drives_the_libmpv_mute_property() {
-        let player = player();
-        player.play().unwrap();
-        let handle = player.handle.get().unwrap();
-
-        player.set_mute(true).unwrap();
-        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(true)));
-        assert!(player.muted());
-
-        player.set_mute(false).unwrap();
-        assert_eq!(handle.get_node("mute"), Ok(Node::Flag(false)));
-        assert!(!player.muted());
     }
 
     #[test]
