@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.PlatformTextInputModifierNode
 import androidx.compose.ui.platform.establishTextInputSession
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import java.text.BreakIterator
 import java.util.concurrent.Executors
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineDispatcher
@@ -214,24 +215,36 @@ private class ServoInputConnection(view: View, private val servo: Servo) :
     private var composingText = ""
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        super.commitText(text, newCursorPosition)
         val raw = text?.toString().orEmpty()
-        val value = raw.replace("\r", "").replace("\n", "")
-        if (value.isNotEmpty()) {
-            if (!composing) {
-                servo.imeComposition(COMPOSITION_START, "")
-            }
-            servo.imeComposition(COMPOSITION_UPDATE, value)
-            servo.imeComposition(COMPOSITION_END, value)
-            composing = false
-            composingText = ""
+        if (raw.isEmpty()) {
+            replacePreeditAndEnd()
+            return true
         }
-        if (raw.contains('\n') || raw.contains('\r')) {
+        var index = 0
+        while (index < raw.length) {
+            val breakAt = raw.indexOfAny(charArrayOf('\r', '\n'), index)
+            val end = if (breakAt < 0) raw.length else breakAt
+            val segment = raw.substring(index, end)
+            if (segment.isNotEmpty()) {
+                commitSegment(segment)
+            }
+            if (breakAt < 0) {
+                break
+            }
+            // An empty segment still has to clear an open preedit before Enter.
+            replacePreeditAndEnd()
             servo.sendKey(AndroidKeyEvent.KEYCODE_ENTER, 0)
+            index = breakAt + 1
+            if (raw[breakAt] == '\r' && index < raw.length && raw[index] == '\n') {
+                index++
+            }
         }
         return true
     }
 
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        super.setComposingText(text, newCursorPosition)
         val value = text?.toString().orEmpty()
         if (!composing) {
             servo.imeComposition(COMPOSITION_START, "")
@@ -243,6 +256,7 @@ private class ServoInputConnection(view: View, private val servo: Servo) :
     }
 
     override fun finishComposingText(): Boolean {
+        super.finishComposingText()
         if (composing) {
             servo.imeComposition(COMPOSITION_END, composingText)
             composing = false
@@ -252,10 +266,63 @@ private class ServoInputConnection(view: View, private val servo: Servo) :
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        repeat(beforeLength) { servo.sendKey(AndroidKeyEvent.KEYCODE_DEL, 0) }
-        repeat(afterLength) { servo.sendKey(AndroidKeyEvent.KEYCODE_FORWARD_DEL, 0) }
+        // Lengths are UTF-16 code units. Backspace deletes one grapheme, so an
+        // emoji (two code units) must not become two deletions.
+        val before =
+            if (beforeLength > 0) {
+                getTextBeforeCursor(beforeLength, 0)?.toString().orEmpty()
+            } else {
+                ""
+            }
+        val after =
+            if (afterLength > 0) {
+                getTextAfterCursor(afterLength, 0)?.toString().orEmpty()
+            } else {
+                ""
+            }
+        super.deleteSurroundingText(beforeLength, afterLength)
+        repeat(deletionCount(before, beforeLength)) {
+            servo.sendKey(AndroidKeyEvent.KEYCODE_DEL, 0)
+        }
+        repeat(deletionCount(after, afterLength)) {
+            servo.sendKey(AndroidKeyEvent.KEYCODE_FORWARD_DEL, 0)
+        }
         return true
     }
+
+    private fun commitSegment(value: String) {
+        if (!composing) {
+            servo.imeComposition(COMPOSITION_START, "")
+        }
+        servo.imeComposition(COMPOSITION_UPDATE, value)
+        servo.imeComposition(COMPOSITION_END, value)
+        composing = false
+        composingText = ""
+    }
+
+    private fun replacePreeditAndEnd() {
+        if (!composing) {
+            return
+        }
+        servo.imeComposition(COMPOSITION_UPDATE, "")
+        servo.imeComposition(COMPOSITION_END, "")
+        composing = false
+        composingText = ""
+    }
+}
+
+private fun deletionCount(text: String, requested: Int): Int {
+    if (requested <= 0 || text.isEmpty()) {
+        return requested.coerceAtLeast(0)
+    }
+    val iterator = BreakIterator.getCharacterInstance()
+    iterator.setText(text)
+    var graphemes = 0
+    while (iterator.next() != BreakIterator.DONE) {
+        graphemes++
+    }
+    // Code units the connection never stored are still deleted one per unit.
+    return graphemes + (requested - text.length).coerceAtLeast(0)
 }
 
 private const val COMPOSITION_START = 0
@@ -332,7 +399,10 @@ class Servo(
     }
 
     fun sendKey(keyCode: Int, unicode: Int) {
-        scope.launch(glDispatcher) { jni.keydown(keyCode, unicode) }
+        scope.launch(glDispatcher) {
+            jni.keydown(keyCode, unicode)
+            jni.keyup(keyCode, unicode)
+        }
     }
 
     fun imeComposition(state: Int, text: String) {
