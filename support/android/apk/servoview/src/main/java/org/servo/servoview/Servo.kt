@@ -7,11 +7,11 @@ package org.servo.servoview
 
 import android.content.Context
 import android.util.Size
+import android.view.KeyEvent as AndroidKeyEvent
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
-import android.view.KeyEvent as AndroidKeyEvent
 import android.view.inputmethod.BaseInputConnection
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.Interaction
@@ -207,9 +207,8 @@ private class SoftKeyboardVisibleNode(var servo: Servo) :
 }
 
 /**
- * Soft keyboards deliver typed text here, not as key events. The previous
- * [BaseInputConnection] dropped that text, so only Enter (as a newline) reached
- * the field and was stored as a space.
+ * Soft keyboards deliver typed text here, not as key events. The previous [BaseInputConnection]
+ * dropped that text, so only Enter (as a newline) reached the field and was stored as a space.
  */
 private class ServoInputConnection(view: View, private val servo: Servo) :
     BaseInputConnection(view, true) {
