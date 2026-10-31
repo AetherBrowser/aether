@@ -49,6 +49,8 @@ internal class JNIServo {
 
     external fun keyup(keycode: Int, unicode: Int)
 
+    external fun imeComposition(state: Int, text: String)
+
     external fun touchDown(x: Float, y: Float, pointer_id: Int)
 
     external fun touchMove(x: Float, y: Float, pointer_id: Int)

@@ -462,6 +462,11 @@ impl From<KeyCode> for Key {
 }
 
 fn key_from_unicode_keycode(unicode: u32, keycode: i32) -> Option<Key> {
+    // Enter is reported as U+000A. A single-line field would turn that into a
+    // space, which is why submitting the new-tab search produced `q=+`.
+    if unicode == u32::from('\n') || unicode == u32::from('\r') {
+        return Some(Key::Named(NamedKey::Enter));
+    }
     char::from_u32(unicode)
         .filter(|c| *c != '\0')
         .map(|c| Key::Character(String::from(c)))
@@ -497,6 +502,31 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_keyup<'local>(
         if let Some(key) = key_from_unicode_keycode(unicode as u32, keycode) {
             call(env, move |s| s.key_up(key));
         }
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `state`: 0 = composition start, 1 = update, 2 = end.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_imeComposition<'local>(
+    mut env: EnvUnowned<'local>,
+    _: JClass<'local>,
+    state: jint,
+    text: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        let text = JString::cast_local(env, text)?
+            .try_to_string(env)
+            .unwrap_or_default()
+            .to_string();
+        let state = match state {
+            0 => keyboard_types::CompositionState::Start,
+            1 => keyboard_types::CompositionState::Update,
+            2 => keyboard_types::CompositionState::End,
+            _ => return Ok(()),
+        };
+        call(env, move |app| app.ime_composition(state, text));
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()

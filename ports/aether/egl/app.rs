@@ -641,6 +641,17 @@ impl App {
         }
     }
 
+    pub fn ime_composition(&self, state: CompositionState, data: String) {
+        let Some(webview) = self.active_or_newest_webview() else {
+            return;
+        };
+        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
+            state,
+            data,
+        })));
+        self.spin_event_loop();
+    }
+
     pub fn ime_insert_text(&self, text: String) {
         // In OHOS, we get empty text after the intended text.
         if text.is_empty() {
