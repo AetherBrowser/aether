@@ -320,9 +320,17 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     override fun onUrlChanged(url: String) {
-        urlTextFieldState.edit { replace(0, length, url) }
         currentUrl = url
+        urlTextFieldState.edit { replace(0, length, locationText(url)) }
     }
+
+    /** Location-bar text: empty on the new tab and blank pages, as on desktop. */
+    private fun locationText(url: String): String =
+        when (url) {
+            "servo:newtab",
+            "about:blank" -> ""
+            else -> url
+        }
 
     override fun onMediaSessionMetadata(title: String, artist: String, album: String) {
         Log.d("onMediaSessionMetadata", "$title $artist $album")
