@@ -644,7 +644,7 @@ impl Gui {
                                         warn!("Do not support stop yet.");
                                     }
                                 },
-                                LoadStatus::Complete => {
+                                LoadStatus::Complete | LoadStatus::Stopped => {
                                     let reload_button = toolbar_icons
                                         .button(ui, ToolbarIcon::Reload)
                                         .on_hover_text("Reload");

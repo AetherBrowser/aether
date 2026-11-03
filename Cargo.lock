@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "aether-media-mpv"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "data-url",
  "log",
