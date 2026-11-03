@@ -25,7 +25,7 @@ use cssparser::SourceLocation;
 use dom_struct::dom_struct;
 use embedder_traits::user_contents::UserScript;
 use embedder_traits::{
-    AlertResponse, ConfirmResponse, EmbedderMsg, PromptResponse, ScriptToEmbedderChan,
+    AlertResponse, ConfirmResponse, EmbedderMsg, LoadStatus, PromptResponse, ScriptToEmbedderChan,
     SimpleDialogRequest, Theme, UntrustedNodeAddress, ViewportDetails, WebDriverLoadStatus,
 };
 use euclid::{Point2D, Rect, Scale, Size2D, Vector2D};
@@ -245,6 +245,7 @@ const INITIAL_REFLOW_DELAY: Duration = Duration::from_millis(200);
 ///    to show the user that the page is loading.
 ///  - Script triggers a layout query or scroll event in which case, we want to layout
 ///    but not display the contents.
+///  - The embedder or script aborted the document load.
 ///
 /// For more information see: <https://github.com/servo/servo/pull/6028>.
 #[derive(Clone, Copy, MallocSizeOf)]
@@ -253,15 +254,21 @@ enum LayoutBlocker {
     WaitingForParse,
     /// The body is being parsed the `<body>` starting at the `Instant` specified.
     Parsing(Instant),
-    /// The body finished parsing and the `load` event has been fired or parsing took so
-    /// long, that we are going to do layout anyway. Note that subsequent changes to the body
-    /// can trigger parsing again, but the `Window` stays in this state.
-    FiredLoadEventOrParsingTimerExpired,
+    /// The blocker is no longer blocked because one or more of the following things
+    /// are true:
+    ///
+    /// - The body finished parsing and the `load` event has been fired.
+    /// - Parsing took so long, that we are going to do layout anyway.
+    /// - The load was aborted.
+    ///
+    /// Note that subsequent changes to the body can trigger parsing again, but the `Window`
+    /// stays in this state.
+    NotBlocked,
 }
 
 impl LayoutBlocker {
     fn layout_blocked(&self) -> bool {
-        !matches!(self, Self::FiredLoadEventOrParsingTimerExpired)
+        !matches!(self, Self::NotBlocked)
     }
 }
 
@@ -302,7 +309,6 @@ pub(crate) struct Window {
     #[ignore_malloc_size_of = "TODO: Add MallocSizeOf support to layout"]
     layout: RefCell<Box<dyn Layout>>,
     navigator: MutNullableDom<Navigator>,
-    #[cfg(feature = "webcrypto")]
     crypto: MutNullableDom<crate::dom::crypto::Crypto>,
     #[no_trace]
     image_cache_sender: Sender<ImageCacheResponseMessage>,
@@ -900,21 +906,33 @@ impl Window {
     /// <https://html.spec.whatwg.org/multipage/#nav-stop>
     fn stop_loading(&self, cx: &mut JSContext) {
         // 1. Let document be navigable's active document.
-        let doc = self.Document();
+        let document = self.Document();
+        let was_loading = document.ReadyState() != DocumentReadyState::Complete;
 
-        // 2. If document's unload counter is 0,
-        // and navigable's ongoing navigation is a navigation ID,
-        // then set the ongoing navigation for navigable to null.
+        // 2. If document's unload counter is 0, and navigable's ongoing navigation is a navigation
+        // ID, then set the ongoing navigation for navigable to null.
         //
-        // Note: since the concept of `navigable` is nascent in Servo,
-        // for now we do two things:
-        // - increment the `ongoing_navigation`(preventing planned form navigations).
-        // - Send a `AbortLoadUrl` message(in case the navigation
-        // already started at the constellation).
+        // Note: since the concept of `navigable` is nascent in Servo, for now we only increment the
+        // `ongoing_navigation`(preventing planned form navigations).
+        //
+        // TODO: This should also send a `AbortLoadUrl` message (in case the navigation already
+        // started at the constellation).
         self.set_ongoing_navigation();
 
         // 3. Abort a document and its descendants given document.
-        doc.abort_a_document_and_its_descendants(cx, AbortReason::StopLoading);
+        document.abort_a_document_and_its_descendants(cx, AbortReason::StopLoading);
+
+        // This is not in the specification, but when a load is aborted in a frame, parent
+        // frames need to be notified that this frame is no longer blocking the load.
+        // See <https://github.com/whatwg/html/issues/10252>.
+        document.notify_constellation_that_load_finished(true /* aborted */);
+
+        if self.is_top_level() && was_loading {
+            self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
+                self.webview_id(),
+                LoadStatus::Stopped,
+            ));
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#destroy-a-top-level-traversable>
@@ -1648,7 +1666,6 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     /// <https://dvcs.w3.org/hg/webcrypto-api/raw-file/tip/spec/Overview.html#dfn-GlobalCrypto>
-    #[cfg(feature = "webcrypto")]
     fn Crypto(&self, cx: &mut JSContext) -> DomRoot<crate::dom::crypto::Crypto> {
         self.crypto
             .or_init(|| crate::dom::crypto::Crypto::new(cx, self.as_global_scope()))
@@ -2085,23 +2102,23 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-scrollx>
-    fn ScrollX(&self) -> i32 {
-        self.scroll_offset().x as i32
+    fn ScrollX(&self, cx: &mut JSContext) -> i32 {
+        self.scroll_offset(cx).x as i32
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-pagexoffset>
-    fn PageXOffset(&self) -> i32 {
-        self.ScrollX()
+    fn PageXOffset(&self, cx: &mut JSContext) -> i32 {
+        self.ScrollX(cx)
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-scrolly>
-    fn ScrollY(&self) -> i32 {
-        self.scroll_offset().y as i32
+    fn ScrollY(&self, cx: &mut JSContext) -> i32 {
+        self.scroll_offset(cx).y as i32
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-pageyoffset>
-    fn PageYOffset(&self) -> i32 {
-        self.ScrollY()
+    fn PageYOffset(&self, cx: &mut JSContext) -> i32 {
+        self.ScrollY(cx)
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-window-scroll>
@@ -2158,10 +2175,10 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
         let y = if y.is_finite() { y } else { 0.0 };
 
         // Step 3: Add the value of scrollX to the left dictionary member.
-        options.left.replace(x + self.ScrollX() as f64);
+        options.left.replace(x + self.ScrollX(cx) as f64);
 
         // Step 4. Add the value of scrollY to the top dictionary member.
-        options.top.replace(y + self.ScrollY() as f64);
+        options.top.replace(y + self.ScrollY(cx) as f64);
 
         // Step 5: Act as if the scroll() method was invoked with options as the only argument.
         self.Scroll(cx, &options)
@@ -2464,8 +2481,8 @@ impl WindowMethods<crate::DomTypeHolder> for Window {
 }
 
 impl Window {
-    pub(crate) fn scroll_offset(&self) -> Vector2D<f32, LayoutPixel> {
-        self.scroll_offset_query_with_external_scroll_id(self.pipeline_id().root_scroll_id())
+    pub(crate) fn scroll_offset(&self, cx: &mut JSContext) -> Vector2D<f32, LayoutPixel> {
+        self.scroll_offset_query_with_external_scroll_id(cx, self.pipeline_id().root_scroll_id())
     }
 
     // https://heycam.github.io/webidl/#named-properties-object
@@ -2582,13 +2599,13 @@ impl Window {
         // the x-coordinate x of the viewport scrolling area with the left of the viewport
         // and aligning the y-coordinate y of the viewport scrolling area with the top of
         // the viewport.
-        let scrolling_area = self.scrolling_area_query(None).to_f32();
+        let scrolling_area = self.scrolling_area_query(cx, None).to_f32();
         let x = xfinite.clamp(0.0, 0.0f32.max(scrolling_area.width() - viewport.width));
         let y = yfinite.clamp(0.0, 0.0f32.max(scrolling_area.height() - viewport.height));
 
         // Step 10: If position is the same as the viewport’s current scroll position, and
         // the viewport does not have an ongoing smooth scroll, abort these steps.
-        let scroll_offset = self.scroll_offset();
+        let scroll_offset = self.scroll_offset(cx);
         if x == scroll_offset.x && y == scroll_offset.y {
             return;
         }
@@ -2971,15 +2988,11 @@ impl Window {
     /// Inform the [`Window`] that layout is allowed either because `load` has happened
     /// or because parsing the `<body>` took so long that we cannot wait any longer.
     pub(crate) fn allow_layout_if_necessary(&self, cx: &mut JSContext) {
-        if matches!(
-            self.layout_blocker.get(),
-            LayoutBlocker::FiredLoadEventOrParsingTimerExpired
-        ) {
+        if matches!(self.layout_blocker.get(), LayoutBlocker::NotBlocked) {
             return;
         }
 
-        self.layout_blocker
-            .set(LayoutBlocker::FiredLoadEventOrParsingTimerExpired);
+        self.layout_blocker.set(LayoutBlocker::NotBlocked);
 
         // We do this immediately instead of scheduling a future task, because this can
         // happen if parsing is taking a very long time, which means that the
@@ -3137,15 +3150,20 @@ impl Window {
         self.box_area_query_without_reflow(node, area, exclude_transform_and_inline)
     }
 
-    pub(crate) fn box_areas_query(&self, node: &Node, area: BoxAreaType) -> CSSPixelRectVec {
-        self.layout_reflow_deprecated(QueryMsg::BoxAreas);
+    pub(crate) fn box_areas_query(
+        &self,
+        cx: &mut JSContext,
+        node: &Node,
+        area: BoxAreaType,
+    ) -> CSSPixelRectVec {
+        self.layout_reflow(cx, QueryMsg::BoxAreas);
         self.layout
             .borrow()
             .query_box_areas(node.to_trusted_node_address(), area)
     }
 
-    pub(crate) fn client_rect_query(&self, node: &Node) -> Rect<i32, CSSPixel> {
-        self.layout_reflow_deprecated(QueryMsg::ClientRectQuery);
+    pub(crate) fn client_rect_query(&self, cx: &mut JSContext, node: &Node) -> Rect<i32, CSSPixel> {
+        self.layout_reflow(cx, QueryMsg::ClientRectQuery);
         self.layout
             .borrow()
             .query_client_rect(node.to_trusted_node_address())
@@ -3167,26 +3185,35 @@ impl Window {
 
     /// Find the scroll area of the given node, if it is not None. If the node
     /// is None, find the scroll area of the viewport.
-    pub(crate) fn scrolling_area_query(&self, node: Option<&Node>) -> Rect<i32, CSSPixel> {
-        self.layout_reflow_deprecated(QueryMsg::ScrollingAreaOrOffsetQuery);
+    pub(crate) fn scrolling_area_query(
+        &self,
+        cx: &mut JSContext,
+        node: Option<&Node>,
+    ) -> Rect<i32, CSSPixel> {
+        self.layout_reflow(cx, QueryMsg::ScrollingAreaOrOffsetQuery);
         self.layout
             .borrow()
             .query_scrolling_area(node.map(Node::to_trusted_node_address))
     }
 
-    pub(crate) fn scroll_offset_query(&self, node: &Node) -> Vector2D<f32, LayoutPixel> {
+    pub(crate) fn scroll_offset_query(
+        &self,
+        cx: &mut JSContext,
+        node: &Node,
+    ) -> Vector2D<f32, LayoutPixel> {
         let external_scroll_id = ExternalScrollId(
             combine_id_with_fragment_type(node.to_opaque().id(), FragmentType::FragmentBody),
             self.pipeline_id().into(),
         );
-        self.scroll_offset_query_with_external_scroll_id(external_scroll_id)
+        self.scroll_offset_query_with_external_scroll_id(cx, external_scroll_id)
     }
 
     fn scroll_offset_query_with_external_scroll_id(
         &self,
+        cx: &mut JSContext,
         external_scroll_id: ExternalScrollId,
     ) -> Vector2D<f32, LayoutPixel> {
-        self.layout_reflow_deprecated(QueryMsg::ScrollingAreaOrOffsetQuery);
+        self.layout_reflow(cx, QueryMsg::ScrollingAreaOrOffsetQuery);
         self.scroll_offset_query_with_external_scroll_id_no_reflow(external_scroll_id)
     }
 
@@ -3270,9 +3297,10 @@ impl Window {
     #[expect(unsafe_code)]
     pub(crate) fn offset_parent_query(
         &self,
+        cx: &mut JSContext,
         node: &Node,
     ) -> (Option<DomRoot<Element>>, Rect<Au, CSSPixel>) {
-        self.layout_reflow_deprecated(QueryMsg::OffsetParentQuery);
+        self.layout_reflow(cx, QueryMsg::OffsetParentQuery);
         let response = self
             .layout
             .borrow()
@@ -3387,10 +3415,12 @@ impl Window {
 
     pub(crate) fn hit_test_from_input_event(
         &self,
+        cx: &mut JSContext,
         flags: HitTestFlags,
         input_event: &ConstellationInputEvent,
     ) -> Option<HitTestResult> {
         self.hit_test_from_point_in_viewport(
+            cx,
             flags,
             input_event.hit_test_result.as_ref()?.point_in_viewport,
         )
@@ -3399,6 +3429,7 @@ impl Window {
     #[expect(unsafe_code)]
     pub(crate) fn hit_test_from_point_in_viewport(
         &self,
+        cx: &mut JSContext,
         flags: HitTestFlags,
         point_in_frame: Point2D<f32, CSSPixel>,
     ) -> Option<HitTestResult> {
@@ -3406,7 +3437,7 @@ impl Window {
         let item = result.items.into_iter().next()?;
 
         let point_relative_to_initial_containing_block =
-            point_in_frame + self.scroll_offset().cast_unit();
+            point_in_frame + self.scroll_offset(cx).cast_unit();
 
         // SAFETY: This is safe because `Window::query_elements_from_point` has ensured that
         // layout has run and any OpaqueNodes that no longer refer to real nodes are gone.
@@ -4156,7 +4187,6 @@ impl Window {
             layout: RefCell::new(layout),
             image_cache_sender,
             navigator: Default::default(),
-            #[cfg(feature = "webcrypto")]
             crypto: Default::default(),
             location: Default::default(),
             window_proxy: Default::default(),

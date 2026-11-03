@@ -362,7 +362,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_doFrame<'local>(
     _: JClass<'local>,
 ) {
     env.with_env(|env| -> jni::errors::Result<_> {
-        call(env, |s| s.notify_vsync());
+        call(env, |s| s.notify_vsync_legacy());
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
@@ -611,7 +611,7 @@ impl HostTrait for HostCallbacks {
                     )
                     .map(|_| ()),
                 LoadStatus::HeadParsed => Ok(()),
-                LoadStatus::Complete => env
+                LoadStatus::Complete | LoadStatus::Stopped => env
                     .call_method(
                         callback_ref(),
                         jni_str!("onLoadEnded"),

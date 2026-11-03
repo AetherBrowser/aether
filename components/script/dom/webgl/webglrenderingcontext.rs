@@ -28,10 +28,10 @@ use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::{Epoch, generic_channel};
 use servo_canvas_traits::webgl::WebGLError::*;
 use servo_canvas_traits::webgl::{
-    AlphaTreatment, GLContextAttributes, GLLimits, GlType, Parameter, SizedDataType, TexDataType,
-    TexFormat, TexParameter, WebGLCommand, WebGLCommandBacktrace, WebGLContextId, WebGLError,
-    WebGLFramebufferBindingRequest, WebGLMsg, WebGLMsgSender, WebGLProgramId, WebGLResult,
-    WebGLSLVersion, WebGLVersion, YAxisTreatment, webgl_channel,
+    AlphaTreatment, GLContextAttributes, GLLimits, GlType, Parameter, ParameterString,
+    SizedDataType, TexDataType, TexFormat, TexParameter, WebGLCommand, WebGLCommandBacktrace,
+    WebGLContextId, WebGLError, WebGLFramebufferBindingRequest, WebGLMsg, WebGLMsgSender,
+    WebGLProgramId, WebGLResult, WebGLSLVersion, WebGLVersion, YAxisTreatment, webgl_channel,
 };
 use servo_config::pref;
 use webrender_api::ImageKey;
@@ -43,6 +43,7 @@ use crate::dom::bindings::buffer_source::{create_buffer_source, get_buffer_sourc
 use crate::dom::bindings::codegen::Bindings::ANGLEInstancedArraysBinding::ANGLEInstancedArraysConstants;
 use crate::dom::bindings::codegen::Bindings::EXTBlendMinmaxBinding::EXTBlendMinmaxConstants;
 use crate::dom::bindings::codegen::Bindings::OESVertexArrayObjectBinding::OESVertexArrayObjectConstants;
+use crate::dom::bindings::codegen::Bindings::WEBGLDebugRendererInfoBinding::WEBGLDebugRendererInfoConstants;
 use crate::dom::bindings::codegen::Bindings::WebGL2RenderingContextBinding::WebGL2RenderingContextConstants;
 use crate::dom::bindings::codegen::Bindings::WebGLRenderingContextBinding::{
     TexImageSource, WebGLContextAttributes, WebGLRenderingContextConstants as constants,
@@ -2409,6 +2410,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 "Mozilla/Servo".to_jsval(cx, retval);
                 return;
             },
+            WEBGLDebugRendererInfoConstants::UNMASKED_VENDOR_WEBGL |
+            WEBGLDebugRendererInfoConstants::UNMASKED_RENDERER_WEBGL => {
+                let param = if parameter == WEBGLDebugRendererInfoConstants::UNMASKED_VENDOR_WEBGL {
+                    ParameterString::UnmaskedVendor
+                } else {
+                    ParameterString::UnmaskedRenderer
+                };
+                let (sender, receiver) = webgl_channel().unwrap();
+                self.send_command(WebGLCommand::GetParameterString(param, sender));
+                receiver.recv().unwrap().to_jsval(cx, retval);
+                return;
+            },
             constants::SHADING_LANGUAGE_VERSION => {
                 "WebGL GLSL ES 1.0".to_jsval(cx, retval);
                 return;
@@ -3503,7 +3516,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         program: &WebGLProgram,
         index: u32,
     ) -> Option<DomRoot<WebGLActiveInfo>> {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return None;
+        }
         match program.get_active_uniform(cx, index) {
             Ok(ret) => Some(ret),
             Err(e) => {
@@ -3520,14 +3536,32 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         program: &WebGLProgram,
         index: u32,
     ) -> Option<DomRoot<WebGLActiveInfo>> {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
-        handle_potential_webgl_error!(self, program.get_active_attrib(cx, index).map(Some), None)
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return None;
+        }
+        match program.get_active_attrib(cx, index) {
+            Ok(info) => Some(info),
+            Err(error) => {
+                self.webgl_error(error);
+                None
+            },
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.10>
     fn GetAttribLocation(&self, program: &WebGLProgram, name: DOMString) -> i32 {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return -1);
-        handle_potential_webgl_error!(self, program.get_attrib_location(name), -1)
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return -1;
+        }
+        match program.get_attrib_location(name) {
+            Ok(location) => location,
+            Err(error) => {
+                self.webgl_error(error);
+                -1
+            },
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.6>
@@ -3543,11 +3577,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         if let Some(fb) = self.bound_draw_framebuffer.get() {
             // Opaque framebuffers cannot have their attachments inspected
             // https://immersive-web.github.io/webxr/#opaque-framebuffer
-            handle_potential_webgl_error!(
-                self,
-                fb.validate_transparent(),
-                return retval.set(NullValue())
-            );
+            if let Err(error) = fb.validate_transparent() {
+                self.webgl_error(error);
+                return retval.set(NullValue());
+            }
         } else {
             self.webgl_error(InvalidOperation);
             return retval.set(NullValue());
@@ -3699,7 +3732,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn GetProgramInfoLog(&self, program: &WebGLProgram) -> Option<DOMString> {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return None;
+        }
         match program.get_info_log() {
             Ok(value) => Some(DOMString::from(value)),
             Err(e) => {
@@ -3717,11 +3753,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         param: u32,
         mut retval: MutableHandleValue,
     ) {
-        handle_potential_webgl_error!(
-            self,
-            self.validate_ownership(program),
-            return retval.set(NullValue())
-        );
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return retval.set(NullValue());
+        }
         if program.is_deleted() {
             self.webgl_error(InvalidOperation);
             return retval.set(NullValue());
@@ -3756,7 +3791,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn GetShaderInfoLog(&self, shader: &WebGLShader) -> Option<DOMString> {
-        handle_potential_webgl_error!(self, self.validate_ownership(shader), return None);
+        if let Err(error) = self.validate_ownership(shader) {
+            self.webgl_error(error);
+            return None;
+        }
         Some(shader.info_log())
     }
 
@@ -3768,11 +3806,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         param: u32,
         mut retval: MutableHandleValue,
     ) {
-        handle_potential_webgl_error!(
-            self,
-            self.validate_ownership(shader),
-            return retval.set(NullValue())
-        );
+        if let Err(error) = self.validate_ownership(shader) {
+            self.webgl_error(error);
+            return retval.set(NullValue());
+        }
         if shader.is_deleted() {
             self.webgl_error(InvalidValue);
             return retval.set(NullValue());
@@ -3840,8 +3877,17 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         program: &WebGLProgram,
         name: DOMString,
     ) -> Option<DomRoot<WebGLUniformLocation>> {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
-        handle_potential_webgl_error!(self, program.get_uniform_location(cx, name), None)
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return None;
+        }
+        match program.get_uniform_location(cx, name) {
+            Ok(location) => location,
+            Err(error) => {
+                self.webgl_error(error);
+                None
+            },
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
@@ -3919,20 +3965,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         match self.webgl_version() {
             WebGLVersion::WebGL1 => {
                 let current_vao = self.current_vao(cx);
-                let data = handle_potential_webgl_error!(
-                    self,
-                    current_vao.get_vertex_attrib(index).ok_or(InvalidValue),
-                    return retval.set(NullValue())
-                );
+                let Some(data) = current_vao.get_vertex_attrib(index) else {
+                    self.webgl_error(InvalidValue);
+                    return retval.set(NullValue());
+                };
                 get_attrib(cx, data)
             },
             WebGLVersion::WebGL2 => {
                 let current_vao = self.current_vao_webgl2(cx);
-                let data = handle_potential_webgl_error!(
-                    self,
-                    current_vao.get_vertex_attrib(index).ok_or(InvalidValue),
-                    return retval.set(NullValue())
-                );
+                let Some(data) = current_vao.get_vertex_attrib(index) else {
+                    self.webgl_error(InvalidValue);
+                    return retval.set(NullValue());
+                };
                 get_attrib(cx, data)
             },
         }
@@ -3947,20 +3991,18 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         match self.webgl_version() {
             WebGLVersion::WebGL1 => {
                 let current_vao = self.current_vao(cx);
-                let data = handle_potential_webgl_error!(
-                    self,
-                    current_vao.get_vertex_attrib(index).ok_or(InvalidValue),
-                    return 0
-                );
+                let Some(data) = current_vao.get_vertex_attrib(index) else {
+                    self.webgl_error(InvalidValue);
+                    return 0;
+                };
                 data.offset as i64
             },
             WebGLVersion::WebGL2 => {
                 let current_vao = self.current_vao_webgl2(cx);
-                let data = handle_potential_webgl_error!(
-                    self,
-                    current_vao.get_vertex_attrib(index).ok_or(InvalidValue),
-                    return 0
-                );
+                let Some(data) = current_vao.get_vertex_attrib(index) else {
+                    self.webgl_error(InvalidValue);
+                    return 0;
+                };
                 data.offset as i64
             },
         }
@@ -3992,7 +4034,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.3>
     fn IsEnabled(&self, cap: u32) -> bool {
-        handle_potential_webgl_error!(self, self.capabilities.is_enabled(cap), false)
+        match self.capabilities.is_enabled(cap) {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                self.webgl_error(error);
+                false
+            },
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.6>
@@ -4097,10 +4145,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         pixel_type: u32,
         mut pixels: CustomAutoRooterGuard<Option<ArrayBufferView>>,
     ) {
-        handle_potential_webgl_error!(self, self.validate_read_framebuffer(), return);
+        if let Err(error) = self.validate_read_framebuffer() {
+            return self.webgl_error(error);
+        }
 
-        let pixels =
-            handle_potential_webgl_error!(self, pixels.as_mut().ok_or(InvalidValue), return);
+        let Some(pixels) = pixels.as_mut() else {
+            return self.webgl_error(InvalidValue);
+        };
 
         if width < 0 || height < 0 {
             return self.webgl_error(InvalidValue);
@@ -4114,11 +4165,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             return self.webgl_error(InvalidOperation);
         }
 
-        let (fb_width, fb_height) = handle_potential_webgl_error!(
-            self,
-            self.get_current_framebuffer_size().ok_or(InvalidOperation),
-            return
-        );
+        let Some((fb_width, fb_height)) = self.get_current_framebuffer_size() else {
+            return self.webgl_error(InvalidOperation);
+        };
 
         if width == 0 || height == 0 {
             return;
@@ -4126,11 +4175,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
         let bytes_per_pixel = 4;
 
-        let row_len = handle_potential_webgl_error!(
-            self,
-            width.checked_mul(bytes_per_pixel).ok_or(InvalidOperation),
-            return
-        );
+        let Some(row_len) = width.checked_mul(bytes_per_pixel) else {
+            return self.webgl_error(InvalidOperation);
+        };
 
         let pack_alignment = self.texture_packing_alignment.get() as i32;
         let dest_padding = match row_len % pack_alignment {
@@ -4139,16 +4186,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         };
         let dest_stride = row_len + dest_padding;
 
-        let full_rows_len = handle_potential_webgl_error!(
-            self,
-            dest_stride.checked_mul(height - 1).ok_or(InvalidOperation),
-            return
-        );
-        let required_dest_len = handle_potential_webgl_error!(
-            self,
-            full_rows_len.checked_add(row_len).ok_or(InvalidOperation),
-            return
-        );
+        let Some(full_rows_len) = dest_stride.checked_mul(height - 1) else {
+            return self.webgl_error(InvalidOperation);
+        };
+
+        let Some(required_dest_len) = full_rows_len.checked_add(row_len) else {
+            return self.webgl_error(InvalidOperation);
+        };
 
         let dest = pixels.as_mut_slice_safe(no_gc).unwrap_or(&mut []);
         if dest.len() < required_dest_len as usize {
@@ -4293,22 +4337,31 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn LinkProgram(&self, program: &WebGLProgram) {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return);
+        if let Err(error) = self.validate_ownership(program) {
+            return self.webgl_error(error);
+        }
         if program.is_deleted() {
             return self.webgl_error(InvalidValue);
         }
-        handle_potential_webgl_error!(self, program.link());
+        if let Err(error) = program.link() {
+            self.webgl_error(error);
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn ShaderSource(&self, shader: &WebGLShader, source: DOMString) {
-        handle_potential_webgl_error!(self, self.validate_ownership(shader), return);
+        if let Err(error) = self.validate_ownership(shader) {
+            return self.webgl_error(error);
+        }
         shader.set_source(source)
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn GetShaderSource(&self, shader: &WebGLShader) -> Option<DOMString> {
-        handle_potential_webgl_error!(self, self.validate_ownership(shader), return None);
+        if let Err(error) = self.validate_ownership(shader) {
+            self.webgl_error(error);
+            return None;
+        }
         Some(shader.source())
     }
 
@@ -4510,11 +4563,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         location: &WebGLUniformLocation,
         mut rval: MutableHandleValue,
     ) {
-        handle_potential_webgl_error!(
-            self,
-            self.uniform_check_program(program, location),
-            return rval.set(NullValue())
-        );
+        if let Err(error) = self.uniform_check_program(program, location) {
+            self.webgl_error(error);
+            return rval.set(NullValue());
+        }
 
         let triple = (self, program.id(), location.id());
 
@@ -4584,7 +4636,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn UseProgram(&self, program: Option<&WebGLProgram>) {
         if let Some(program) = program {
-            handle_potential_webgl_error!(self, self.validate_ownership(program), return);
+            if let Err(error) = self.validate_ownership(program) {
+                return self.webgl_error(error);
+            }
             if program.is_deleted() || !program.is_linked() {
                 return self.webgl_error(InvalidOperation);
             }
@@ -4603,7 +4657,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn ValidateProgram(&self, program: &WebGLProgram) {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return);
+        if let Err(error) = self.validate_ownership(program) {
+            return self.webgl_error(error);
+        }
         if let Err(e) = program.validate() {
             self.webgl_error(e);
         }
@@ -4729,7 +4785,9 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
                 .current_vao_webgl2(cx)
                 .vertex_attrib_pointer(index, size, type_, stride, offset, kind),
         };
-        handle_potential_webgl_error!(self, res);
+        if let Err(error) = res {
+            self.webgl_error(error);
+        }
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.4>
@@ -5020,14 +5078,13 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
             Err(()) => return Ok(()),
         };
 
-        let data = handle_potential_webgl_error!(
-            self,
-            pixels
-                .as_ref()
-                .map(|p| p.as_slice_safe(no_gc).unwrap_or(&[]))
-                .ok_or(InvalidValue),
-            return Ok(())
-        );
+        let Some(data) = pixels
+            .as_ref()
+            .map(|p| p.as_slice_safe(no_gc).unwrap_or(&[]))
+        else {
+            self.webgl_error(InvalidValue);
+            return Ok(());
+        };
         let block = match self.unpack_block(
             data,
             width,
@@ -5162,8 +5219,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         renderbuffertarget: u32,
         rb: Option<&WebGLRenderbuffer>,
     ) {
-        if let Some(rb) = rb {
-            handle_potential_webgl_error!(self, self.validate_ownership(rb), return);
+        if let Some(rb) = rb &&
+            let Err(error) = self.validate_ownership(rb)
+        {
+            return self.webgl_error(error);
         }
 
         if target != constants::FRAMEBUFFER || renderbuffertarget != constants::RENDERBUFFER {
@@ -5171,7 +5230,11 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         }
 
         match self.bound_draw_framebuffer.get() {
-            Some(fb) => handle_potential_webgl_error!(self, fb.renderbuffer(attachment, rb)),
+            Some(fb) => {
+                if let Err(error) = fb.renderbuffer(attachment, rb) {
+                    self.webgl_error(error);
+                }
+            },
             None => self.webgl_error(InvalidOperation),
         };
     }
@@ -5185,8 +5248,10 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         texture: Option<&WebGLTexture>,
         level: i32,
     ) {
-        if let Some(texture) = texture {
-            handle_potential_webgl_error!(self, self.validate_ownership(texture), return);
+        if let Some(texture) = texture &&
+            let Err(error) = self.validate_ownership(texture)
+        {
+            return self.webgl_error(error);
         }
 
         if target != constants::FRAMEBUFFER {
@@ -5203,18 +5268,28 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
         }
 
         match self.bound_draw_framebuffer.get() {
-            Some(fb) => handle_potential_webgl_error!(
-                self,
-                fb.texture2d(attachment, textarget, texture, level)
-            ),
+            Some(fb) => {
+                if let Err(error) = fb.texture2d(attachment, textarget, texture, level) {
+                    self.webgl_error(error);
+                }
+            },
             None => self.webgl_error(InvalidOperation),
         };
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.9>
     fn GetAttachedShaders(&self, program: &WebGLProgram) -> Option<Vec<DomRoot<WebGLShader>>> {
-        handle_potential_webgl_error!(self, self.validate_ownership(program), return None);
-        handle_potential_webgl_error!(self, program.attached_shaders().map(Some), None)
+        if let Err(error) = self.validate_ownership(program) {
+            self.webgl_error(error);
+            return None;
+        }
+        match program.attached_shaders() {
+            Ok(shaders) => Some(shaders),
+            Err(error) => {
+                self.webgl_error(error);
+                None
+            },
+        }
     }
 
     /// <https://immersive-web.github.io/webxr/#dom-webglrenderingcontextbase-makexrcompatible>

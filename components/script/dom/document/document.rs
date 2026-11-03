@@ -89,6 +89,7 @@ use style::stylesheet_set::DocumentStylesheetSet;
 use style::stylesheets::{Origin, OriginSet, Stylesheet};
 use style::stylist::Stylist;
 use stylo_atoms::Atom;
+use stylo_dom::ElementState;
 use time::Duration as TimeDuration;
 use url::{Host, Position};
 
@@ -566,6 +567,14 @@ pub(crate) struct Document {
 
     /// Entry node for fullscreen.
     fullscreen_element: MutNullableDom<Element>,
+
+    /// <https://drafts.csswg.org/css-position-4/#document-top-layer>
+    top_layer: DomRefCell<Vec<Dom<Element>>>,
+    /// <https://drafts.csswg.org/css-position-4/#document-pending-top-layer-removals>
+    pending_top_layer_removals: DomRefCell<Vec<Dom<Element>>>,
+    /// <https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog>
+    topmost_modal: MutNullableDom<Element>,
+
     /// Map from ID to set of form control elements that have that ID as
     /// their 'form' content attribute. Used to reset form controls
     /// whenever any element with the same ID as the form attribute
@@ -1590,7 +1599,7 @@ impl Document {
     }
 
     pub(crate) fn notify_embedder_of_load_completion(&self) {
-        if self.window().is_top_level() {
+        if self.window().is_top_level() && !self.loader().aborted() {
             self.send_to_embedder(EmbedderMsg::NotifyLoadStatusChanged(
                 self.webview_id(),
                 LoadStatus::Complete,
@@ -2494,7 +2503,7 @@ impl Document {
         //
         // Note: this will also result in the "iframe-load-event-steps" being run.
         // https://html.spec.whatwg.org/multipage/#iframe-load-event-steps
-        self.notify_constellation_load();
+        self.notify_constellation_that_load_finished(false /* aborted */);
 
         // Step 5. Otherwise, if container is non-null, then queue an element task on the DOM manipulation task source
         // given container to fire an event named load at container.
@@ -2769,24 +2778,32 @@ impl Document {
             return;
         }
 
-        // Step 5.1. Spin the event loop until the first script in the list of scripts that will execute when the
-        // document has finished parsing has its ready to be parser-executed set to true and the parser's Document
-        // has no style sheet that is blocking scripts.
+        // Step 5. While the list of scripts that will execute when the document has finished
+        // parsing is not empty:
+        // Step 5.1. Spin the event loop until the first script in the list of scripts that will
+        // execute when the document has finished parsing has its ready to be parser-executed set to
+        // true and the parser's Document has no style sheet that is blocking scripts.
         loop {
+            if self.deferred_scripts.is_empty() {
+                break;
+            }
             if self.has_a_stylesheet_that_is_blocking_scripts() {
                 return;
             }
-            // Step 5.3. Remove the first script element from the list of scripts that will execute when the
-            // document has finished parsing (i.e. shift out the first entry in the list).
+            // Step 5.3. Remove the first script element from the list of scripts that will execute
+            // when the document has finished parsing (i.e. shift out the first entry in the list).
             if let Some((element, result)) = self.deferred_scripts.take_next_ready_to_be_executed()
             {
-                // Step 5.2. Execute the script element given by the first script in the list of scripts that will execute when the document has finished parsing.
+                // Step 5.2. Execute the script element given by the first script in the list of
+                // scripts that will execute when the document has finished parsing.
                 element.execute(cx, result);
             } else {
                 break;
             }
         }
-        // Step 5. While the list of scripts that will execute when the document has finished parsing is not empty:
+
+        // If the list of scripts is empty, we can move on to the next step, otherwise we will
+        // re-enter this method as the ScriptThread's event loop spins.
         if self.deferred_scripts.is_empty() {
             self.current_the_end_loading_phase
                 .set(TheEndLoadingPhase::ProcessingAsSoonAsPossibleScripts);
@@ -3002,8 +3019,11 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-document>
     pub(crate) fn abort(&self, cx: &mut JSContext, reason: AbortReason) {
-        // We need to inhibit the loader before anything else.
-        self.loader.borrow_mut().inhibit_events();
+        // We need to inhibit the loader before anything else and prevent any further movement
+        // through "the-end" loading phases.
+        self.loader.borrow_mut().abort();
+        self.current_the_end_loading_phase
+            .set(TheEndLoadingPhase::Done);
 
         // Step 1. Assert: this is running as part of a task queued on document's relevant agent's event loop.
         // TODO
@@ -3047,7 +3067,23 @@ impl Document {
             parser.abort(cx, reason);
             // Step 4.3. Make document unsalvageable given document and "parser-aborted".
             self.salvageable.set(false);
+        } else if self.ready_state.get() != DocumentReadyState::Complete {
+            // See <https://github.com/whatwg/html/issues/5535>.
+            // All browsers set the document readiness to "complete" when aborting, even though it
+            // is isn't specified. In addition, WPT tests depend on this happening.
+            let document = Trusted::new(self);
+            self.owner_global()
+                .task_manager()
+                .dom_manipulation_task_source()
+                .queue(task!(fire_complete: move |cx| {
+                    let document = document.root();
+                    if document.is_fully_active() {
+                        document.update_the_current_document_readiness(cx, DocumentReadyState::Complete)
+                    }
+                }));
         }
+
+        self.window().allow_layout_if_necessary(cx);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#abort-a-document-and-its-descendants>
@@ -3087,9 +3123,9 @@ impl Document {
         self.abort(cx, reason);
     }
 
-    pub(crate) fn notify_constellation_load(&self) {
+    pub(crate) fn notify_constellation_that_load_finished(&self, aborted: bool) {
         self.window()
-            .send_to_constellation(ScriptToConstellationMessage::LoadComplete);
+            .send_to_constellation(ScriptToConstellationMessage::LoadFinished { aborted });
     }
 
     pub(crate) fn set_current_parser(&self, script: Option<&ServoParser>, reason: SetParserReason) {
@@ -3532,6 +3568,21 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/multipage/#encoding-parsing-a-url>
     pub(crate) fn encoding_parse_a_url(&self, url: &str) -> Result<ServoUrl, url::ParseError> {
+        // Step 4. Let baseURL be environment's base URL, if environment is a Document object;
+        // otherwise environment's API base URL.
+        self.encoding_parse_a_url_with_base(url, &self.base_url())
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#encoding-parsing-a-url>
+    ///
+    /// Like [`Self::encoding_parse_a_url`], but resolves relative to the given base URL
+    /// instead of the document's current one. This is for callers that must use the
+    /// document's base URL from an earlier point in time.
+    pub(crate) fn encoding_parse_a_url_with_base(
+        &self,
+        url: &str,
+        base_url: &ServoUrl,
+    ) -> Result<ServoUrl, url::ParseError> {
         // NOTE: This algorithm is defined for both Document and environment settings objects.
         // This implementation is only for documents.
 
@@ -3541,10 +3592,6 @@ impl Document {
 
         // Step 3. Otherwise, if environment's relevant global object is a Window object, set encoding to environment's
         // relevant global object's associated Document's character encoding.
-
-        // Step 4. Let baseURL be environment's base URL, if environment is a Document object;
-        // otherwise environment's API base URL.
-        let base_url = self.base_url();
 
         // Step 5. Return the result of applying the URL parser to url, with baseURL and encoding.
         url::Url::options()
@@ -4265,6 +4312,9 @@ impl Document {
             ignore_opens_during_unload_counter: Default::default(),
             spurious_animation_frames: Cell::new(0),
             fullscreen_element: MutNullableDom::new(None),
+            top_layer: Default::default(),
+            pending_top_layer_removals: Default::default(),
+            topmost_modal: Default::default(),
             form_id_listener_map: Default::default(),
             interactive_time: DomRefCell::new(interactive_time),
             tti_window: DomRefCell::new(InteractiveWindow::default()),
@@ -4349,6 +4399,13 @@ impl Document {
 
     pub(crate) fn detach_window(&self) {
         self.window_detached.set(true);
+
+        // Note: This is step 7 of "destroy a document"
+        // <https://html.spec.whatwg.org/multipage/#destroy-a-document>. Eventually
+        // document replacement should call `Document::destroy` via step 20 in
+        // "unload" <https://html.spec.whatwg.org/multipage/#unload-a-document>.
+        self.task_manager()
+            .cancel_all_tasks_and_ignore_future_tasks();
     }
 
     pub(crate) fn window_detached(&self) -> bool {
@@ -4869,6 +4926,159 @@ impl Document {
 
     pub(crate) fn set_fullscreen_element(&self, element: Option<&Element>) {
         self.fullscreen_element.set(element);
+    }
+
+    pub(crate) fn top_layer_contains(&self, element: &Element) -> bool {
+        self.top_layer
+            .borrow()
+            .iter()
+            .any(|top_layer_element| &**top_layer_element == element)
+    }
+
+    fn pending_top_layer_removals_contains(&self, element: &Element) -> bool {
+        self.pending_top_layer_removals
+            .borrow()
+            .iter()
+            .any(|pending_element| &**pending_element == element)
+    }
+
+    /// <https://drafts.csswg.org/css-position-4/#in-the-top-layer>
+    pub(crate) fn is_in_the_top_layer(&self, element: &Element) -> bool {
+        // > An element el is in the top layer if el is contained in its node document’s top layer
+        // > but not contained in its node document’s pending top layer removals.
+        self.top_layer_contains(element) && !self.pending_top_layer_removals_contains(element)
+    }
+
+    /// <https://drafts.csswg.org/css-position-4/#add-an-element-to-the-top-layer>
+    pub(crate) fn add_an_element_to_the_top_layer(&self, element: &Element, no_gc: &NoGC) {
+        // Step 1. Let doc be el’s node document.
+
+        // Step 2. If el is already contained in doc's top layer:
+        if self.top_layer_contains(element) {
+            // Step 2.1. Assert: el is also in doc's pending top layer removals. (Otherwise, this is
+            // a spec error.)
+            assert!(self.pending_top_layer_removals_contains(element));
+
+            // Step 2.2. Remove el from both doc's top layer and pending top layer removals.
+            self.top_layer
+                .safe_borrow_mut(no_gc)
+                .retain(|top_layer_element| &**top_layer_element != element);
+            self.pending_top_layer_removals
+                .safe_borrow_mut(no_gc)
+                .retain(|pending_element| &**pending_element != element);
+        }
+
+        // Step 3. Append el to doc's top layer.
+        self.top_layer
+            .safe_borrow_mut(no_gc)
+            .push(Dom::from_ref(element));
+
+        // TODO: Step 4. At the UA !important cascade origin, add a rule targeting el
+        // containing an overlay: auto declaration.
+
+        self.update_topmost_modal(no_gc);
+    }
+
+    /// <https://drafts.csswg.org/css-position-4/#request-an-element-to-be-removed-from-the-top-layer>
+    pub(crate) fn request_an_element_to_be_removed_from_the_top_layer(
+        &self,
+        element: &Element,
+        no_gc: &NoGC,
+    ) {
+        // Step 1. Let doc be el's node document.
+
+        // Step 2. If el is not contained doc's top layer, or el is already contained in doc's
+        // pending top layer removals, return.
+        if !self.top_layer_contains(element) || self.pending_top_layer_removals_contains(element) {
+            return;
+        }
+
+        // TODO: Step 3. Remove the UA !important overlay: auto rule targeting el.
+
+        // Step 4. Append el to doc's pending top layer removals.
+        self.pending_top_layer_removals
+            .safe_borrow_mut(no_gc)
+            .push(Dom::from_ref(element));
+
+        self.update_topmost_modal(no_gc);
+    }
+
+    /// <https://drafts.csswg.org/css-position-4/#remove-an-element-from-the-top-layer-immediately>
+    pub(crate) fn remove_an_element_from_the_top_layer_immediately(
+        &self,
+        element: &Element,
+        no_gc: &NoGC,
+    ) {
+        // Step 1. Let doc be el's node document.
+
+        // Step 2. Remove el from doc's top layer and pending top layer removals.
+        self.top_layer
+            .safe_borrow_mut(no_gc)
+            .retain(|top_layer_element| &**top_layer_element != element);
+        self.pending_top_layer_removals
+            .safe_borrow_mut(no_gc)
+            .retain(|pending_element| &**pending_element != element);
+
+        // TODO: Step 3. Remove the UA !important overlay: auto rule targeting el, if it exists.
+
+        self.update_topmost_modal(no_gc);
+    }
+
+    /// <https://drafts.csswg.org/css-position-4/#process-top-layer-removals>
+    pub(crate) fn process_top_layer_removals(&self, no_gc: &NoGC) {
+        // Step 1. For each element el in doc’s pending top layer removals: if el's computed value
+        // of overlay is none, or el is not rendered, remove from the top layer immediately el.
+        // TODO: Check `overlay` once it is supported.
+        let pending_removals: Vec<_> = self
+            .pending_top_layer_removals
+            .borrow()
+            .iter()
+            .map(|element| DomRoot::from_ref(&**element))
+            .collect();
+        for element in pending_removals {
+            if !element.has_css_layout_box() {
+                self.remove_an_element_from_the_top_layer_immediately(&element, no_gc)
+            }
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog>
+    pub(crate) fn update_topmost_modal(&self, no_gc: &NoGC) {
+        // > A Document document is blocked by a modal dialog subject if subject is the topmost
+        // > dialog element in document's top layer.
+        let new_topmost_modal = self
+            .top_layer
+            .borrow()
+            .iter()
+            .rev()
+            .find(|element| {
+                element.state().contains(ElementState::MODAL) &&
+                    !self.pending_top_layer_removals_contains(element)
+            })
+            .map(|element| DomRoot::from_ref(&**element));
+        let old_topmost_modal = self.topmost_modal.get();
+
+        if let Some(old_topmost_modal) = old_topmost_modal {
+            old_topmost_modal.set_state(no_gc, ElementState::TOPMOST_MODAL, false);
+        }
+        if let Some(new_topmost_modal) = &new_topmost_modal {
+            new_topmost_modal.set_state(no_gc, ElementState::TOPMOST_MODAL, true);
+        }
+
+        self.topmost_modal.set(new_topmost_modal.as_deref());
+
+        // > While document is so blocked, every node that is connected to document, with the
+        // > exception of the subject element and its flat tree descendants, must become inert.
+        if let Some(document_element) = self.GetDocumentElement() {
+            let is_inert = new_topmost_modal.is_some() ||
+                document_element.has_attribute(&local_name!("inert"));
+            document_element.set_state(no_gc, ElementState::INERT, is_inert);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog>
+    pub(crate) fn is_blocked_by_a_modal_dialog(&self) -> bool {
+        self.topmost_modal.get().is_some()
     }
 
     fn reset_form_owner_for_listeners(&self, cx: &mut JSContext, id: &Atom) {
@@ -5444,6 +5654,10 @@ impl Document {
     pub(crate) fn set_favicon(&self, favicon: Image) {
         *self.favicon.borrow_mut() = Some(favicon);
         self.notify_embedder_favicon();
+    }
+
+    pub(crate) fn favicon(&self) -> Option<Image> {
+        self.favicon.borrow().clone()
     }
 
     pub(crate) fn fullscreen_element(&self) -> Option<DomRoot<Element>> {

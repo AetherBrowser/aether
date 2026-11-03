@@ -7,7 +7,7 @@ use std::rc::Rc;
 use dpi::PhysicalSize;
 use euclid::{Rect, Scale};
 use keyboard_types::{CompositionEvent, CompositionState, Key, KeyState, NamedKey};
-use log::{info, warn};
+use log::{debug, info, warn};
 use raw_window_handle::{DisplayHandle, RawWindowHandle, WindowHandle};
 use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
@@ -125,7 +125,8 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         let load_status_changed = Some(new_load_status) != self.current_load_status.get();
         if load_status_changed {
             self.host.notify_load_status_changed(new_load_status);
-            if state.servoshell_preferences.memory_output && new_load_status == LoadStatus::Complete
+            if state.servoshell_preferences.memory_output &&
+                matches!(new_load_status, LoadStatus::Complete | LoadStatus::Stopped)
             {
                 #[cfg(all(feature = "tracing", feature = "tracing-hitrace"))]
                 {
@@ -223,15 +224,18 @@ pub(crate) struct VsyncRefreshDriver {
     /// only when an observer asks for one.
     #[cfg(target_env = "ohos")]
     native_vsync: ohos_vsync::NativeVsync,
+    #[cfg_attr(target_os = "android", expect(dead_code))]
+    window_id: ServoShellWindowId,
 }
 
 impl VsyncRefreshDriver {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(window_id: ServoShellWindowId) -> Self {
         Self {
             start_frame_callbacks: Default::default(),
             #[cfg(target_env = "ohos")]
             native_vsync: ohos_vsync::NativeVsync::new("ServoVsync")
                 .expect("Failed to create NativeVsync"),
+            window_id,
         }
     }
 
@@ -257,7 +261,7 @@ impl RefreshDriver for VsyncRefreshDriver {
         };
         #[cfg(target_env = "ohos")]
         if was_empty {
-            super::ohos::request_vsync_callback(&self.native_vsync);
+            super::ohos::request_vsync_callback(&self.native_vsync, self.window_id);
         }
     }
 }
@@ -325,7 +329,8 @@ impl App {
         window_id: Option<ServoShellWindowId>,
     ) {
         let viewport_size = viewport_rect.size;
-        let refresh_driver = Rc::new(VsyncRefreshDriver::new());
+        let id = window_id.unwrap_or_else(ServoShellWindowId::next);
+        let refresh_driver = Rc::new(VsyncRefreshDriver::new(id));
         let rendering_context = Rc::new(
             WindowRenderingContext::new_with_refresh_driver(
                 display_handle,
@@ -335,7 +340,6 @@ impl App {
             )
             .expect("Could not create RenderingContext"),
         );
-        let id = window_id.unwrap_or(ServoShellWindowId::next());
         let platform_window = Rc::new(EmbeddedPlatformWindow {
             id,
             host: self.host.clone(),
@@ -438,15 +442,26 @@ impl App {
         self.spin_event_loop();
     }
 
-    /// Let Servo know that the window has been resized.
+    /// Let Servo know that the platform window has been resized.
     pub fn resize(&self, viewport_rect: Rect<i32, DevicePixel>) {
-        if let Some(webview) = self.active_or_newest_webview() {
+        self.resize_window(&self.window(), viewport_rect);
+    }
+
+    /// Let Servo know that `window` has been resized.
+    pub(crate) fn resize_window(
+        &self,
+        window: &ServoShellWindow,
+        viewport_rect: Rect<i32, DevicePixel>,
+    ) {
+        if let Some(webview) = window.active_or_newest_webview() {
             info!("Setting viewport to {viewport_rect:?}");
             let size = viewport_rect.size;
             webview.resize(PhysicalSize::new(size.width as u32, size.height as u32));
         }
-        let window = self.window().platform_window();
-        let embedded_platform_window = window.as_headed_window().expect("No headed window");
+        let platform_window = window.platform_window();
+        let embedded_platform_window = platform_window
+            .as_headed_window()
+            .expect("No headed window");
         *embedded_platform_window.viewport_rect.borrow_mut() = viewport_rect;
 
         self.spin_event_loop();
@@ -637,12 +652,26 @@ impl App {
         self.spin_event_loop();
     }
 
-    pub fn notify_vsync(&self) {
+    // This function is deprecated and should be removed once android supports multi-window.
+    pub fn notify_vsync_legacy(&self) {
         let platform_window = self.window().platform_window();
         let embedded_platform_window = platform_window
             .as_headed_window()
             .expect("No headed window");
         embedded_platform_window.refresh_driver.notify_vsync();
+        self.spin_event_loop();
+    }
+
+    pub fn notify_vsync(&self, window_id: ServoShellWindowId) {
+        if let Some(window) = self.state.window(window_id) {
+            let platform_window = window.platform_window();
+            let embedded_platform_window = platform_window
+                .as_headed_window()
+                .expect("No headed window");
+            embedded_platform_window.refresh_driver.notify_vsync();
+        } else {
+            debug!("Window {window_id:?} not found - dropping vsync notification");
+        }
         self.spin_event_loop();
     }
 

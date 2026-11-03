@@ -629,58 +629,58 @@ impl HTMLElementMethods<crate::DomTypeHolder> for HTMLElement {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetparent>
-    fn GetOffsetParent(&self) -> Option<DomRoot<Element>> {
+    fn GetOffsetParent(&self, cx: &mut JSContext) -> Option<DomRoot<Element>> {
         if self.is::<HTMLBodyElement>() || self.element.is_root() {
             return None;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (element, _) = window.offset_parent_query(node);
+        let (element, _) = window.offset_parent_query(cx, node);
 
         element
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsettop>
-    fn OffsetTop(&self) -> i32 {
+    fn OffsetTop(&self, cx: &mut JSContext) -> i32 {
         if self.is_body_element() {
             return 0;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.origin.y.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetleft>
-    fn OffsetLeft(&self) -> i32 {
+    fn OffsetLeft(&self, cx: &mut JSContext) -> i32 {
         if self.is_body_element() {
             return 0;
         }
 
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.origin.x.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetwidth>
-    fn OffsetWidth(&self) -> i32 {
+    fn OffsetWidth(&self, cx: &mut JSContext) -> i32 {
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.size.width.to_nearest_px()
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-htmlelement-offsetheight>
-    fn OffsetHeight(&self) -> i32 {
+    fn OffsetHeight(&self, cx: &mut JSContext) -> i32 {
         let node = self.upcast::<Node>();
         let window = self.owner_window();
-        let (_, rect) = window.offset_parent_query(node);
+        let (_, rect) = window.offset_parent_query(cx, node);
 
         rect.size.height.to_nearest_px()
     }
@@ -1358,10 +1358,16 @@ impl VirtualMethods for HTMLElement {
             },
             // <https://html.spec.whatwg.org/multipage/#the-inert-attribute>
             (&local_name!("inert"), mutation) => {
+                // https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog
+                // > While document is so blocked, every node that is connected to document, with the
+                // > exception of the subject element and its flat tree descendants, must become inert.
+                let is_blocked_document = element.is_document_element() &&
+                    element.owner_document().is_blocked_by_a_modal_dialog();
+
                 element.set_state(
                     cx.no_gc(),
                     ElementState::INERT,
-                    !matches!(mutation, AttributeMutation::Removed),
+                    is_blocked_document || !matches!(mutation, AttributeMutation::Removed),
                 );
             },
             (&local_name!("form"), mutation) if self.is_form_associated_custom_element() => {

@@ -621,9 +621,8 @@ impl Element {
             .is_some_and(|overflow| overflow.establishes_scroll_container())
     }
 
-    pub(crate) fn has_overflow(&self, no_gc: &NoGC) -> bool {
-        self.ScrollHeight() > self.ClientHeight(no_gc) ||
-            self.ScrollWidth() > self.ClientWidth(no_gc)
+    pub(crate) fn has_overflow(&self, cx: &mut JSContext) -> bool {
+        self.ScrollHeight(cx) > self.ClientHeight(cx) || self.ScrollWidth(cx) > self.ClientWidth(cx)
     }
 
     /// Whether or not this element has a scrolling box according to
@@ -633,8 +632,8 @@ impl Element {
     ///  1. The element has a layout box.
     ///  2. The style specifies that overflow should be scrollable (`auto`, `hidden` or `scroll`).
     ///  3. The fragment actually has content that overflows the box.
-    fn has_scrolling_box(&self, no_gc: &NoGC) -> bool {
-        self.has_css_layout_box() && self.establishes_scroll_container() && self.has_overflow(no_gc)
+    fn has_scrolling_box(&self, cx: &mut JSContext) -> bool {
+        self.has_css_layout_box() && self.establishes_scroll_container() && self.has_overflow(cx)
     }
 
     pub(crate) fn shadow_root(&self) -> Option<DomRoot<ShadowRoot>> {
@@ -950,7 +949,7 @@ impl Element {
             // `scrolling box` has an ongoing smooth scroll,
             //
             // TODO: Handle smooth scrolling.
-            if position != scrolling_box.scroll_position() {
+            if position != scrolling_box.scroll_position(cx) {
                 //  ↪ If `scrolling box` is associated with an element
                 //    Perform a scroll of the element’s scrolling box to `position`,
                 //    with the `element` as the associated element and `behavior` as the
@@ -2775,7 +2774,7 @@ impl Element {
         // TODO: This needs to match the spec a bit more closely with regard to the
         // box and overflow checks.
         // TODO: Implement the promise and smooth scroll behavior.
-        if !self.has_scrolling_box(cx.no_gc()) {
+        if !self.has_scrolling_box(cx) {
             return;
         }
 
@@ -3379,7 +3378,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     /// <https://drafts.csswg.org/cssom-view/#dom-element-getclientrects>
     fn GetClientRects(&self, cx: &mut JSContext) -> DomRoot<DOMRectList> {
         let win = self.owner_window();
-        let raw_rects = self.upcast::<Node>().border_boxes();
+        let raw_rects = self.upcast::<Node>().border_boxes(cx);
         let rects: Vec<DomRoot<DOMRect>> = raw_rects
             .into_iter()
             .map(|rect| {
@@ -3414,8 +3413,8 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scroll>
     fn Scroll(&self, cx: &mut JSContext, options: &ScrollToOptions) {
         // Step 1
-        let left = options.left.unwrap_or(self.ScrollLeft());
-        let top = options.top.unwrap_or(self.ScrollTop());
+        let left = options.left.unwrap_or(self.ScrollLeft(cx));
+        let top = options.top.unwrap_or(self.ScrollTop(cx));
         self.scroll(cx, left, top, options.parent.behavior);
     }
 
@@ -3439,8 +3438,8 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         // Step 2
         let delta_left = options.left.unwrap_or(0.0f64);
         let delta_top = options.top.unwrap_or(0.0f64);
-        let left = self.ScrollLeft();
-        let top = self.ScrollTop();
+        let left = self.ScrollLeft(cx);
+        let top = self.ScrollTop(cx);
         self.scroll(
             cx,
             left + delta_left,
@@ -3451,13 +3450,13 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollby>
     fn ScrollBy_(&self, cx: &mut JSContext, x: f64, y: f64) {
-        let left = self.ScrollLeft();
-        let top = self.ScrollTop();
+        let left = self.ScrollLeft(cx);
+        let top = self.ScrollTop(cx);
         self.scroll(cx, left + x, top + y, ScrollBehavior::Auto);
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrolltop>
-    fn ScrollTop(&self) -> f64 {
+    fn ScrollTop(&self, cx: &mut JSContext) -> f64 {
         let node = self.upcast::<Node>();
 
         // Step 1. Let document be the element’s node document.
@@ -3484,7 +3483,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
             // Step 6. If the element is the root element return the value of scrollY on
             // window.
-            return window.ScrollY() as f64;
+            return window.ScrollY(cx) as f64;
         }
 
         // Step 7. If the element is the body element, document is in quirks mode, and the
@@ -3494,7 +3493,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             document.quirks_mode() == QuirksMode::Quirks &&
             !self.is_potentially_scrollable_body()
         {
-            return window.ScrollY() as f64;
+            return window.ScrollY(cx) as f64;
         }
 
         // Step 8. If the element does not have any associated box, return zero and
@@ -3505,7 +3504,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
         // Step 9. Return the y-coordinate of the scrolling area at the alignment point
         // with the top of the padding edge of the element.
-        let point = window.scroll_offset_query(node);
+        let point = window.scroll_offset_query(cx, node);
         point.y.abs() as f64
     }
 
@@ -3543,7 +3542,8 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             // Step 8. If the element is the root element invoke scroll() on window with
             // scrollX on window as first argument and y as second argument, and terminate
             // these steps.
-            window.scroll(cx, window.ScrollX() as f32, y, behavior);
+            let window_scroll_x = window.ScrollX(cx) as f32;
+            window.scroll(cx, window_scroll_x, y, behavior);
             return;
         }
 
@@ -3555,24 +3555,26 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             document.quirks_mode() == QuirksMode::Quirks &&
             !self.is_potentially_scrollable_body()
         {
-            window.scroll(cx, window.ScrollX() as f32, y, behavior);
+            let window_scroll_x = window.ScrollX(cx) as f32;
+            window.scroll(cx, window_scroll_x, y, behavior);
             return;
         }
 
         // Step 10. If the element does not have any associated box, the element has no
         // associated scrolling box, or the element has no overflow, terminate these
         // steps.
-        if !self.has_scrolling_box(cx.no_gc()) {
+        if !self.has_scrolling_box(cx) {
             return;
         }
 
         // Step 11. Scroll the element to scrollLeft,y, with the scroll behavior being
         // "auto".
-        window.scroll_an_element(cx, self, self.ScrollLeft() as f32, y, behavior);
+        let element_scroll_left = self.ScrollLeft(cx) as f32;
+        window.scroll_an_element(cx, self, element_scroll_left, y, behavior);
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollleft>
-    fn ScrollLeft(&self) -> f64 {
+    fn ScrollLeft(&self, cx: &mut JSContext) -> f64 {
         let node = self.upcast::<Node>();
 
         // Step 1. Let document be the element’s node document.
@@ -3598,7 +3600,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             }
 
             // Step 6. If the element is the root element return the value of scrollX on window.
-            return window.ScrollX() as f64;
+            return window.ScrollX(cx) as f64;
         }
 
         // Step 7. If the element is the body element, document is in quirks mode, and the
@@ -3608,7 +3610,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             document.quirks_mode() == QuirksMode::Quirks &&
             !self.is_potentially_scrollable_body()
         {
-            return window.ScrollX() as f64;
+            return window.ScrollX(cx) as f64;
         }
 
         // Step 8. If the element does not have any associated box, return zero and
@@ -3619,7 +3621,7 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
         // Step 9. Return the x-coordinate of the scrolling area at the alignment point
         // with the left of the padding edge of the element.
-        let point = window.scroll_offset_query(node);
+        let point = window.scroll_offset_query(cx, node);
         point.x.abs() as f64
     }
 
@@ -3656,7 +3658,8 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             // Step 8. If the element is the root element invoke scroll() on window with x
             // as first argument and scrollY on window as second argument, and terminate
             // these steps.
-            window.scroll(cx, x, window.ScrollY() as f32, behavior);
+            let window_scroll_y = window.ScrollY(cx) as f32;
+            window.scroll(cx, x, window_scroll_y, behavior);
             return;
         }
 
@@ -3668,20 +3671,22 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
             document.quirks_mode() == QuirksMode::Quirks &&
             !self.is_potentially_scrollable_body()
         {
-            window.scroll(cx, x, window.ScrollY() as f32, behavior);
+            let window_scroll_y = window.ScrollY(cx) as f32;
+            window.scroll(cx, x, window_scroll_y, behavior);
             return;
         }
 
         // Step 10. If the element does not have any associated box, the element has no
         // associated scrolling box, or the element has no overflow, terminate these
         // steps.
-        if !self.has_scrolling_box(cx.no_gc()) {
+        if !self.has_scrolling_box(cx) {
             return;
         }
 
         // Step 11. Scroll the element to x,scrollTop, with the scroll behavior being
         // "auto".
-        window.scroll_an_element(cx, self, x, self.ScrollTop() as f32, behavior);
+        let element_scroll_top = self.ScrollTop(cx) as f32;
+        window.scroll_an_element(cx, self, x, element_scroll_top, behavior);
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollintoview>
@@ -3738,33 +3743,33 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollwidth>
-    fn ScrollWidth(&self) -> i32 {
-        self.upcast::<Node>().scroll_area().size.width
+    fn ScrollWidth(&self, cx: &mut JSContext) -> i32 {
+        self.upcast::<Node>().scroll_area(cx).size.width
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-scrollheight>
-    fn ScrollHeight(&self) -> i32 {
-        self.upcast::<Node>().scroll_area().size.height
+    fn ScrollHeight(&self, cx: &mut JSContext) -> i32 {
+        self.upcast::<Node>().scroll_area(cx).size.height
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-clienttop>
-    fn ClientTop(&self, no_gc: &NoGC) -> i32 {
-        self.client_rect(no_gc).origin.y
+    fn ClientTop(&self, cx: &mut JSContext) -> i32 {
+        self.client_rect(cx).origin.y
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-clientleft>
-    fn ClientLeft(&self, no_gc: &NoGC) -> i32 {
-        self.client_rect(no_gc).origin.x
+    fn ClientLeft(&self, cx: &mut JSContext) -> i32 {
+        self.client_rect(cx).origin.x
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-clientwidth>
-    fn ClientWidth(&self, no_gc: &NoGC) -> i32 {
-        self.client_rect(no_gc).size.width
+    fn ClientWidth(&self, cx: &mut JSContext) -> i32 {
+        self.client_rect(cx).size.width
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-element-clientheight>
-    fn ClientHeight(&self, no_gc: &NoGC) -> i32 {
-        self.client_rect(no_gc).size.height
+    fn ClientHeight(&self, cx: &mut JSContext) -> i32 {
+        self.client_rect(cx).size.height
     }
 
     // https://drafts.csswg.org/cssom-view/#dom-element-currentcsszoom
@@ -5127,7 +5132,7 @@ impl VirtualMethods for Element {
     }
 }
 impl Element {
-    pub(crate) fn client_rect(&self, no_gc: &NoGC) -> Rect<i32, CSSPixel> {
+    pub(crate) fn client_rect(&self, cx: &mut JSContext) -> Rect<i32, CSSPixel> {
         let doc = self.node.owner_doc();
 
         if let Some(rect) = self
@@ -5135,12 +5140,12 @@ impl Element {
             .as_ref()
             .and_then(|data| data.client_rect.as_ref())
             .and_then(|rect| rect.get().ok()) &&
-            doc.restyle_reason(no_gc).is_empty()
+            doc.restyle_reason(cx.no_gc()).is_empty()
         {
             return rect;
         }
 
-        let mut rect = self.upcast::<Node>().client_rect();
+        let mut rect = self.upcast::<Node>().client_rect(cx);
         let in_quirks_mode = doc.quirks_mode() == QuirksMode::Quirks;
 
         if (in_quirks_mode && doc.GetBody().as_deref() == self.downcast::<HTMLElement>()) ||
@@ -5149,8 +5154,10 @@ impl Element {
             rect.size = doc.window().viewport_details().size.round().to_i32();
         }
 
-        self.ensure_rare_data(no_gc).client_rect =
-            Some(self.owner_window_unrooted(no_gc).cache_layout_value(rect));
+        self.ensure_rare_data(cx.no_gc()).client_rect = Some(
+            self.owner_window_unrooted(cx.no_gc())
+                .cache_layout_value(rect),
+        );
         rect
     }
 
@@ -5396,6 +5403,8 @@ impl Element {
 
     pub(crate) fn set_modal_state(&self, no_gc: &NoGC, value: bool) {
         self.set_state(no_gc, ElementState::MODAL, value);
+        self.owner_document_unrooted(no_gc)
+            .update_topmost_modal(no_gc);
     }
 
     pub(crate) fn set_target_state(&self, no_gc: &NoGC, value: bool) {

@@ -12,6 +12,7 @@ use euclid::default::Point2D;
 use html5ever::{LocalName, Prefix, QualName, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
+use layout_api::BoxAreaType;
 use mime::{self, Mime};
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResult, ImageLoadListener, ImageOrMetadataAvailable,
@@ -216,13 +217,13 @@ impl FetchResponseListener for ImageContext {
             }
         }
 
-        // The HTTP status code is ignored here. Ok NetworkError is treated
-        // as real error
-        self.status = match metadata.as_ref().map(|m| m.status.clone()) {
-            None => Err(NetworkError::ResourceLoadError(
+        // The HTTP status code is ignored here. Only NetworkError is treated as real error.
+        self.status = if metadata.is_some() {
+            Ok(())
+        } else {
+            Err(NetworkError::ResourceLoadError(
                 "No http status code received".to_owned(),
-            )),
-            Some(_) => Ok(()),
+            ))
         };
     }
 
@@ -1433,7 +1434,13 @@ impl HTMLImageElement {
     ) -> (u32, u32) {
         // Step 1. If element is being rendered,
         // then return the width and height of element's content box, in CSS pixels. [CSS]
-        if let Some(content_box) = element.upcast::<Node>().content_box(cx) {
+        // Transforms don't change the content box size, only map it to a new coordinate system.
+        // <https://drafts.csswg.org/css-transforms-1/#transform-rendering>
+        if let Some(content_box) =
+            element
+                .owner_window()
+                .box_area_query(cx, element.upcast(), BoxAreaType::Content, true)
+        {
             return (
                 content_box.size.width.to_px() as u32,
                 content_box.size.height.to_px() as u32,
