@@ -29,10 +29,6 @@ const LOGO_DARK: &[u8] =
 pub(crate) struct ServoProtocolHandler;
 
 impl ProtocolHandler for ServoProtocolHandler {
-    fn is_fetchable(&self) -> bool {
-        true
-    }
-
     fn load(
         &self,
         request: &mut Request,

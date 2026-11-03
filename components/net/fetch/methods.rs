@@ -603,7 +603,14 @@ pub async fn main_fetch(
                 current_scheme == "data" ||
                 // Note: Although it is not part of the specification, we make an exception here
                 // for custom protocols that are explicitly marked as active for fetch.
+                // `about:` stays inactive so web content cannot fetch `about:blank` or
+                // `about:config`. Internal pages still fetch their JSON endpoints.
                 context.protocols.is_fetchable(current_scheme) ||
+                (current_scheme == "about" &&
+                    request
+                        .source_document_url
+                        .as_ref()
+                        .is_some_and(is_internal_page)) ||
                 // request's mode is "navigate" or "websocket"
                 matches!(
                     request.mode,

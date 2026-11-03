@@ -53,10 +53,6 @@ impl ProtocolHandler for ServoProtocolHandler {
         &["config", "preferences"]
     }
 
-    fn is_fetchable(&self) -> bool {
-        true
-    }
-
     fn load(
         &self,
         request: &mut Request,
@@ -80,10 +76,10 @@ impl ProtocolHandler for ServoProtocolHandler {
             "settings" => page_response(request, done_chan, context, "/settings.html"),
 
             // Internal JSON used by `settings.html` and `newtab.html`. A
-            // navigation would show that JSON to the user. Web pages can also
-            // fetch this scheme, because `is_fetchable` is true. A non-empty
-            // query persists settings, so only `about:settings` may send one.
-            // `newtab.html` reads with an empty query.
+            // navigation would show that JSON to the user. The scheme is not
+            // fetchable from web content. A non-empty query persists settings,
+            // so only `about:settings` may send one. `newtab.html` reads with
+            // an empty query.
             "home" => {
                 if !internal_json_request_is_allowed(request, url.query()) {
                     return forbidden_response();
