@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Hand-written bindings to the subset of libmpv's `client.h` and `stream_cb.h` used by
-//! this crate.
+//! Hand-written bindings to the subset of libmpv's `client.h`, `stream_cb.h` and
+//! `render.h` used by this crate.
 //!
-//! Layouts and values are checked against `mpv/client.h` and `mpv/stream_cb.h` for client
-//! API 2.5. The mpv
+//! Layouts and values are checked against `mpv/client.h`, `mpv/stream_cb.h` and
+//! `mpv/render.h` for client API 2.5. The mpv
 //! public headers are ISC licensed (Copyright (C) the mpv developers). Linking is set up
 //! by `build.rs`.
 //!
@@ -271,3 +271,94 @@ pub type mpv_stream_cb_open_ro_fn = Option<
         info: *mut mpv_stream_cb_info,
     ) -> c_int,
 >;
+
+// render.h, limited to the software renderer.
+
+pub use render::*;
+
+#[cfg_attr(
+    not(all(test, has_libmpv)),
+    expect(
+        dead_code,
+        reason = "Used by the video render thread, which is not wired yet"
+    )
+)]
+mod render {
+    use std::ffi::{CStr, c_int, c_void};
+
+    use super::mpv_handle;
+
+    /// Opaque `mpv_render_context`.
+    #[repr(C)]
+    pub struct mpv_render_context {
+        _private: [u8; 0],
+    }
+
+    /// `mpv_render_param_type`.
+    pub type mpv_render_param_type = c_int;
+    pub const MPV_RENDER_PARAM_INVALID: mpv_render_param_type = 0;
+    pub const MPV_RENDER_PARAM_API_TYPE: mpv_render_param_type = 1;
+    pub const MPV_RENDER_PARAM_SW_SIZE: mpv_render_param_type = 17;
+    pub const MPV_RENDER_PARAM_SW_FORMAT: mpv_render_param_type = 18;
+    pub const MPV_RENDER_PARAM_SW_STRIDE: mpv_render_param_type = 19;
+    pub const MPV_RENDER_PARAM_SW_POINTER: mpv_render_param_type = 20;
+
+    /// `MPV_RENDER_API_TYPE_SW`, the value of `MPV_RENDER_PARAM_API_TYPE`.
+    pub const MPV_RENDER_API_TYPE_SW: &CStr = c"sw";
+
+    /// `mpv_render_update_flag`, in the result of `mpv_render_context_update()`.
+    pub const MPV_RENDER_UPDATE_FRAME: u64 = 1 << 0;
+
+    /// `mpv_render_param`: `data` points to a value whose type depends on `type_`. Arrays
+    /// of parameters end with `MPV_RENDER_PARAM_INVALID`.
+    #[repr(C)]
+    pub struct mpv_render_param {
+        pub type_: mpv_render_param_type,
+        pub data: *mut c_void,
+    }
+
+    #[cfg(has_libmpv)]
+    unsafe extern "C" {
+        pub fn mpv_render_context_create(
+            res: *mut *mut mpv_render_context,
+            mpv: *mut mpv_handle,
+            params: *mut mpv_render_param,
+        ) -> c_int;
+        pub fn mpv_render_context_update(ctx: *mut mpv_render_context) -> u64;
+        pub fn mpv_render_context_render(
+            ctx: *mut mpv_render_context,
+            params: *mut mpv_render_param,
+        ) -> c_int;
+        pub fn mpv_render_context_free(ctx: *mut mpv_render_context);
+    }
+
+    #[cfg(not(has_libmpv))]
+    pub use missing_libmpv::*;
+
+    #[cfg(not(has_libmpv))]
+    mod missing_libmpv {
+        use super::*;
+        use crate::ffi::MPV_ERROR_GENERIC;
+
+        pub unsafe fn mpv_render_context_create(
+            _res: *mut *mut mpv_render_context,
+            _mpv: *mut mpv_handle,
+            _params: *mut mpv_render_param,
+        ) -> c_int {
+            MPV_ERROR_GENERIC
+        }
+
+        pub unsafe fn mpv_render_context_update(_ctx: *mut mpv_render_context) -> u64 {
+            0
+        }
+
+        pub unsafe fn mpv_render_context_render(
+            _ctx: *mut mpv_render_context,
+            _params: *mut mpv_render_param,
+        ) -> c_int {
+            MPV_ERROR_GENERIC
+        }
+
+        pub unsafe fn mpv_render_context_free(_ctx: *mut mpv_render_context) {}
+    }
+}
