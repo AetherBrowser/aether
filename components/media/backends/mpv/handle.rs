@@ -30,6 +30,8 @@ pub enum MpvError {
     InvalidString(String),
     /// A property did not have the expected shape.
     UnexpectedFormat { property: String },
+    /// A buffer cannot receive a rendered video frame.
+    InvalidRenderTarget(&'static str),
 }
 
 impl fmt::Display for MpvError {
@@ -48,6 +50,9 @@ impl fmt::Display for MpvError {
             },
             MpvError::UnexpectedFormat { property } => {
                 write!(formatter, "property {property:?} has an unexpected format")
+            },
+            MpvError::InvalidRenderTarget(reason) => {
+                write!(formatter, "invalid render target: {reason}")
             },
         }
     }
@@ -554,6 +559,178 @@ impl Drop for MpvHandle {
     }
 }
 
+// Video rendering: mpv renders frames in memory (render.h) instead of opening a window.
+
+/// The software render context of an mpv instance, freed on drop.
+///
+/// render.h requires freeing the context before the instance is destroyed: the context
+/// keeps its instance alive for that.
+#[cfg_attr(
+    not(all(test, has_libmpv)),
+    expect(
+        dead_code,
+        reason = "Used by the video render thread, which is not wired yet"
+    )
+)]
+pub struct RenderContext {
+    ctx: NonNull<ffi::mpv_render_context>,
+    /// Called by libmpv until the context is freed, so released after it.
+    _on_update: Box<UpdateCallback>,
+    _handle: Arc<MpvHandle>,
+}
+
+/// Boxed once more to be passed to C as a thin pointer.
+type UpdateCallback = Box<dyn Fn() + Send + Sync>;
+
+// render.h: the mpv_render_* functions "can be called from any thread". `&mut self`
+// ensures a context is only used by one thread at a time.
+unsafe impl Send for RenderContext {}
+
+#[cfg_attr(
+    not(all(test, has_libmpv)),
+    expect(
+        dead_code,
+        reason = "Used by the video render thread, which is not wired yet"
+    )
+)]
+impl RenderContext {
+    /// Creates the software render context of `handle`. render.h allows one context per
+    /// instance, and it must exist before video starts, so before `loadfile`: without it,
+    /// mpv cannot initialize video, or opens a window of its own unless `vo=libmpv`.
+    ///
+    /// libmpv calls `on_update` from one of its own threads, right away and whenever a
+    /// new frame may have to be rendered: [`RenderContext::update`] then tells whether one
+    /// must be. render.h forbids `on_update` to call into libmpv or to block: it should only
+    /// wake up whoever renders.
+    pub fn new(
+        handle: Arc<MpvHandle>,
+        on_update: impl Fn() + Send + Sync + 'static,
+    ) -> Result<RenderContext, MpvError> {
+        let mut params = [
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_API_TYPE,
+                data: ffi::MPV_RENDER_API_TYPE_SW.as_ptr().cast_mut().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        let mut ctx = ptr::null_mut();
+        let call = || "mpv_render_context_create(sw)".to_owned();
+        check(
+            unsafe {
+                ffi::mpv_render_context_create(&mut ctx, handle.ctx.as_ptr(), params.as_mut_ptr())
+            },
+            call,
+        )?;
+        let ctx = NonNull::new(ctx).ok_or_else(|| MpvError::Api {
+            call: call(),
+            code: ffi::MPV_ERROR_GENERIC,
+        })?;
+        // Once the context exists, so that a failed creation simply drops `on_update`.
+        let on_update: Box<UpdateCallback> = Box::new(Box::new(on_update));
+        // The inner box does not move when the outer one is moved into the context.
+        let callback_ctx = (&raw const *on_update).cast_mut().cast();
+        unsafe {
+            ffi::mpv_render_context_set_update_callback(
+                ctx.as_ptr(),
+                Some(render_update),
+                callback_ctx,
+            )
+        };
+        Ok(RenderContext {
+            ctx,
+            _on_update: on_update,
+            _handle: handle,
+        })
+    }
+
+    /// Whether mpv has a new video frame to render.
+    pub fn update(&mut self) -> bool {
+        let flags = unsafe { ffi::mpv_render_context_update(self.ctx.as_ptr()) };
+        flags & ffi::MPV_RENDER_UPDATE_FRAME != 0
+    }
+
+    /// Renders the current video frame, scaled to `width` × `height`, into `pixels` as
+    /// `bgr0`: 4 bytes per pixel, rows without padding. libmpv leaves the fourth byte of
+    /// each pixel unspecified.
+    ///
+    /// Blocks until the frame is due, which keeps video in sync with audio.
+    pub fn render_bgr0(
+        &mut self,
+        width: u32,
+        height: u32,
+        pixels: &mut [u8],
+    ) -> Result<(), MpvError> {
+        let (Ok(c_width), Ok(c_height)) = (c_int::try_from(width), c_int::try_from(height)) else {
+            return Err(MpvError::InvalidRenderTarget(
+                "the size does not fit a C int",
+            ));
+        };
+        if width == 0 || height == 0 {
+            return Err(MpvError::InvalidRenderTarget("the size is empty"));
+        }
+        let mut stride = width as usize * 4;
+        if stride
+            .checked_mul(height as usize)
+            .is_none_or(|len| pixels.len() < len)
+        {
+            return Err(MpvError::InvalidRenderTarget("the buffer is too small"));
+        }
+        // render.h: crashes are possible if the pointer is not aligned to the pixel size.
+        if pixels.as_ptr().align_offset(4) != 0 {
+            return Err(MpvError::InvalidRenderTarget(
+                "the buffer is not 4-byte aligned",
+            ));
+        }
+
+        let mut size: [c_int; 2] = [c_width, c_height];
+        let mut params = [
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_SIZE,
+                data: size.as_mut_ptr().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_FORMAT,
+                data: c"bgr0".as_ptr().cast_mut().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_STRIDE,
+                data: (&raw mut stride).cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_SW_POINTER,
+                data: pixels.as_mut_ptr().cast(),
+            },
+            ffi::mpv_render_param {
+                type_: ffi::MPV_RENDER_PARAM_INVALID,
+                data: ptr::null_mut(),
+            },
+        ];
+        check(
+            unsafe { ffi::mpv_render_context_render(self.ctx.as_ptr(), params.as_mut_ptr()) },
+            || format!("mpv_render_context_render({width}x{height} bgr0)"),
+        )
+    }
+}
+
+/// The update callback of every [`RenderContext`].
+///
+/// # Safety
+/// `callback_ctx` must be the [`UpdateCallback`] of a context that is not freed yet.
+unsafe extern "C" fn render_update(callback_ctx: *mut c_void) {
+    catch_panic((), || unsafe { (*callback_ctx.cast::<UpdateCallback>())() });
+}
+
+impl Drop for RenderContext {
+    fn drop(&mut self) {
+        // libmpv stops calling the update callback, and the context stops using the
+        // instance, before `_on_update` and `_handle` are released.
+        unsafe { ffi::mpv_render_context_free(self.ctx.as_ptr()) };
+    }
+}
+
 #[cfg(all(test, has_libmpv))]
 mod tests {
     use std::path::Path;
@@ -778,5 +955,140 @@ mod tests {
             ends[1],
             EndFileReason::Error(error_string(ffi::MPV_ERROR_LOADING_FAILED))
         );
+    }
+    /// An instance that renders video through a render context, never in a window.
+    fn video_handle() -> Arc<MpvHandle> {
+        Arc::new(MpvHandle::new(&[("ao", "null"), ("vo", "libmpv"), ("keep-open", "yes")]).unwrap())
+    }
+
+    #[test]
+    fn render_contexts_are_created_and_freed() {
+        let handle = video_handle();
+        let render = RenderContext::new(handle.clone(), || {}).unwrap();
+        // render.h allows a single context per instance.
+        assert!(matches!(
+            RenderContext::new(handle.clone(), || {}),
+            Err(MpvError::Api { .. })
+        ));
+        drop(render);
+        drop(RenderContext::new(handle, || {}).unwrap());
+    }
+
+    #[test]
+    fn a_render_context_outlives_the_other_users_of_its_instance() {
+        let handle = video_handle();
+        let render = RenderContext::new(handle.clone(), || {}).unwrap();
+        drop(handle);
+        // The instance is only destroyed now, after the context was freed.
+        drop(render);
+    }
+
+    #[test]
+    fn video_frames_are_rendered_in_bgr0() {
+        let handle = video_handle();
+        let mut render = RenderContext::new(handle.clone(), || {}).unwrap();
+        load_green_video(&handle);
+        wait_until("a video frame", || render.update());
+
+        let mut pixels = vec![0; 2 * 2 * 4];
+        render.render_bgr0(2, 2, &mut pixels).unwrap();
+        for pixel in pixels.chunks(4) {
+            let [blue, green, red, _] = pixel else {
+                unreachable!()
+            };
+            assert!(
+                *green > 100 && *blue < 40 && *red < 40,
+                "{pixel:?} is not green"
+            );
+        }
+    }
+
+    /// Loads the 2×2 green video on an instance with a render context.
+    fn load_green_video(handle: &MpvHandle) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tests/wpt/tests/media/2x2-green.webm");
+        handle
+            .command(&["loadfile", path.to_str().unwrap()])
+            .unwrap();
+    }
+
+    /// An update callback that wakes up whoever waits on the returned receiver. Wake-ups
+    /// coalesce: a full channel already holds one.
+    fn waking_callback() -> (impl Fn() + Send + Sync + 'static, mpsc::Receiver<()>) {
+        let (wake, woken) = mpsc::sync_channel(1);
+        let on_update = move || {
+            let _ = wake.try_send(());
+        };
+        (on_update, woken)
+    }
+
+    #[test]
+    fn the_update_callback_announces_video_frames() {
+        let handle = video_handle();
+        let (on_update, woken) = waking_callback();
+        let mut render = RenderContext::new(handle.clone(), on_update).unwrap();
+        load_green_video(&handle);
+
+        // What the render thread does: sleep until woken up, then ask what to do.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                woken.recv_timeout(timeout).is_ok(),
+                "no update callback announced a frame"
+            );
+            if render.update() {
+                break;
+            }
+        }
+        let mut pixels = vec![0; 2 * 2 * 4];
+        render.render_bgr0(2, 2, &mut pixels).unwrap();
+        assert!(pixels.chunks(4).all(|pixel| pixel[1] > 100));
+    }
+
+    #[test]
+    fn the_update_callback_is_called_once_installed() {
+        let (on_update, woken) = waking_callback();
+        let _render = RenderContext::new(video_handle(), on_update).unwrap();
+        assert!(woken.recv_timeout(Duration::from_secs(5)).is_ok());
+    }
+
+    #[test]
+    fn the_update_callback_is_released_with_its_context() {
+        let captured = Arc::new(());
+        let in_callback = captured.clone();
+        let render = RenderContext::new(video_handle(), move || {
+            let _ = &in_callback;
+        })
+        .unwrap();
+        assert_eq!(Arc::strong_count(&captured), 2);
+        drop(render);
+        assert_eq!(Arc::strong_count(&captured), 1);
+    }
+
+    #[test]
+    fn a_panicking_update_callback_does_not_stop_rendering() {
+        let handle = video_handle();
+        let mut render = RenderContext::new(handle.clone(), || panic!("update callback")).unwrap();
+        load_green_video(&handle);
+        wait_until("a video frame", || render.update());
+        let mut pixels = vec![0; 2 * 2 * 4];
+        render.render_bgr0(2, 2, &mut pixels).unwrap();
+    }
+
+    #[test]
+    fn invalid_render_targets_are_refused() {
+        let mut render = RenderContext::new(video_handle(), || {}).unwrap();
+        let mut pixels = vec![0; 2 * 2 * 4];
+        for (width, height, reason) in [
+            (0, 2, "the size is empty"),
+            (3, 2, "the buffer is too small"),
+            (u32::MAX, 1, "the size does not fit a C int"),
+        ] {
+            assert_eq!(
+                render.render_bgr0(width, height, &mut pixels),
+                Err(MpvError::InvalidRenderTarget(reason))
+            );
+        }
     }
 }
