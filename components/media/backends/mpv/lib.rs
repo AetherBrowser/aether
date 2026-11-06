@@ -53,6 +53,10 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 ///   starts playing as soon as a file is loaded.
 /// - `vid=no`: video is not rendered yet, so do not spend CPU decoding it. The audio of a
 ///   video file still plays.
+/// - `vo=libmpv`: video is only rendered into memory, through a render context. Without
+///   one, mpv gives up on video, and still plays the audio, instead of opening a window.
+/// - `sid=no` and `osd-level=0`: mpv would draw the subtitles it selects and its
+///   on-screen display, such as the seek bar, into the video frames a page shows.
 /// - `keep-open=yes`: pause at the end of the file instead of unloading it, so it can be
 ///   played again: the stream bridge does not keep the bytes mpv already read.
 /// - `cache=yes`: keep what was read, so that seeking back, `stop()` included, does not
@@ -63,6 +67,9 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 const PLAYER_OPTIONS: &[(&str, &str)] = &[
     ("pause", "yes"),
     ("vid", "no"),
+    ("vo", "libmpv"),
+    ("sid", "no"),
+    ("osd-level", "0"),
     ("keep-open", "yes"),
     ("cache", "yes"),
     ("demuxer-max-bytes", "32MiB"),
