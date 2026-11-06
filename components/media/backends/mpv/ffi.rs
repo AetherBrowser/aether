@@ -317,6 +317,9 @@ mod render {
         pub data: *mut c_void,
     }
 
+    /// `mpv_render_update_fn`.
+    pub type mpv_render_update_fn = Option<unsafe extern "C" fn(cb_ctx: *mut c_void)>;
+
     #[cfg(has_libmpv)]
     unsafe extern "C" {
         pub fn mpv_render_context_create(
@@ -324,6 +327,11 @@ mod render {
             mpv: *mut mpv_handle,
             params: *mut mpv_render_param,
         ) -> c_int;
+        pub fn mpv_render_context_set_update_callback(
+            ctx: *mut mpv_render_context,
+            callback: mpv_render_update_fn,
+            callback_ctx: *mut c_void,
+        );
         pub fn mpv_render_context_update(ctx: *mut mpv_render_context) -> u64;
         pub fn mpv_render_context_render(
             ctx: *mut mpv_render_context,
@@ -346,6 +354,13 @@ mod render {
             _params: *mut mpv_render_param,
         ) -> c_int {
             MPV_ERROR_GENERIC
+        }
+
+        pub unsafe fn mpv_render_context_set_update_callback(
+            _ctx: *mut mpv_render_context,
+            _callback: mpv_render_update_fn,
+            _callback_ctx: *mut c_void,
+        ) {
         }
 
         pub unsafe fn mpv_render_context_update(_ctx: *mut mpv_render_context) -> u64 {

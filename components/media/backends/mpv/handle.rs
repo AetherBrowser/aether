@@ -574,8 +574,13 @@ impl Drop for MpvHandle {
 )]
 pub struct RenderContext {
     ctx: NonNull<ffi::mpv_render_context>,
+    /// Called by libmpv until the context is freed, so released after it.
+    _on_update: Box<UpdateCallback>,
     _handle: Arc<MpvHandle>,
 }
+
+/// Boxed once more to be passed to C as a thin pointer.
+type UpdateCallback = Box<dyn Fn() + Send + Sync>;
 
 // render.h: the mpv_render_* functions "can be called from any thread". `&mut self`
 // ensures a context is only used by one thread at a time.
@@ -592,7 +597,15 @@ impl RenderContext {
     /// Creates the software render context of `handle`. render.h allows one context per
     /// instance, and it must exist before video starts, so before `loadfile`: without it,
     /// mpv cannot initialize video, or opens a window of its own unless `vo=libmpv`.
-    pub fn new(handle: Arc<MpvHandle>) -> Result<RenderContext, MpvError> {
+    ///
+    /// libmpv calls `on_update` from one of its own threads, right away and whenever a
+    /// new frame may have to be rendered: [`RenderContext::update`] then tells whether one
+    /// must be. render.h forbids `on_update` to call into libmpv or to block: it should only
+    /// wake up whoever renders.
+    pub fn new(
+        handle: Arc<MpvHandle>,
+        on_update: impl Fn() + Send + Sync + 'static,
+    ) -> Result<RenderContext, MpvError> {
         let mut params = [
             ffi::mpv_render_param {
                 type_: ffi::MPV_RENDER_PARAM_API_TYPE,
@@ -615,8 +628,20 @@ impl RenderContext {
             call: call(),
             code: ffi::MPV_ERROR_GENERIC,
         })?;
+        // Once the context exists, so that a failed creation simply drops `on_update`.
+        let on_update: Box<UpdateCallback> = Box::new(Box::new(on_update));
+        // The inner box does not move when the outer one is moved into the context.
+        let callback_ctx = (&raw const *on_update).cast_mut().cast();
+        unsafe {
+            ffi::mpv_render_context_set_update_callback(
+                ctx.as_ptr(),
+                Some(render_update),
+                callback_ctx,
+            )
+        };
         Ok(RenderContext {
             ctx,
+            _on_update: on_update,
             _handle: handle,
         })
     }
@@ -690,9 +715,18 @@ impl RenderContext {
     }
 }
 
+/// The update callback of every [`RenderContext`].
+///
+/// # Safety
+/// `callback_ctx` must be the [`UpdateCallback`] of a context that is not freed yet.
+unsafe extern "C" fn render_update(callback_ctx: *mut c_void) {
+    catch_panic((), || unsafe { (*callback_ctx.cast::<UpdateCallback>())() });
+}
+
 impl Drop for RenderContext {
     fn drop(&mut self) {
-        // Before `_handle` is released, which may destroy the instance.
+        // libmpv stops calling the update callback, and the context stops using the
+        // instance, before `_on_update` and `_handle` are released.
         unsafe { ffi::mpv_render_context_free(self.ctx.as_ptr()) };
     }
 }
@@ -930,20 +964,20 @@ mod tests {
     #[test]
     fn render_contexts_are_created_and_freed() {
         let handle = video_handle();
-        let render = RenderContext::new(handle.clone()).unwrap();
+        let render = RenderContext::new(handle.clone(), || {}).unwrap();
         // render.h allows a single context per instance.
         assert!(matches!(
-            RenderContext::new(handle.clone()),
+            RenderContext::new(handle.clone(), || {}),
             Err(MpvError::Api { .. })
         ));
         drop(render);
-        drop(RenderContext::new(handle).unwrap());
+        drop(RenderContext::new(handle, || {}).unwrap());
     }
 
     #[test]
     fn a_render_context_outlives_the_other_users_of_its_instance() {
         let handle = video_handle();
-        let render = RenderContext::new(handle.clone()).unwrap();
+        let render = RenderContext::new(handle.clone(), || {}).unwrap();
         drop(handle);
         // The instance is only destroyed now, after the context was freed.
         drop(render);
@@ -952,12 +986,8 @@ mod tests {
     #[test]
     fn video_frames_are_rendered_in_bgr0() {
         let handle = video_handle();
-        let mut render = RenderContext::new(handle.clone()).unwrap();
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../../tests/wpt/tests/media/2x2-green.webm");
-        handle
-            .command(&["loadfile", path.to_str().unwrap()])
-            .unwrap();
+        let mut render = RenderContext::new(handle.clone(), || {}).unwrap();
+        load_green_video(&handle);
         wait_until("a video frame", || render.update());
 
         let mut pixels = vec![0; 2 * 2 * 4];
@@ -973,9 +1003,82 @@ mod tests {
         }
     }
 
+    /// Loads the 2×2 green video on an instance with a render context.
+    fn load_green_video(handle: &MpvHandle) {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tests/wpt/tests/media/2x2-green.webm");
+        handle
+            .command(&["loadfile", path.to_str().unwrap()])
+            .unwrap();
+    }
+
+    /// An update callback that wakes up whoever waits on the returned receiver. Wake-ups
+    /// coalesce: a full channel already holds one.
+    fn waking_callback() -> (impl Fn() + Send + Sync + 'static, mpsc::Receiver<()>) {
+        let (wake, woken) = mpsc::sync_channel(1);
+        let on_update = move || {
+            let _ = wake.try_send(());
+        };
+        (on_update, woken)
+    }
+
+    #[test]
+    fn the_update_callback_announces_video_frames() {
+        let handle = video_handle();
+        let (on_update, woken) = waking_callback();
+        let mut render = RenderContext::new(handle.clone(), on_update).unwrap();
+        load_green_video(&handle);
+
+        // What the render thread does: sleep until woken up, then ask what to do.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                woken.recv_timeout(timeout).is_ok(),
+                "no update callback announced a frame"
+            );
+            if render.update() {
+                break;
+            }
+        }
+        let mut pixels = vec![0; 2 * 2 * 4];
+        render.render_bgr0(2, 2, &mut pixels).unwrap();
+        assert!(pixels.chunks(4).all(|pixel| pixel[1] > 100));
+    }
+
+    #[test]
+    fn the_update_callback_is_called_once_installed() {
+        let (on_update, woken) = waking_callback();
+        let _render = RenderContext::new(video_handle(), on_update).unwrap();
+        assert!(woken.recv_timeout(Duration::from_secs(5)).is_ok());
+    }
+
+    #[test]
+    fn the_update_callback_is_released_with_its_context() {
+        let captured = Arc::new(());
+        let in_callback = captured.clone();
+        let render = RenderContext::new(video_handle(), move || {
+            let _ = &in_callback;
+        })
+        .unwrap();
+        assert_eq!(Arc::strong_count(&captured), 2);
+        drop(render);
+        assert_eq!(Arc::strong_count(&captured), 1);
+    }
+
+    #[test]
+    fn a_panicking_update_callback_does_not_stop_rendering() {
+        let handle = video_handle();
+        let mut render = RenderContext::new(handle.clone(), || panic!("update callback")).unwrap();
+        load_green_video(&handle);
+        wait_until("a video frame", || render.update());
+        let mut pixels = vec![0; 2 * 2 * 4];
+        render.render_bgr0(2, 2, &mut pixels).unwrap();
+    }
+
     #[test]
     fn invalid_render_targets_are_refused() {
-        let mut render = RenderContext::new(video_handle()).unwrap();
+        let mut render = RenderContext::new(video_handle(), || {}).unwrap();
         let mut pixels = vec![0; 2 * 2 * 4];
         for (width, height, reason) in [
             (0, 2, "the size is empty"),
