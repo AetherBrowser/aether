@@ -177,6 +177,7 @@ use crate::dom::html::htmlanchorelement::HTMLAnchorElement;
 use crate::dom::html::htmlareaelement::HTMLAreaElement;
 use crate::dom::html::htmlbaseelement::HTMLBaseElement;
 use crate::dom::html::htmlcollection::{CollectionFilter, HTMLCollection};
+use crate::dom::html::htmldialogelement::HTMLDialogElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlembedelement::HTMLEmbedElement;
 use crate::dom::html::htmlformelement::{FormControl, FormControlElementHelpers, HTMLFormElement};
@@ -574,6 +575,10 @@ pub(crate) struct Document {
     pending_top_layer_removals: DomRefCell<Vec<Dom<Element>>>,
     /// <https://html.spec.whatwg.org/multipage/#blocked-by-a-modal-dialog>
     topmost_modal: MutNullableDom<Element>,
+    /// <https://html.spec.whatwg.org/multipage/#open-dialogs-list>
+    open_dialogs_list: DomRefCell<Vec<Dom<HTMLDialogElement>>>,
+    /// <https://html.spec.whatwg.org/multipage/#dialog-pointerdown-target>
+    dialog_pointerdown_target: MutNullableDom<HTMLDialogElement>,
 
     /// Map from ID to set of form control elements that have that ID as
     /// their 'form' content attribute. Used to reset form controls
@@ -862,7 +867,7 @@ impl Document {
     }
 
     /// <https://fullscreen.spec.whatwg.org/#fully-exit-fullscreen>
-    fn fully_exit_fullscreen(&self, cx: &mut JSContext) {
+    pub(crate) fn fully_exit_fullscreen(&self, cx: &mut JSContext) {
         // Step 1. If document’s fullscreen element is null, terminate these
         // steps.
         if self.fullscreen_element().is_none() {
@@ -2556,7 +2561,19 @@ impl Document {
                 }
 
                 // Step 9.1. Update the current document readiness to "complete".
+                // This must happen even if the load was stopped.
                 document.update_the_current_document_readiness(cx, DocumentReadyState::Complete);
+
+                // The document may have been stopped after this task was queued.
+                //
+                // The HTML specification doesn't say which events should be fired when
+                // aborting a Document. Blink and WebKit don't fire the load event in this
+                // situation; see <https://github.com/whatwg/html/issues/5535>.
+                //
+                // This check is intentionally after step 9.1 to move readystate to "complete".
+                if document.loader().aborted() {
+                    return;
+                }
 
                 // Step 9.2. If the Document object's browsing context is null, then abort these steps.
                 if document.browsing_context().is_none() {
@@ -3069,8 +3086,8 @@ impl Document {
             self.salvageable.set(false);
         } else if self.ready_state.get() != DocumentReadyState::Complete {
             // See <https://github.com/whatwg/html/issues/5535>.
-            // All browsers set the document readiness to "complete" when aborting, even though it
-            // is isn't specified. In addition, WPT tests depend on this happening.
+            // All browsers set the document readiness to "complete" when aborting, even though
+            // it isn't specified. In addition, WPT tests depend on this happening.
             let document = Trusted::new(self);
             self.owner_global()
                 .task_manager()
@@ -3501,14 +3518,6 @@ impl Document {
             .push(Dom::from_ref(resize_observer));
     }
 
-    pub(crate) fn rooted_clone_of_resize_observers(&self) -> Vec<DomRoot<ResizeObserver>> {
-        self.resize_observers
-            .borrow()
-            .iter()
-            .map(Dom::as_rooted)
-            .collect()
-    }
-
     /// <https://drafts.csswg.org/resize-observer/#gather-active-observations-h>
     /// <https://drafts.csswg.org/resize-observer/#has-active-resize-observations>
     pub(crate) fn gather_active_resize_observations_at_depth(
@@ -3516,10 +3525,9 @@ impl Document {
         cx: &mut JSContext,
         depth: &ResizeObservationDepth,
     ) -> bool {
-        // As the interior of the loop can trigger garbage collection, we must clone the resize observers
-        // before iterating them.
+        // This does not trigger a creation of ResizeObserver, hence, we can take a simple borrow.
         let mut has_active_resize_observations = false;
-        for observer in self.rooted_clone_of_resize_observers() {
+        for observer in self.resize_observers.borrow().iter() {
             observer.gather_active_resize_observations_at_depth(
                 cx,
                 depth,
@@ -3534,10 +3542,10 @@ impl Document {
         &self,
         cx: &mut JSContext,
     ) -> ResizeObservationDepth {
-        // As the interior of the loop can trigger garbage collection we must clone the resize observers
-        // before iterating them.
+        // As the interior of the loop can trigger creation of new ResizeObservers (which mutably borrows `resize_observers`, we have to clone the fields.
         let mut shallowest = ResizeObservationDepth::max();
-        for observer in self.rooted_clone_of_resize_observers() {
+        rooted_vec!(let observers <- self.resize_observers.borrow().iter().cloned());
+        for observer in &*observers {
             observer.broadcast_active_resize_observations(cx, &mut shallowest);
         }
         shallowest
@@ -4315,6 +4323,8 @@ impl Document {
             top_layer: Default::default(),
             pending_top_layer_removals: Default::default(),
             topmost_modal: Default::default(),
+            open_dialogs_list: Default::default(),
+            dialog_pointerdown_target: Default::default(),
             form_id_listener_map: Default::default(),
             interactive_time: DomRefCell::new(interactive_time),
             tti_window: DomRefCell::new(InteractiveWindow::default()),
@@ -4840,7 +4850,12 @@ impl Document {
             entry.hint.insert(RestyleHint::RESTYLE_STYLE_ATTRIBUTE);
         }
 
-        if vtable_for(el.upcast()).attribute_affects_presentational_hints(attr) ||
+        let affects_presentational_hints =
+            vtable_for(el.upcast()).attribute_affects_presentational_hints(attr);
+        if affects_presentational_hints {
+            el.dirty_presentational_hints();
+        }
+        if affects_presentational_hints ||
             el.check_style_on_self_or_eager_pseudos(|style| {
                 if let Some(ref attribute_references) = style.attribute_references {
                     return attribute_references.contains_key(attr.local_name());
@@ -4926,6 +4941,40 @@ impl Document {
 
     pub(crate) fn set_fullscreen_element(&self, element: Option<&Element>) {
         self.fullscreen_element.set(element);
+    }
+
+    pub(crate) fn open_dialogs_list_contains(&self, dialog: &HTMLDialogElement) -> bool {
+        self.open_dialogs_list
+            .borrow()
+            .iter()
+            .any(|open_dialog| &**open_dialog == dialog)
+    }
+
+    pub(crate) fn add_to_open_dialogs_list(&self, dialog: &HTMLDialogElement, no_gc: &NoGC) {
+        self.open_dialogs_list
+            .safe_borrow_mut(no_gc)
+            .push(Dom::from_ref(dialog));
+    }
+
+    pub(crate) fn remove_from_open_dialogs_list(&self, dialog: &HTMLDialogElement, no_gc: &NoGC) {
+        self.open_dialogs_list
+            .safe_borrow_mut(no_gc)
+            .retain(|open| &**open != dialog);
+    }
+
+    pub(crate) fn topmost_open_dialog(&self) -> Option<DomRoot<HTMLDialogElement>> {
+        self.open_dialogs_list
+            .borrow()
+            .last()
+            .map(|dialog| dialog.as_rooted())
+    }
+
+    pub(crate) fn dialog_pointerdown_target(&self) -> Option<DomRoot<HTMLDialogElement>> {
+        self.dialog_pointerdown_target.get()
+    }
+
+    pub(crate) fn set_dialog_pointerdown_target(&self, dialog: Option<&HTMLDialogElement>) {
+        self.dialog_pointerdown_target.set(dialog);
     }
 
     pub(crate) fn top_layer_contains(&self, element: &Element) -> bool {
@@ -7164,8 +7213,14 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     );
 
     /// <https://drafts.csswg.org/cssom-view/#dom-document-elementfrompoint>
-    fn ElementFromPoint(&self, x: Finite<f64>, y: Finite<f64>) -> Option<DomRoot<Element>> {
+    fn ElementFromPoint(
+        &self,
+        cx: &mut JSContext,
+        x: Finite<f64>,
+        y: Finite<f64>,
+    ) -> Option<DomRoot<Element>> {
         self.document_or_shadow_root.element_from_point(
+            cx,
             self.upcast(),
             x,
             y,
@@ -7175,8 +7230,14 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     }
 
     /// <https://drafts.csswg.org/cssom-view/#dom-document-elementsfrompoint>
-    fn ElementsFromPoint(&self, x: Finite<f64>, y: Finite<f64>) -> Vec<DomRoot<Element>> {
+    fn ElementsFromPoint(
+        &self,
+        cx: &mut JSContext,
+        x: Finite<f64>,
+        y: Finite<f64>,
+    ) -> Vec<DomRoot<Element>> {
         self.document_or_shadow_root.elements_from_point(
+            cx,
             self.upcast(),
             x,
             y,
@@ -7762,20 +7823,21 @@ impl DocumentHelpers for Document {
     }
 }
 
-/// Iterator for same origin ancestor navigables, returning the active documents of the navigables.
+/// Iterator for ancestor navigables whose active document is in this script thread, returning the
+/// active documents of the navigables. Stops at the first ancestor whose document is not local.
 /// <https://html.spec.whatwg.org/multipage/#ancestor-navigables>
-// TODO: Find a way for something equivalent for cross origin document.
-pub(crate) struct SameoriginAncestorNavigablesIterator {
+// TODO: Find a way for something equivalent for documents in other script threads.
+pub(crate) struct LocalAncestorNavigablesIterator {
     document: DomRoot<Document>,
 }
 
-impl SameoriginAncestorNavigablesIterator {
+impl LocalAncestorNavigablesIterator {
     pub(crate) fn new(document: DomRoot<Document>) -> Self {
         Self { document }
     }
 }
 
-impl Iterator for SameoriginAncestorNavigablesIterator {
+impl Iterator for LocalAncestorNavigablesIterator {
     type Item = DomRoot<Document>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -7785,15 +7847,16 @@ impl Iterator for SameoriginAncestorNavigablesIterator {
     }
 }
 
-/// Iterator for same origin descendant navigables in a shadow-including tree order, returning the
-/// active documents of the navigables.
+/// Iterator for descendant navigables whose active document is in this script thread, in a
+/// shadow-including tree order, returning the active documents of the navigables.
+/// This does not descend into navigables whose document is not local.
 /// <https://html.spec.whatwg.org/multipage/#descendant-navigables>
-// TODO: Find a way for something equivalent for cross origin document.
-pub(crate) struct SameOriginDescendantNavigablesIterator {
+// TODO: Find a way for something equivalent for documents in other script threads.
+pub(crate) struct LocalDescendantNavigablesIterator {
     stack: Vec<Box<dyn Iterator<Item = DomRoot<HTMLIFrameElement>>>>,
 }
 
-impl SameOriginDescendantNavigablesIterator {
+impl LocalDescendantNavigablesIterator {
     pub(crate) fn new(document: &Document) -> Self {
         let iframes: Vec<DomRoot<HTMLIFrameElement>> = document.iframes().iter().collect();
         Self {
@@ -7811,7 +7874,7 @@ impl SameOriginDescendantNavigablesIterator {
     }
 }
 
-impl Iterator for SameOriginDescendantNavigablesIterator {
+impl Iterator for LocalDescendantNavigablesIterator {
     type Item = DomRoot<Document>;
 
     fn next(&mut self) -> Option<Self::Item> {

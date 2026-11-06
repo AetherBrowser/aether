@@ -881,7 +881,7 @@ class CommandBase(object):
             # without the default features, then add them back without GStreamer.
             if self.media_stack != "gstreamer":
                 if "--no-default-features" not in cargo_args:
-                    cargo_args.append("--no-default-features")
+                    cargo_args.insert(0, "--no-default-features")
                     features.append("default_base")
                 else:
                     print(

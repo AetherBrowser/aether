@@ -261,6 +261,7 @@ impl InProgressLoad {
         .redirect_mode(RedirectMode::Manual)
         .crash(self.load_data.crash.clone())
         .client(request_client)
+        .user_activation(self.load_data.has_transient_activation)
         .url_list(self.url_list.clone())
         // An address-bar load, the View Source menu, and WebDriver use
         // `LoadOrigin::Constellation` or `LoadOrigin::WebDriver`. A document
@@ -385,6 +386,11 @@ pub(crate) fn navigate(
         // Step 7. If entry's document state's reload pending is true, then set request's reload-navigation flag.
         load_data.reload_navigation = true;
     }
+
+    // Step 2. Let sourceSnapshotParams be the result of snapshotting source snapshot params given sourceDocument.
+    // TODO: Fully implement 'sourceSnaphotParams'. For now, we only store the parameters that we
+    // care about directly in 'LoadData'.
+    load_data.has_transient_activation = window.has_transient_activation();
 
     // Step 3. Let initiatorOriginSnapshot be sourceDocument's origin.
     let initiator_origin_snapshot = &load_data.load_origin;

@@ -34,6 +34,8 @@ use js::rust::wrappers2::{
 #[cfg(feature = "devtools")]
 use js::rust::{CapturedJSStack, describe_scripted_caller, for_of};
 use js::rust::{HandleObject, HandleValue, IdVector, ToNumber, ToString};
+#[cfg(feature = "devtools")]
+use script_bindings::codegen::PrototypeList::proto_id_to_name;
 use script_bindings::conversions::get_dom_class;
 use script_bindings::js::{
     GetPropertyKeys, JS_GetOwnPropertyDescriptorById, JS_GetPropertyById, JS_GetPrototype,
@@ -387,7 +389,10 @@ mod devtools {
         if !unsafe { GetBuiltinClass(cx, object.handle(), &mut object_class as *mut _) } {
             return None;
         }
-        if object_class != ESClass::Object &&
+
+        let dom_class = unsafe { get_dom_class(object.get()).ok() };
+        if dom_class.is_none() &&
+            object_class != ESClass::Object &&
             object_class != ESClass::Array &&
             object_class != ESClass::Map &&
             object_class != ESClass::Function
@@ -478,6 +483,11 @@ mod devtools {
             });
         }
 
+        let dom_class_name = dom_class.map_or("Object", |dom_class| {
+            let interface_id = dom_class.interface_chain[dom_class.depth as usize];
+            proto_id_to_name(interface_id as u16)
+        });
+
         let (class, kind, function, array_length, items) = match object_class {
             ESClass::Array => {
                 let mut len = 0u32;
@@ -514,13 +524,13 @@ mod devtools {
                 // It's not trivial since we can't access the debugger API here
                 let parameter_names = (0..arity).map(|i| format!("<arg{i}>")).collect();
 
-                let function = FunctionPreview {
+                let function = Box::new(FunctionPreview {
                     name,
                     display_name,
                     parameter_names,
                     is_async: None,
                     is_generator: None,
-                };
+                });
                 (
                     "Function".into(),
                     "Object".into(),
@@ -529,8 +539,7 @@ mod devtools {
                     None,
                 )
             },
-            // TODO: Investigate if this class should be the object class
-            _ => ("Object".into(), "Object".into(), None, None, None),
+            _ => (dom_class_name.into(), "Object".into(), None, None, None),
         };
 
         Some((
@@ -929,22 +938,22 @@ fn stringify_debugger_value(value: &DebuggerValue) -> String {
 }
 
 #[derive(Default)]
-struct ConsoleTable {
+pub struct ConsoleTable {
     /// Column names in first-seen order (or the order given by `properties`).
-    columns: Vec<String>,
-    rows: Vec<TableRow>,
+    pub columns: Vec<String>,
+    pub rows: Vec<TableRow>,
 }
 
-struct TableRow {
-    index: String,
+pub struct TableRow {
+    pub index: String,
     /// (column name, cell text)
-    cells: Vec<(String, String)>,
+    pub cells: Vec<(String, String)>,
     /// Set when the row itself is a primitive -> goes in the "Values" column.
-    value: Option<String>,
+    pub value: Option<String>,
 }
 
 impl ConsoleTable {
-    fn render(&self) -> String {
+    pub fn render(&self) -> String {
         let has_values = self.rows.iter().any(|row| row.value.is_some());
 
         let mut headers = vec!["(index)".to_string()];
@@ -974,7 +983,7 @@ impl ConsoleTable {
             })
             .collect();
 
-        let widths: Vec<usize> = (0..headers.len())
+        let column_widths: Vec<usize> = (0..headers.len())
             .map(|i| {
                 std::iter::once(&headers[i])
                     .chain(grid.iter().map(|row| &row[i]))
@@ -985,14 +994,18 @@ impl ConsoleTable {
             .collect();
 
         let border = |left: &str, mid: &str, right: &str| {
-            let segments: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
+            let segments: Vec<String> = column_widths.iter().map(|w| "─".repeat(w + 2)).collect();
             format!("{left}{}{right}", segments.join(mid))
         };
         let line = |cells: &[String]| {
             let padded: Vec<String> = cells
                 .iter()
-                .zip(&widths)
-                .map(|(cell, &w)| format!(" {cell:<w$} "))
+                .zip(&column_widths)
+                .map(|(cell, &column_width)| {
+                    // Use manual padding to avoid `format!` panics when width exceeds `u16::MAX`.
+                    let pad_width = column_width.saturating_sub(cell.chars().count());
+                    format!(" {cell}{} ", " ".repeat(pad_width))
+                })
                 .collect();
             format!("│{}│", padded.join("│"))
         };

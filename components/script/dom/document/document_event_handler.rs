@@ -9,10 +9,11 @@ use std::mem;
 use std::time::{Duration, Instant};
 
 use embedder_traits::{
-    Cursor, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome, InputEventResult,
-    KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction, MouseButtonEvent,
-    MouseLeftViewportEvent, MouseMoveEvent, TouchEvent as EmbedderTouchEvent, TouchEventType,
-    TouchId, TouchPointerType, UntrustedNodeAddress, WheelEvent as EmbedderWheelEvent,
+    Cursor, EditingAction, EmbedderMsg, ImeEvent, InputEvent, InputEventId, InputEventOutcome,
+    InputEventResult, KeyboardEvent as EmbedderKeyboardEvent, MouseButton, MouseButtonAction,
+    MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, TouchEvent as EmbedderTouchEvent,
+    TouchEventType, TouchId, TouchPointerType, UntrustedNodeAddress,
+    WheelEvent as EmbedderWheelEvent,
 };
 #[cfg(feature = "gamepad")]
 use embedder_traits::{
@@ -68,6 +69,7 @@ use crate::dom::gamepad::gamepad::{Gamepad, contains_user_gesture};
 #[cfg(feature = "gamepad")]
 use crate::dom::gamepad::gamepadevent::GamepadEventType;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
+use crate::dom::html::htmldialogelement::HTMLDialogElement;
 use crate::dom::inputevent::HitTestResult;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::keyboardevent::KeyboardEvent;
@@ -1121,7 +1123,7 @@ impl DocumentEventHandler {
                         .set(input_event.pressed_mouse_buttons);
 
                     let pointer_event_result =
-                        pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+                        self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
                     // Process pending pointer capture after firing event, but skip if we just
                     // released a disconnected capture to avoid immediately re-capturing.
@@ -1206,7 +1208,7 @@ impl DocumentEventHandler {
                         .map(DomRoot::upcast::<EventTarget>)
                         .unwrap_or_else(|| DomRoot::from_ref(node.upcast::<EventTarget>()));
 
-                    pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+                    self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
                     // Update button state after firing event, so setPointerCapture/releasePointerCapture
                     // work during the pointerup handler (pointer is still "active").
@@ -1521,7 +1523,7 @@ impl DocumentEventHandler {
             event.is_cancelable(),
             Some(hit_test_result.point_in_node),
         );
-        pointer_event.upcast::<Event>().fire(cx, &pointer_target);
+        self.fire_pointer_event(cx, &pointer_event, &pointer_target);
 
         // Process pending pointer capture after firing event, but skip if we just
         // released a disconnected capture (to avoid immediately re-capturing).
@@ -1649,9 +1651,9 @@ impl DocumentEventHandler {
             TouchEventType::Cancel => "touchcancel",
         };
 
-        let touches = TouchList::new(cx, window, self.active_touch_points.borrow().r());
+        let touches = TouchList::new(cx, window, self.active_touch_points.borrow().as_ref_slice());
         let changed_touches = TouchList::new(cx, window, from_ref(&&*changed_touch));
-        let target_touches = TouchList::new(cx, window, target_touches.r());
+        let target_touches = TouchList::new(cx, window, target_touches.as_ref_slice());
 
         let touch_event = TouchEvent::new(
             cx,
@@ -1783,17 +1785,43 @@ impl DocumentEventHandler {
         cx: &mut JSContext,
         keyboard_event: EmbedderKeyboardEvent,
     ) -> InputEventResult {
+        let event_type = keyboard_event.event.state.event_type().into();
+        // We should update the state of the focus handler even if the default action
+        // of the keyboard event will be prevented. That could be the case where in
+        // the callback of a keydown event we cancel the event, but also pass on focus
+        // to another element. In that case, the newly script focused element should
+        // still match `:focus-visible`.
+        if event_type == atom!("keydown") {
+            self.window
+                .Document()
+                .focus_handler()
+                .set_last_user_interaction_was_keyboard(true);
+        }
+
         let target = &self.target_for_events_following_focus();
         let keyevent = KeyboardEvent::new_with_platform_keyboard_event(
             cx,
             &self.window,
-            keyboard_event.event.state.event_type().into(),
+            event_type,
             &keyboard_event.event,
         );
 
         let event = keyevent.upcast::<Event>();
         event.set_composed(true);
-        event.fire(cx, target);
+        // <https://html.spec.whatwg.org/multipage/#close-requests>
+        // > Some example close requests are:
+        // > - The Esc key on desktop platforms.
+        // > On platforms where pressing the Esc key is interpreted as a close request, the user agent
+        // > must interpret the key being pressed down as the close request, instead of the key being
+        // > released. Thus, in the above algorithm, the "relevant events" that are fired must be the
+        // > single keydown event.
+        if keyboard_event.event.state == KeyState::Down &&
+            keyboard_event.event.key == Key::Named(NamedKey::Escape)
+        {
+            self.close_request_steps(cx, Some((event, target)));
+        } else {
+            event.fire(cx, target);
+        }
 
         // From https://w3c.github.io/uievents/#keys-cancelable-keys:
         // > Canceling the default action of a keydown event MUST NOT affect its
@@ -1830,18 +1858,80 @@ impl DocumentEventHandler {
         self.run_default_keydown_handler(cx, target, &keyboard_event, flags.into())
     }
 
-    fn handle_ime_event(&self, cx: &mut JSContext, event: ImeEvent) -> InputEventResult {
+    /// <https://html.spec.whatwg.org/multipage/#close-request-steps>
+    ///
+    /// `event` is the event to fire for this close request, along with its target, if any.
+    pub(crate) fn close_request_steps(
+        &self,
+        cx: &mut JSContext,
+        event: Option<(&Event, &EventTarget)>,
+    ) {
+        // Step 1. If document's fullscreen element is not null:
         let document = self.window.Document();
-        let composition_event = match event {
-            ImeEvent::Dismissed => {
-                document
-                    .focus_handler()
-                    .focus(cx, &FocusableArea::Viewport, FocusTrigger::Script);
-                return Default::default();
-            },
-            ImeEvent::Composition(composition_event) => composition_event,
-        };
+        if document.fullscreen_element().is_some() {
+            // Step 1.1. Fully exit fullscreen given document's node navigable's top-level traversable's active document.
+            // TODO: node navigable's top-level traversable's active document
+            document.fully_exit_fullscreen(cx);
 
+            // Step 1.2. Return.
+            return;
+        }
+
+        // Step 2. Optionally, skip to the step labeled alternative processing.
+
+        // Step 3. Fire any relevant events, per UI Events or other relevant specifications. [UIEVENTS]
+        if let Some((event, target)) = event {
+            event.fire(cx, target);
+        }
+
+        // Step 4. Let event be null if no such events are fired, or the Event object representing one of
+        // the fired events otherwise. If multiple events are fired, which one is chosen is
+        // implementation-defined.
+        let event = event.map(|(event, _)| event);
+
+        // Step 5. If event is not null, and its canceled flag is set, then return.
+        if event.is_some_and(|event| event.flags().contains(EventFlags::Canceled)) {
+            return;
+        }
+
+        // Step 6. If document is not fully active, then return.
+        if !document.is_fully_active() {
+            return;
+        }
+
+        // Step 7. Let closedSomething be the result of processing close watchers on document's
+        // relevant global object.
+        self.window.process_close_watchers(cx);
+
+        // Step 8. If closedSomething is true, then return.
+        // Step 9. Alternative processing: Otherwise, there was nothing watching for a close request.
+        // The user agent may instead interpret this interaction as some other action, instead of
+        // interpreting it as a close request.
+    }
+
+    fn handle_ime_event(&self, cx: &mut JSContext, event: ImeEvent) -> InputEventResult {
+        match event {
+            ImeEvent::Dismissed => {
+                self.window.Document().focus_handler().focus(
+                    cx,
+                    &FocusableArea::Viewport,
+                    FocusTrigger::Script,
+                );
+                Default::default()
+            },
+            ImeEvent::Commit(text) => self.handle_ime_commit(cx, text),
+            ImeEvent::Composition(composition_event) => {
+                self.handle_ime_composition(cx, composition_event)
+            },
+        }
+    }
+
+    fn handle_ime_composition(
+        &self,
+        cx: &mut JSContext,
+        composition_event: keyboard_types::CompositionEvent,
+    ) -> InputEventResult {
+        let document = self.window.Document();
         // spec: https://w3c.github.io/uievents/#compositionstart
         // spec: https://w3c.github.io/uievents/#compositionupdate
         // spec: https://w3c.github.io/uievents/#compositionend
@@ -1882,6 +1972,20 @@ impl DocumentEventHandler {
         }
 
         composition_event_result
+    }
+
+    fn handle_ime_commit(&self, cx: &mut JSContext, text: String) -> InputEventResult {
+        let document = self.window.Document();
+        let focused_area = document.focus_handler().focused_area();
+        let Some(focused_element) = focused_area.element() else {
+            // Event is only dispatched if there is a focused element.
+            return Default::default();
+        };
+        let editing_host = document.editing_context(cx.no_gc(), focused_element.upcast());
+        if editing_host.perform_editing_action(cx, EditingAction::InsertText(text)) {
+            return InputEventResult::Consumed;
+        }
+        Default::default()
     }
 
     fn handle_wheel_event(
@@ -3101,6 +3205,27 @@ impl DocumentEventHandler {
             .task_manager()
             .dom_manipulation_task_source()
             .queue(task);
+    }
+
+    fn fire_pointer_event(
+        &self,
+        cx: &mut JSContext,
+        pointer_event: &PointerEvent,
+        target: &EventTarget,
+    ) -> bool {
+        let result = pointer_event.upcast::<Event>().fire(cx, target);
+        Self::light_dismiss_activities(cx, pointer_event, target);
+        result
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#run-light-dismiss-activities>
+    ///
+    /// target is passed explicitly, because it might not be set on event
+    fn light_dismiss_activities(cx: &mut JSContext, event: &PointerEvent, target: &EventTarget) {
+        // TODO: Step 1. Run light dismiss open popovers with event.
+
+        // Step 2. Run light dismiss open dialogs with event.
+        HTMLDialogElement::light_dismiss_open_dialogs(cx, event, target);
     }
 }
 

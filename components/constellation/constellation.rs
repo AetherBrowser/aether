@@ -149,7 +149,8 @@ use servo_base::generic_channel::{
 use servo_base::id::{
     BrowsingContextId, CONSTELLATION_PIPELINE_NAMESPACE_ID, FIRST_CONTENT_PIPELINE_NAMESPACE_ID,
     HistoryStateId, MessagePortId, MessagePortRouterId, PainterId, PipelineId, PipelineNamespace,
-    PipelineNamespaceId, PipelineNamespaceRequest, ScriptEventLoopId, WebViewId, WorkerId,
+    PipelineNamespaceId, PipelineNamespaceRequest, ScriptEventLoopId, ServiceWorkerId, WebViewId,
+    WorkerId,
 };
 use servo_base::threadboost::{BoostAffinity, ThreadPriority};
 #[cfg(feature = "bluetooth")]
@@ -285,6 +286,13 @@ struct WorkerAnimationFrameProvider {
     tick_pending: bool,
 }
 
+/// Information about service workers that are pending a state update script task,
+/// on which we have to wait at step 21 of <https://w3c.github.io/ServiceWorker/#installation-algorithm>.
+struct ServiceWorkerPendingUpdate {
+    pipelines: HashMap<PipelineId, usize>,
+    origin: ImmutableOrigin,
+}
+
 /// The `Constellation` itself. In the servo browser, there is one
 /// constellation, which maintains all of the browser global data.
 /// In embedded applications, there may be more than one constellation,
@@ -346,6 +354,10 @@ pub struct Constellation<STF, SWF> {
     /// Necessary for algorithms like <https://w3c.github.io/ServiceWorker/#update-state-algorithm>,
     /// which broadcast messages to multiple pipelines.
     sw_manager_sender: GenericSender<ServiceWorkerManagerMsg>,
+
+    /// Service workers waiting for their state update tasks to complete at step 21 of
+    /// <https://w3c.github.io/ServiceWorker/#installation-algorithm>.
+    service_workers_pending_update: HashMap<ServiceWorkerId, ServiceWorkerPendingUpdate>,
 
     /// A factory for creating layouts. This allows customizing the kind
     /// of layout created for a [`Constellation`] and prevents a circular crate
@@ -601,16 +613,6 @@ pub struct InitialConstellationState {
     pub wake_lock_provider: Box<dyn WakeLockDelegate>,
 }
 
-/// When we are exiting a pipeline, we can either force exiting or not. A normal exit
-/// waits for `Paint` to update its state before exiting, and delegates layout exit to
-/// script. A forced exit does not notify `Paint`, and exits layout without involving
-/// script.
-#[derive(Clone, Copy, Debug)]
-enum ExitPipelineMode {
-    Normal,
-    Force,
-}
-
 /// The number of warnings to include in each crash report.
 const WARNINGS_BUFFER_SIZE: usize = 32;
 
@@ -691,6 +693,7 @@ where
                     event_loops: Default::default(),
                     sw_manager_sender,
                     sw_manager_receiver,
+                    service_workers_pending_update: Default::default(),
                     namespace_receiver,
                     namespace_ipc_sender,
                     script_sender: script_ipc_sender,
@@ -1276,6 +1279,16 @@ where
             } => {
                 // Continuation of <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
                 // Step 4: For each settingsObject of settingsObjects, queue a task on settingsObject’s responsible event loop
+
+                // Note: we need to track queued tasks per worker because of the "Wait for all the tasks queued"
+                // happening at Step 21 of <https://w3c.github.io/ServiceWorker/#installation-algorithm>.
+                let pending_update = self
+                    .service_workers_pending_update
+                    .entry(worker_id)
+                    .or_insert_with(|| ServiceWorkerPendingUpdate {
+                        origin: origin.clone(),
+                        pipelines: Default::default(),
+                    });
                 self.pipelines
                     .values()
                     .filter(|pipeline| pipeline.url.origin() == origin)
@@ -1293,8 +1306,23 @@ where
                                 "Failed to send UpdateServiceWorkerState to pipeline {}",
                                 pipeline.id
                             );
+                        } else {
+                            let entry = pending_update.pipelines.entry(pipeline.id).or_insert(0);
+                            *entry = entry.checked_add(1).unwrap_or(*entry);
                         }
                     });
+                if pending_update.pipelines.is_empty() {
+                    if let Some(manager) = self.sw_managers.get(&origin) {
+                        if manager
+                            .send(ServiceWorkerMsg::FinishInstall(worker_id))
+                            .is_err()
+                        {
+                            error!("Failed to send FinishInstall for worker {}", worker_id);
+                        }
+                    } else {
+                        warn!("Unable to send FinishInstall for worker {}", worker_id);
+                    }
+                }
             },
         }
     }
@@ -1938,6 +1966,9 @@ where
                     "Document ancestor origin details retrieval after closure",
                 );
             },
+            ScriptToConstellationMessage::ServiceWorkerStateUpdateDone(worker_id, pipeline_id) => {
+                self.handle_service_worker_state_update_done(worker_id, pipeline_id);
+            },
             ScriptToConstellationMessage::ServiceWorkerAlgorithm(algorithm) => {
                 self.handle_serviceworker_algorithm(source_pipeline_id, algorithm);
             },
@@ -2526,6 +2557,40 @@ where
         }
     }
 
+    #[servo_tracing::instrument(skip_all)]
+    fn handle_service_worker_state_update_done(
+        &mut self,
+        worker_id: ServiceWorkerId,
+        pipeline_id: PipelineId,
+    ) {
+        let (is_empty, origin) = {
+            let Some(pending) = self.service_workers_pending_update.get_mut(&worker_id) else {
+                return;
+            };
+            if let Some(count) = pending.pipelines.get_mut(&pipeline_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    pending.pipelines.remove(&pipeline_id);
+                }
+            }
+            (pending.pipelines.is_empty(), pending.origin.clone())
+        };
+
+        if is_empty {
+            self.service_workers_pending_update.remove(&worker_id);
+            let Some(manager) = self.sw_managers.get(&origin) else {
+                error!("No service worker manager found for origin {:?}", origin);
+                return;
+            };
+            if manager
+                .send(ServiceWorkerMsg::FinishInstall(worker_id))
+                .is_err()
+            {
+                warn!("Failed to send FinishInstall message to service worker manager");
+            }
+        }
+    }
+
     /// <https://www.w3.org/TR/service-workers/#algorithms>
     /// Algorithms invoked from in-parallel steps run on the service worker mananager,
     /// per origin and routed by the constellation.
@@ -2695,7 +2760,7 @@ where
                 "{}: Removing top-level browsing context",
                 browsing_context_id
             );
-            self.close_browsing_context(webview_id, browsing_context_id, ExitPipelineMode::Normal);
+            self.close_browsing_context(webview_id, browsing_context_id);
         }
 
         // Close any pending changes and pipelines
@@ -2709,17 +2774,9 @@ where
                 "{}: Removing pending browsing context",
                 pending.browsing_context_id
             );
-            self.close_browsing_context(
-                pending.webview_id,
-                pending.browsing_context_id,
-                ExitPipelineMode::Normal,
-            );
+            self.close_browsing_context(pending.webview_id, pending.browsing_context_id);
             debug!("{}: Removing pending pipeline", pending.new_pipeline_id);
-            self.close_pipeline(
-                pending.new_pipeline_id,
-                DiscardBrowsingContext::Yes,
-                ExitPipelineMode::Normal,
-            );
+            self.close_pipeline(pending.new_pipeline_id, DiscardBrowsingContext::Yes);
         }
 
         // In case there are browsing contexts which weren't attached, we close them.
@@ -2736,18 +2793,14 @@ where
                 "{}: Removing detached browsing context",
                 browsing_context_id
             );
-            self.close_browsing_context(webview_id, browsing_context_id, ExitPipelineMode::Normal);
+            self.close_browsing_context(webview_id, browsing_context_id);
         }
 
         // In case there are pipelines which weren't attached to the pipeline tree, we close them.
         let pipeline_ids: Vec<PipelineId> = self.pipelines.keys().cloned().collect();
         for pipeline_id in pipeline_ids {
             debug!("{}: Removing detached pipeline", pipeline_id);
-            self.close_pipeline(
-                pipeline_id,
-                DiscardBrowsingContext::Yes,
-                ExitPipelineMode::Normal,
-            );
+            self.close_pipeline(pipeline_id, DiscardBrowsingContext::Yes);
         }
     }
 
@@ -2974,6 +3027,32 @@ where
         self.async_runtime.shutdown();
     }
 
+    /// Stops waiting for all pending service worker state updates for the given pipeline.
+    fn stop_waiting_for_pending_service_worker_state_update(&mut self, pipeline_id: &PipelineId) {
+        // loop over all service_workers_pending_update and remove the pipeline,
+        // message the sw manager if no pipelines are left.
+        self.service_workers_pending_update
+            .retain(|worker_id, pending| {
+                pending.pipelines.remove(pipeline_id);
+                if pending.pipelines.is_empty() {
+                    // message sw manager
+                    if let Some(manager) = self.sw_managers.get(&pending.origin) {
+                        if manager
+                            .send(ServiceWorkerMsg::FinishInstall(*worker_id))
+                            .is_err()
+                        {
+                            error!("Failed to send FinishInstall for worker {}", worker_id);
+                        } else {
+                            warn!("Unable to send FinishInstall for worker {}", worker_id);
+                        }
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+    }
+
     fn handle_pipeline_exited(&mut self, pipeline_id: PipelineId, exit_source: PipelineExitSource) {
         debug!("{}: Exited", pipeline_id);
         self.remove_worker_animation_frame_providers_for_pipeline(pipeline_id);
@@ -2981,6 +3060,8 @@ where
         let Some(pipeline) = self.pipelines.remove(&pipeline_id) else {
             return;
         };
+
+        self.stop_waiting_for_pending_service_worker_state_update(&pipeline_id);
 
         // Let the embedding layer release resources it is holding on this pipeline's behalf.
         self.constellation_to_embedder_proxy
@@ -3052,11 +3133,7 @@ where
         }
 
         for pipeline_id in crashed_pipelines {
-            self.close_pipeline(
-                pipeline_id,
-                DiscardBrowsingContext::No,
-                ExitPipelineMode::Force,
-            );
+            self.close_pipeline(pipeline_id, DiscardBrowsingContext::No);
             // The pipeline is now unreachable, so we should consider it gone. We should
             // not try to send any subsequent messages to this pipeline. all() here ensures
             // that `Paint` cleans up the pipeline display immediately without waiting for
@@ -3099,7 +3176,6 @@ where
             webview_id,
             browsing_context_id,
             DiscardBrowsingContext::No,
-            ExitPipelineMode::Force,
         );
 
         if old_load_data.crash.is_some() {
@@ -3422,7 +3498,7 @@ where
         // descendants given document.
 
         // Step 3. Remove browsingContext.
-        self.close_browsing_context(webview_id, browsing_context_id, ExitPipelineMode::Normal);
+        self.close_browsing_context(webview_id, browsing_context_id);
 
         // Step 4. Remove traversable from the user interface (e.g., close or
         // hide its tab in a tabbed browser).
@@ -3624,11 +3700,7 @@ where
             viewport_details: load_info.viewport_details,
         });
         for change in superseded_pending_changes {
-            self.close_pipeline(
-                change.new_pipeline_id,
-                DiscardBrowsingContext::No,
-                ExitPipelineMode::Normal,
-            );
+            self.close_pipeline(change.new_pipeline_id, DiscardBrowsingContext::No);
         }
     }
 
@@ -4376,11 +4448,7 @@ where
             return;
         }
 
-        self.close_pipeline(
-            new_pipeline_id,
-            DiscardBrowsingContext::No,
-            ExitPipelineMode::Normal,
-        );
+        self.close_pipeline(new_pipeline_id, DiscardBrowsingContext::No);
 
         if let Some(webview) = self.webviews.get_mut(&webview_id) {
             webview.send_screenshot_readiness_requests_to_pipelines(
@@ -5299,7 +5367,7 @@ where
             .all_descendant_browsing_contexts_iter(browsing_context_id)
             .flat_map(|browsing_context| browsing_context.pipelines.iter().cloned())
             .collect();
-        self.close_browsing_context(webview_id, browsing_context_id, ExitPipelineMode::Normal);
+        self.close_browsing_context(webview_id, browsing_context_id);
         result
     }
 
@@ -5666,11 +5734,7 @@ where
 
                 if let Some(pipelines_to_close) = pipelines_to_close {
                     for pipeline_id in pipelines_to_close {
-                        self.close_pipeline(
-                            pipeline_id,
-                            DiscardBrowsingContext::No,
-                            ExitPipelineMode::Normal,
-                        );
+                        self.close_pipeline(pipeline_id, DiscardBrowsingContext::No);
                     }
                 }
             },
@@ -5778,11 +5842,7 @@ where
             };
 
             dead_pipelines.push((evicted_id, NeedsToReload::Yes(evicted_id, load_data)));
-            self.close_pipeline(
-                evicted_id,
-                DiscardBrowsingContext::No,
-                ExitPipelineMode::Normal,
-            );
+            self.close_pipeline(evicted_id, DiscardBrowsingContext::No);
         }
 
         if let Some(webview) = self.webviews.get_mut(&webview_id) {
@@ -6030,7 +6090,6 @@ where
         &mut self,
         webview_id: WebViewId,
         browsing_context_id: BrowsingContextId,
-        exit_mode: ExitPipelineMode,
     ) -> Option<BrowsingContext> {
         debug!("{}: Closing", browsing_context_id);
 
@@ -6038,7 +6097,6 @@ where
             webview_id,
             browsing_context_id,
             DiscardBrowsingContext::Yes,
-            exit_mode,
         );
 
         let Some(webview) = self.webviews.get_mut(&webview_id) else {
@@ -6085,7 +6143,6 @@ where
         webview_id: WebViewId,
         browsing_context_id: BrowsingContextId,
         dbc: DiscardBrowsingContext,
-        exit_mode: ExitPipelineMode,
     ) {
         debug!("{}: Closing browsing context children", browsing_context_id);
 
@@ -6112,7 +6169,7 @@ where
         }
 
         for pipeline_id in pipelines_to_close {
-            self.close_pipeline(pipeline_id, dbc, exit_mode);
+            self.close_pipeline(pipeline_id, dbc);
         }
 
         debug!("{}: Closed browsing context children", browsing_context_id);
@@ -6145,11 +6202,7 @@ where
                 return warn!("{pipeline_id}: Discarding after closure of {webview_id}",);
             },
         };
-        self.close_pipeline(
-            pipeline_id,
-            DiscardBrowsingContext::No,
-            ExitPipelineMode::Normal,
-        );
+        self.close_pipeline(pipeline_id, DiscardBrowsingContext::No);
     }
 
     /// Send a message to script requesting the document associated with this pipeline runs the 'unload' algorithm.
@@ -6165,12 +6218,7 @@ where
 
     // Close all pipelines at and beneath a given browsing context
     #[servo_tracing::instrument(skip_all)]
-    fn close_pipeline(
-        &mut self,
-        pipeline_id: PipelineId,
-        dbc: DiscardBrowsingContext,
-        exit_mode: ExitPipelineMode,
-    ) {
+    fn close_pipeline(&mut self, pipeline_id: PipelineId, dbc: DiscardBrowsingContext) {
         debug!("{}: Closing", pipeline_id);
 
         // Sever connection to browsing context
@@ -6202,7 +6250,7 @@ where
 
         // Remove any child browsing contexts
         for child_browsing_context in &browsing_contexts_to_close {
-            self.close_browsing_context(webview_id, *child_browsing_context, exit_mode);
+            self.close_browsing_context(webview_id, *child_browsing_context);
         }
 
         // Note, we don't remove the pipeline now, we wait for the message to come back from

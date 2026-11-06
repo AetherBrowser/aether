@@ -155,7 +155,7 @@ use crate::dom::css::cssstyledeclaration::{
 use crate::dom::customelementregistry::CustomElementRegistry;
 use crate::dom::document::focus::FocusableArea;
 use crate::dom::document::{
-    AbortReason, AnimationFrameCallback, Document, SameOriginDescendantNavigablesIterator,
+    AbortReason, AnimationFrameCallback, Document, LocalDescendantNavigablesIterator,
 };
 use crate::dom::element::Element;
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
@@ -1096,6 +1096,44 @@ impl Window {
     pub(crate) fn with_timers<T>(&self, f: impl FnOnce(&OneshotTimers) -> T) -> T {
         let document = self.Document();
         f(document.timers())
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#process-close-watchers>
+    pub(crate) fn process_close_watchers(&self, cx: &mut JSContext) -> bool {
+        // Step 1. Let processedACloseWatcher be false.
+        let mut processed_a_close_watcher = false;
+
+        // Step 2. If window's close watcher manager's groups is not empty:
+        // Step 2.1. Let group be the last item in window's close watcher manager's groups.
+        //
+        // We need to clone the group as request_to_close can modify the groups.
+        let close_watcher_manager = self.close_watcher_manager();
+        let group = close_watcher_manager.groups().last().cloned();
+        if let Some(group) = group {
+            // Step 2.2. For each closeWatcher of group, in reverse order:
+            for close_watcher in group.iter().rev() {
+                // Step 2.2.1. If the result of running closeWatcher's get enabled state is true, set processedACloseWatcher to true.
+                if close_watcher.get_enabled_state() {
+                    processed_a_close_watcher = true;
+                }
+
+                // Step 2.2.2. Let shouldProceed be the result of requesting to close closeWatcher with true.
+                let should_proceed = close_watcher.request_to_close(cx, true);
+
+                // Step 2.2.3. If shouldProceed is false, then break.
+                if !should_proceed {
+                    break;
+                }
+            }
+        }
+
+        // Step 3. If window's close watcher manager's allowed number of groups is greater than 1, decrement it by 1.
+        if close_watcher_manager.allowed_number_of_groups() > 1 {
+            close_watcher_manager.decrement_allowed_number_of_groups();
+        }
+
+        // Step 4. Return processedACloseWatcher.
+        processed_a_close_watcher
     }
 }
 
@@ -3392,15 +3430,20 @@ impl Window {
 
     pub(crate) fn elements_from_point_query(
         &self,
+        cx: &mut JSContext,
         flags: HitTestFlags,
         point: LayoutPoint,
     ) -> layout_api::HitTestResult {
-        self.layout_reflow_deprecated(QueryMsg::ElementsFromPoint);
+        self.layout_reflow(cx, QueryMsg::ElementsFromPoint);
         self.layout().hit_test(flags, point)
     }
 
-    pub(crate) fn query_effective_overflow(&self, node: &Node) -> Option<AxesOverflow> {
-        self.layout_reflow_deprecated(QueryMsg::EffectiveOverflow);
+    pub(crate) fn query_effective_overflow(
+        &self,
+        cx: &mut JSContext,
+        node: &Node,
+    ) -> Option<AxesOverflow> {
+        self.layout_reflow(cx, QueryMsg::EffectiveOverflow);
         self.query_effective_overflow_without_reflow(node)
     }
 
@@ -3433,7 +3476,7 @@ impl Window {
         flags: HitTestFlags,
         point_in_frame: Point2D<f32, CSSPixel>,
     ) -> Option<HitTestResult> {
-        let result = self.elements_from_point_query(flags, point_in_frame.cast_unit());
+        let result = self.elements_from_point_query(cx, flags, point_in_frame.cast_unit());
         let item = result.items.into_iter().next()?;
 
         let point_relative_to_initial_containing_block =
@@ -4082,7 +4125,7 @@ impl Window {
         top_level_document
             .window()
             .consume_last_activation_timestamp();
-        for document in SameOriginDescendantNavigablesIterator::new(&top_level_document) {
+        for document in LocalDescendantNavigablesIterator::new(&top_level_document) {
             document.window().consume_last_activation_timestamp();
         }
     }
@@ -4111,7 +4154,7 @@ impl Window {
             .set_last_history_action_activation_timestamp(
                 top_level_document.window().last_activation_timestamp.get(),
             );
-        for document in SameOriginDescendantNavigablesIterator::new(&top_level_document) {
+        for document in LocalDescendantNavigablesIterator::new(&top_level_document) {
             document
                 .window()
                 .set_last_history_action_activation_timestamp(
