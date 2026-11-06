@@ -661,10 +661,7 @@ impl App {
             KeyState::Down,
             Key::Named(NamedKey::Process),
         )));
-        webview.notify_input_event(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
-            state: CompositionState::End,
-            data: text,
-        })));
+        webview.notify_input_event(InputEvent::Ime(ImeEvent::Commit(text)));
         webview.notify_input_event(InputEvent::Keyboard(KeyboardEvent::from_state_and_key(
             KeyState::Up,
             Key::Named(NamedKey::Process),

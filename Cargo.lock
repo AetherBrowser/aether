@@ -195,6 +195,7 @@ dependencies = [
  "encoding_rs",
  "env_filter",
  "euclid",
+ "flate2",
  "futures",
  "gilrs",
  "glow",
