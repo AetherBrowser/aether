@@ -4,13 +4,16 @@
 
 use std::cell::{Cell, OnceCell};
 use std::ops::{Deref, Range};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use log::warn;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_media::MediaInstanceError;
-use servo_media_player::{Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg};
+use servo_media_player::{
+    PlaybackState, Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg,
+};
 use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
@@ -56,6 +59,11 @@ pub struct MpvPlayer {
     muted: Cell<bool>,
     /// The requested HTML volume, applied to libmpv once its instance exists.
     volume: Cell<f64>,
+    /// The requested playback rate, applied to libmpv once its instance exists.
+    playback_rate: Cell<f64>,
+    /// Whether libmpv is paused only because the playback rate is 0, while the media
+    /// element plays. Shared with the event thread, which hides that pause from Servo.
+    paused_for_zero_rate: Arc<AtomicBool>,
 }
 
 impl MpvPlayer {
@@ -84,6 +92,8 @@ impl MpvPlayer {
             resume_after_suspend: Cell::new(false),
             muted: Cell::new(DEFAULT_MUTED),
             volume: Cell::new(DEFAULT_VOLUME),
+            playback_rate: Cell::new(DEFAULT_PLAYBACK_RATE),
+            paused_for_zero_rate: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -103,14 +113,35 @@ impl MpvPlayer {
                 .set_double("volume", html_to_mpv_volume(self.volume.get()))
                 .map_err(backend_error)?;
         }
+        // A rate of 0 needs no speed: libmpv starts paused, and `play` keeps it paused.
+        if self.playback_rate.get() != DEFAULT_PLAYBACK_RATE && self.playback_rate.get() > 0.0 {
+            handle
+                .set_double("speed", playback_rate_to_mpv_speed(self.playback_rate.get()))
+                .map_err(backend_error)?;
+        }
         handle
             .add_stream_protocol(self.bridge.clone())
             .map_err(backend_error)?;
-        let events = EventThread::spawn(&handle, self.sender.clone()).map_err(backend_error)?;
+        let events = EventThread::spawn(
+            &handle,
+            self.sender.clone(),
+            self.paused_for_zero_rate.clone(),
+        )
+        .map_err(backend_error)?;
         Ok(self.handle.get_or_init(|| Instance {
             _events: events,
             handle,
         }))
+    }
+
+    /// Ends the pause of a zero playback rate, when the media element pauses. libmpv is
+    /// already paused, so it reports no change: tell Servo.
+    fn end_zero_rate_pause(&self) {
+        if self.paused_for_zero_rate.swap(false, Ordering::AcqRel) {
+            let _ = self
+                .sender
+                .send(PlayerEvent::StateChanged(PlaybackState::Paused));
+        }
     }
 }
 
@@ -220,6 +251,11 @@ fn mpv_to_html_volume(volume: f64) -> f64 {
     (volume / 100.0).powi(3)
 }
 
+/// Servo accepts playback rates up to 64, while mpv's `speed` goes from 0.01 to 100.
+fn playback_rate_to_mpv_speed(playback_rate: f64) -> f64 {
+    playback_rate.clamp(0.01, 100.0)
+}
+
 fn backend_error(error: MpvError) -> PlayerError {
     PlayerError::Backend(format!("MPV backend: {error}"))
 }
@@ -230,9 +266,18 @@ fn not_implemented(operation: &str) -> PlayerError {
 
 impl Player for MpvPlayer {
     fn play(&self) -> Result<(), PlayerError> {
-        self.handle()?
-            .set_flag("pause", false)
-            .map_err(backend_error)?;
+        let handle = self.handle()?;
+        if self.playback_rate.get() == 0.0 {
+            // The media element plays, but its position does not advance: libmpv stays
+            // paused, so it reports no change.
+            if !self.paused_for_zero_rate.swap(true, Ordering::AcqRel) {
+                let _ = self
+                    .sender
+                    .send(PlayerEvent::StateChanged(PlaybackState::Playing));
+            }
+        } else {
+            handle.set_flag("pause", false).map_err(backend_error)?;
+        }
         self.resume_after_suspend.set(false);
         Ok(())
     }
@@ -241,6 +286,7 @@ impl Player for MpvPlayer {
         self.handle()?
             .set_flag("pause", true)
             .map_err(backend_error)?;
+        self.end_zero_rate_pause();
         self.resume_after_suspend.set(false);
         Ok(())
     }
@@ -250,6 +296,9 @@ impl Player for MpvPlayer {
         let Some(handle) = self.handle.get() else {
             return DEFAULT_PAUSED;
         };
+        if self.paused_for_zero_rate.load(Ordering::Acquire) {
+            return false;
+        }
         handle.get_flag("pause").unwrap_or_else(|error| {
             warn!("MPV backend: cannot read the pause state: {error}");
             DEFAULT_PAUSED
@@ -266,6 +315,7 @@ impl Player for MpvPlayer {
             return Ok(());
         };
         handle.set_flag("pause", true).map_err(backend_error)?;
+        self.end_zero_rate_pause();
         self.resume_after_suspend.set(false);
         // Seeking needs a loaded file. When mpv is idle, pausing is all there is to do.
         if !handle.get_flag("idle-active").map_err(backend_error)? {
@@ -352,12 +402,39 @@ impl Player for MpvPlayer {
         Ok(())
     }
 
-    fn set_playback_rate(&self, _playback_rate: f64) -> Result<(), PlayerError> {
-        Err(not_implemented("set_playback_rate"))
+    fn set_playback_rate(&self, playback_rate: f64) -> Result<(), PlayerError> {
+        // mpv can play backwards (`play-direction=backward`), but it needs the whole media
+        // in its cache, which the bridge does not guarantee.
+        if playback_rate < 0.0 {
+            return Err(PlayerError::Backend(
+                "MPV backend: negative playback rates are not supported".to_owned(),
+            ));
+        }
+        if let Some(handle) = self.handle.get() {
+            if playback_rate > 0.0 {
+                handle
+                    .set_double("speed", playback_rate_to_mpv_speed(playback_rate))
+                    .map_err(backend_error)?;
+            }
+            // At a rate of 0, the media element still plays but does not advance: pause
+            // libmpv without Servo seeing it, and resume once the rate goes back up.
+            if playback_rate == 0.0 {
+                if !handle.get_flag("pause").map_err(backend_error)? {
+                    self.paused_for_zero_rate.store(true, Ordering::Release);
+                    handle.set_flag("pause", true).map_err(backend_error)?;
+                }
+            } else if self.paused_for_zero_rate.load(Ordering::Acquire) {
+                handle.set_flag("pause", false).map_err(backend_error)?;
+                self.paused_for_zero_rate.store(false, Ordering::Release);
+            }
+        }
+        self.playback_rate.set(playback_rate);
+        Ok(())
     }
 
     fn playback_rate(&self) -> f64 {
-        DEFAULT_PLAYBACK_RATE
+        // Not mpv's `speed`, which cannot be 0.
+        self.playback_rate.get()
     }
 
     fn push_data(&self, data: Vec<u8>) -> Result<(), PlayerError> {
@@ -965,6 +1042,123 @@ mod tests {
         player.set_volume(0.0).unwrap();
         assert_eq!(handle.get_node("volume"), Ok(Node::Double(0.0)));
         assert_eq!(player.volume(), 0.0);
+    }
+
+    #[test]
+    fn playback_rates_are_clamped_to_mpv_speeds() {
+        assert_eq!(playback_rate_to_mpv_speed(0.5), 0.5);
+        assert_eq!(playback_rate_to_mpv_speed(64.0), 64.0);
+        assert_eq!(playback_rate_to_mpv_speed(0.001), 0.01);
+    }
+
+    #[test]
+    fn playback_rate_change_does_not_start_libmpv() {
+        let player = player();
+        player.set_playback_rate(0.5).unwrap();
+        assert!(player.handle.get().is_none());
+        assert_eq!(player.playback_rate(), 0.5);
+    }
+
+    #[test]
+    fn playback_rate_requested_before_start_is_applied_to_libmpv() {
+        let player = player();
+        player.set_playback_rate(0.5).unwrap();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("speed"), Ok(Node::Double(0.5)));
+    }
+
+    #[test]
+    fn set_playback_rate_drives_the_libmpv_speed_property() {
+        let player = player();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+
+        player.set_playback_rate(2.0).unwrap();
+        assert_eq!(handle.get_node("speed"), Ok(Node::Double(2.0)));
+        assert_eq!(player.playback_rate(), 2.0);
+
+        player.set_playback_rate(0.5).unwrap();
+        assert_eq!(handle.get_node("speed"), Ok(Node::Double(0.5)));
+        assert_eq!(player.playback_rate(), 0.5);
+    }
+
+    #[test]
+    fn a_zero_playback_rate_pauses_libmpv_but_not_the_media() {
+        let player = player();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+
+        player.set_playback_rate(0.0).unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+        assert!(!player.paused());
+        assert_eq!(player.playback_rate(), 0.0);
+
+        player.set_playback_rate(1.0).unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+        assert!(!player.paused());
+    }
+
+    #[test]
+    fn a_paused_media_stays_paused_when_its_playback_rate_goes_back_up() {
+        let player = player();
+        player.play().unwrap();
+        player.set_playback_rate(0.0).unwrap();
+        player.pause().unwrap();
+        assert!(player.paused());
+
+        player.set_playback_rate(1.0).unwrap();
+        assert!(player.paused());
+    }
+
+    #[test]
+    fn playing_at_a_zero_playback_rate_keeps_libmpv_paused() {
+        let player = player();
+        player.set_playback_rate(0.0).unwrap();
+        player.play().unwrap();
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(true)));
+        assert!(!player.paused());
+
+        player.set_playback_rate(1.0).unwrap();
+        assert_eq!(handle.get_node("pause"), Ok(Node::Flag(false)));
+    }
+
+    #[test]
+    fn a_zero_playback_rate_is_not_reported_as_a_pause() {
+        let (player, events) = player_with_events();
+        load_test_file(&player);
+        player.play().unwrap();
+        expect_event(&events, "the playing state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Playing))
+        });
+
+        player.set_playback_rate(0.0).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while let Ok(event) =
+            events.try_recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            assert!(!matches!(event, PlayerEvent::StateChanged(_)));
+        }
+
+        // A pause of the media element is reported, although libmpv was already paused.
+        player.pause().unwrap();
+        expect_event(&events, "the paused state", |event| {
+            matches!(event, PlayerEvent::StateChanged(PlaybackState::Paused))
+        });
+    }
+
+    #[test]
+    fn negative_playback_rates_are_refused() {
+        let player = player();
+        player.play().unwrap();
+        assert!(matches!(
+            player.set_playback_rate(-1.0),
+            Err(PlayerError::Backend(_))
+        ));
+        assert_eq!(player.playback_rate(), 1.0);
+        let handle = player.handle.get().unwrap();
+        assert_eq!(handle.get_node("speed"), Ok(Node::Double(1.0)));
     }
 
     #[test]

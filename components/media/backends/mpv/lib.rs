@@ -356,7 +356,7 @@ mod tests {
             Err(PlayerError::Backend(_))
         ));
         assert!(matches!(
-            player.set_playback_rate(2.0),
+            player.set_video_track(0, true),
             Err(PlayerError::Backend(_))
         ));
         assert!(player.paused());
