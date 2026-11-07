@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>servo:processes</title>
+    <title>about:processes</title>
     <style>
       :root {
         --bg: #f6f7f8;
@@ -472,7 +472,7 @@
           return;
         }
         try {
-          const response = await fetch("servo:process-list");
+          const response = await fetch("about:process-list");
           if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
           }

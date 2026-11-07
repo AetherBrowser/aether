@@ -307,14 +307,11 @@ fn test_pipeline_id_to_accesskit_tree_id() {
 }
 
 impl From<WebRenderPipelineId> for PipelineId {
-    #[expect(unsafe_code)]
     fn from(pipeline: WebRenderPipelineId) -> Self {
         let WebRenderPipelineId(namespace_id, index) = pipeline;
-        unsafe {
-            PipelineId {
-                namespace_id: PipelineNamespaceId(namespace_id),
-                index: Index(NonZeroU32::new_unchecked(index), PhantomData),
-            }
+        PipelineId {
+            namespace_id: PipelineNamespaceId(namespace_id),
+            index: Index::new(index).expect("Pipeline index must be nonzero"),
         }
     }
 }
@@ -491,9 +488,19 @@ pub struct ScrollTreeNodeId {
 #[derive(MallocSizeOf)]
 pub struct AtomicOptionScrollTreeNodeId(AtomicUsize);
 
+impl Default for AtomicOptionScrollTreeNodeId {
+    fn default() -> Self {
+        Self::new(None)
+    }
+}
+
 impl AtomicOptionScrollTreeNodeId {
     pub fn new(option_id: Option<ScrollTreeNodeId>) -> Self {
         Self(AtomicUsize::new(Self::from_option(option_id)))
+    }
+
+    pub fn clear(&self) {
+        self.set(None)
     }
 
     pub fn set(&self, option_id: Option<ScrollTreeNodeId>) {

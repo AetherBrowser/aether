@@ -121,7 +121,9 @@ use unicode_bidi::{BidiInfo, Level};
 
 use super::float::{Clear, PlacementAmongFloats};
 use super::{IndependentFloatOrAtomicLayoutResult, IndependentFormattingContextLayoutResult};
+use crate::SharedStyle;
 use crate::cell::{ArcRefCell, WeakRefCell};
+use crate::containing_block::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock};
 use crate::context::LayoutContext;
 use crate::dom::WeakLayoutBox;
 use crate::dom_traversal::NodeAndStyleInfo;
@@ -133,6 +135,7 @@ use crate::flow::inline::text_run::{
 use crate::flow::{
     BlockLevelBox, CollapsibleWithParentStartMargin, FloatSide, PlacementState,
     compute_inline_content_sizes_for_block_level_boxes, layout_block_level_child,
+    skippable_for_block_percentage_quirk,
 };
 use crate::formatting_contexts::{Baselines, IndependentFormattingContext};
 use crate::fragment_tree::{CollapsedMargin, Fragment, FragmentFlags, PositioningFragment};
@@ -141,7 +144,6 @@ use crate::layout_box_base::LayoutBoxBase;
 use crate::positioned::{AbsolutelyPositionedBox, PositioningContext};
 use crate::sizing::{ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult};
 use crate::style_ext::{ComputedValuesExt, PaddingBorderMargin};
-use crate::{ConstraintSpace, ContainingBlock, IndefiniteContainingBlock, SharedStyle};
 
 // From gfxFontConstants.h in Firefox.
 static FONT_SUBSCRIPT_OFFSET_RATIO: f32 = 0.20;
@@ -1403,7 +1405,7 @@ impl InlineFormattingContextLayout<'_> {
                 block: effective_block_advance.resolve(),
             },
         }
-        .as_physical(Some(containing_block));
+        .as_physical(containing_block);
         self.fragments
             .push(Fragment::Positioning(PositioningFragment::new_anonymous(
                 self.root_nesting_level.style.clone(),
@@ -3377,7 +3379,7 @@ impl<'layout_data> ContentSizesComputation<'layout_data> {
             &self.constraint_space.into(),
             &LogicalVec2::zero(),
             false, /* auto_block_size_stretches_to_containing_block */
-            false, /* skippable_for_block_percentage_quirk */
+            skippable_for_block_percentage_quirk(self.layout_context, &context.base, Some(context)),
         );
         self.depends_on_block_constraints |= result.depends_on_block_constraints;
         result.sizes

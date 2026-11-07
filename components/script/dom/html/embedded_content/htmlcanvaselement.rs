@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use dom_struct::dom_struct;
@@ -54,8 +54,6 @@ use crate::dom::canvasrenderingcontext2d::CanvasRenderingContext2D;
 use crate::dom::document::Document;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
-#[cfg(not(feature = "webgpu"))]
-use crate::dom::gpucanvascontext::GPUCanvasContext;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::imagebitmaprenderingcontext::ImageBitmapRenderingContext;
 use crate::dom::mediastream::MediaStream;
@@ -86,7 +84,7 @@ pub(crate) struct HTMLCanvasElement {
     callback_id: Cell<u32>,
 
     /// This hashmap along with [`Self::callback_id`] are used to keep track of ongoing toBlob() calls.
-    blob_callbacks: RefCell<FxHashMap<u32, TracedCallback<BlobCallback>>>,
+    blob_callbacks: DomRefCell<FxHashMap<u32, TracedCallback<BlobCallback>>>,
 
     /// The [`ImageKey`] used to render this [`HTMLCanvasElement`] to the WebRender scene, if it
     /// has a `RenderingContext`, otherwise `None`. Note that this key is owned by the `RenderingContext`
@@ -105,7 +103,7 @@ impl HTMLCanvasElement {
             htmlelement: HTMLElement::new_inherited(local_name, prefix, document),
             context_mode: DomRefCell::new(None),
             callback_id: Cell::new(0),
-            blob_callbacks: RefCell::new(FxHashMap::default()),
+            blob_callbacks: DomRefCell::new(FxHashMap::default()),
             image_key: Default::default(),
         }
     }
@@ -200,7 +198,7 @@ impl HTMLCanvasElement {
         self.upcast::<Node>()
             .dirty(no_gc, NodeDamage::ContentOrHeritage);
         self.context_mode
-            .borrow_mut()
+            .safe_borrow_mut(no_gc)
             .replace(make_rendering_context());
 
         let Some(rendering_context) = &*self.context_mode.borrow() else {
@@ -340,11 +338,6 @@ impl HTMLCanvasElement {
             RenderingContext::WebGL2(Dom::from_ref(&*context))
         });
         Some(context)
-    }
-
-    #[cfg(not(feature = "webgpu"))]
-    fn get_or_init_webgpu_context(&self) -> Option<DomRoot<GPUCanvasContext>> {
-        None
     }
 
     #[cfg(feature = "webgpu")]
@@ -625,7 +618,7 @@ impl HTMLCanvasElementMethods<crate::DomTypeHolder> for HTMLCanvasElement {
             .canvas_blob_task_source()
             .queue(task!(to_blob: move |cx| {
                 let this = this.root();
-                let Some(callback) = &this.blob_callbacks.borrow_mut().remove(&callback_id) else {
+                let Some(callback) = &this.blob_callbacks.safe_borrow_mut(cx.no_gc()).remove(&callback_id) else {
                     return error!("Expected blob callback, but found none!");
                 };
 

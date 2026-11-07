@@ -282,7 +282,7 @@
       }
 
       async function send(query) {
-        const url = query ? `servo:history-data?${query}` : "servo:history-data";
+        const url = query ? `about:history-data?${query}` : "about:history-data";
         try {
           const response = await fetch(url);
           const data = await response.json();

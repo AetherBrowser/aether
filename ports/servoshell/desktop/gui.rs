@@ -464,7 +464,7 @@ impl Gui {
                                         warn!("Do not support stop yet.");
                                     }
                                 },
-                                LoadStatus::Complete => {
+                                LoadStatus::Complete | LoadStatus::Stopped => {
                                     let reload_button = ui.add(Gui::toolbar_button("↻"));
                                     reload_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -592,7 +592,7 @@ impl Gui {
                                         info
                                     });
                                     if new_window_button.clicked() {
-                                        let url = Url::parse("servo:newtab").expect("Should be able to unconditionally parse 'servo:newtab' as URL");
+                                        let url = Url::parse("about:newtab").expect("Should be able to unconditionally parse 'about:newtab' as URL");
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::NewWindow(TopLevelWebViewCreationRequest::WithUrl(url)),
                                         );
@@ -653,7 +653,7 @@ impl Gui {
                     ctx.clone(),
                     LayerId::new(Order::Tooltip, Id::new("tooltip")),
                     "tooltip layer".into(),
-                    pos2(0.0, available_rect.max.y),
+                    pos2(available_rect.max.x, available_rect.max.y),
                 )
                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
             }
@@ -812,9 +812,9 @@ fn embedder_image_to_egui_image(image: &Image) -> egui::ColorImage {
         PixelFormat::K8 => egui::ColorImage::from_gray([width, height], image.data()),
         PixelFormat::KA8 => {
             // Convert to rgba
-            let data: Vec<u8> = image
-                .data()
-                .chunks_exact(2)
+            let (chunks, _) = image.data().as_chunks::<2>();
+            let data: Vec<u8> = chunks
+                .iter()
                 .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
                 .collect();
             egui::ColorImage::from_rgba_unmultiplied([width, height], &data)
@@ -825,9 +825,9 @@ fn embedder_image_to_egui_image(image: &Image) -> egui::ColorImage {
         },
         PixelFormat::BGRA8 => {
             // Convert from BGRA to RGBA
-            let data: Vec<u8> = image
-                .data()
-                .chunks_exact(4)
+            let (chunks, _) = image.data().as_chunks::<4>();
+            let data: Vec<u8> = chunks
+                .iter()
                 .flat_map(|chunk| [chunk[2], chunk[1], chunk[0], chunk[3]])
                 .collect();
             egui::ColorImage::from_rgba_unmultiplied([width, height], &data)

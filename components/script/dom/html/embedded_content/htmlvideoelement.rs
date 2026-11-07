@@ -22,8 +22,7 @@ use net_traits::image_cache::{
 };
 use net_traits::request::{CredentialsMode, Destination, RequestBuilder, RequestId};
 use net_traits::{
-    CoreResourceThread, FetchMetadata, FetchResponseMsg, Metadata, NetworkError,
-    ResourceFetchTiming,
+    CoreResourceThread, FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming,
 };
 use pixels::{Snapshot, SnapshotAlphaMode, SnapshotPixelFormat};
 use script_bindings::cell::DomRefCell;
@@ -326,7 +325,7 @@ impl HTMLVideoElement {
         let blocker = &self.load_blocker;
         LoadBlocker::terminate(cx, blocker);
         let document = self.owner_document();
-        *blocker.borrow_mut() = Some(LoadBlocker::new(
+        *blocker.safe_borrow_mut(cx.no_gc()) = Some(LoadBlocker::new(
             &document,
             LoadType::Image(poster_url.url()),
         ));
@@ -501,18 +500,18 @@ impl FetchResponseListener for PosterFrameFetchContext {
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
+        // A network error is already handled in `notify_pending_response`,
+        // so no need to start the abort procedure.
+        let status_is_bad = metadata
+            .as_ref()
+            .is_ok_and(|fetch_metadata| !fetch_metadata.metadata().status.in_range(200..300));
+
         self.image_cache.notify_pending_response(
             self.id,
-            FetchResponseMsg::ProcessResponse(request_id, metadata.clone()),
+            FetchResponseMsg::ProcessResponse(request_id, metadata),
         );
 
-        let metadata: Option<Metadata> = metadata.ok().map(Into::into);
-
-        let status_is_ok = metadata
-            .as_ref()
-            .is_none_or(|m| m.status.in_range(200..300));
-
-        if !status_is_ok {
+        if status_is_bad {
             self.cancelled = true;
             self.fetch_controller.abort();
         }

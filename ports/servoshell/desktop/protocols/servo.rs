@@ -4,11 +4,11 @@
 
 //! Loads resources using a mapping from well-known shortcuts to resource: urls.
 //! Recognized shortcuts:
-//! - servo:default-user-agent
-//! - servo:experimental-preferences
-//! - servo:config
-//! - servo:newtab
-//! - servo:preferences
+//! - about:default-user-agent
+//! - about:experimental-preferences
+//! - about:config
+//! - about:newtab
+//! - about:preferences
 
 use std::future::Future;
 use std::pin::Pin;
@@ -29,10 +29,6 @@ pub struct ServoProtocolHandler {}
 impl ProtocolHandler for ServoProtocolHandler {
     fn privileged_paths(&self) -> &'static [&'static str] {
         &["config", "preferences"]
-    }
-
-    fn is_fetchable(&self) -> bool {
-        true
     }
 
     fn load(

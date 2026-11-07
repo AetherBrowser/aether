@@ -145,7 +145,9 @@ impl AudioBufferSourceNodeMethods<crate::DomTypeHolder> for AudioBufferSourceNod
         if new_buffer.is_some() {
             if self.buffer_set.get() {
                 // Step 2.
-                return Err(Error::InvalidState(None));
+                return Err(Error::InvalidState(Some(
+                    "Buffer has already been set".into(),
+                )));
             }
             // Step 3.
             self.buffer_set.set(true);
@@ -280,7 +282,7 @@ impl ConvertWithCx<AudioBufferSourceNodeOptions> for AudioBufferSourceOptions {
             buffer: self
                 .buffer
                 .as_ref()
-                .and_then(|b| b.as_ref()?.get_channels(cx).map(|buffer| (*buffer).clone())),
+                .and_then(|b| b.as_ref()?.get_channels(cx)),
             detune: *self.detune,
             loop_enabled: self.loop_,
             loop_end: Some(*self.loopEnd),

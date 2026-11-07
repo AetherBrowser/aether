@@ -22,6 +22,7 @@ use crate::dom::html::htmlmediaelement::HTMLMediaElement;
 use crate::dom::html::htmlpictureelement::HTMLPictureElement;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, Node, NodeDamage, UnbindContext};
+use crate::dom::{Element, MoveContext};
 
 #[dom_struct]
 pub(crate) struct HTMLSourceElement {
@@ -125,7 +126,10 @@ impl VirtualMethods for HTMLSourceElement {
                     let next_sibling_iterator = self.upcast::<Node>().following_siblings();
                     HTMLSourceElement::iterate_next_html_image_element_siblings(
                         next_sibling_iterator,
-                        |image| image.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other),
+                        |image| {
+                            image.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+                            image.upcast::<Element>().dirty_presentational_hints();
+                        },
                     );
                 }
             },
@@ -170,6 +174,35 @@ impl VirtualMethods for HTMLSourceElement {
                 next_sibling_iterator,
                 |cx, image| image.update_the_image_data(cx),
             );
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#html-element-moving-steps>
+    fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
+        if let Some(super_type) = self.super_type() {
+            super_type.moving_steps(cx, context);
+        }
+
+        // Step 1. If movedNode's parent is a media element that has no src attribute and whose networkState
+        // has the value NETWORK_EMPTY, then invoke that media element's resource selection
+        // algorithm.
+        if let Some(parent) = self
+            .upcast::<Node>()
+            .GetParentNode()
+            .and_then(DomRoot::downcast::<HTMLMediaElement>)
+        {
+            parent.handle_source_child_insertion(cx, self);
+        }
+
+        // Step 2. If isSubtreeRoot is true and oldAncestor is a picture element, then for each child of
+        // oldAncestor's children: if child is an img element, then count this as a relevant
+        // mutation for child.
+        if context.is_subtree_root && context.old_ancestor.is::<HTMLPictureElement>() {
+            for child in context.old_ancestor.child_elements() {
+                if let Some(image_child) = child.downcast::<HTMLImageElement>() {
+                    image_child.update_the_image_data(cx);
+                }
+            }
         }
     }
 

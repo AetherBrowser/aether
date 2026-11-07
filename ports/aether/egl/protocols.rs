@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! `servo:` and `resource:` pages used by the Android shell.
+//! `about:` and `resource:` pages used by the Android shell.
 //!
 //! The desktop shell serves these from the resources directory. Android has no
 //! such directory in the APK, so the new-tab page and the files it loads are
@@ -29,10 +29,6 @@ const LOGO_DARK: &[u8] =
 pub(crate) struct ServoProtocolHandler;
 
 impl ProtocolHandler for ServoProtocolHandler {
-    fn is_fetchable(&self) -> bool {
-        true
-    }
-
     fn load(
         &self,
         request: &mut Request,

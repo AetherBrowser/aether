@@ -209,7 +209,7 @@ class MachCommands(CommandBase):
             servo_bin_dir = os.path.dirname(built_binary)
             assert os.path.exists(servo_bin_dir)
 
-            if self.enable_media:
+            if self.media_stack == "gstreamer":
                 library_target_directory = path.join(path.dirname(built_binary), "lib/")
                 if not package_gstreamer_dylibs(built_binary, library_target_directory, self.target):
                     return 1

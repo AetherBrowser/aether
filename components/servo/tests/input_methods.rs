@@ -7,9 +7,10 @@ mod common;
 
 use std::rc::Rc;
 
+use embedder_traits::InputMethodType;
 use servo::{
-    CompositionEvent, CompositionState, ImeEvent, InputEvent, JSValue, Key, KeyState,
-    KeyboardEvent, WebView, WebViewBuilder,
+    CompositionEvent, CompositionState, EmbedderControl, ImeEvent, InputEvent, JSValue, Key,
+    KeyState, KeyboardEvent, WebView, WebViewBuilder,
 };
 use url::Url;
 
@@ -253,6 +254,47 @@ fn test_attempting_to_cancel_beforeinput_composition() {
             ),
             InputMethodEvent::Input("insertCompositionText".to_owned(), Some("abc".to_owned())),
             InputMethodEvent::CompositionEnd("abc".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn test_ime_multiline_for_textarea() {
+    let test = InputMethodTest::new(
+        "<!DOCTYPE html> \
+        <textarea id=my-text-area style=\"width: 200px; height: 200px;\">servo</textarea>",
+    );
+    test.focus("my-text-area");
+    test.servo_test
+        .spin(|| test.delegate.controls_shown.borrow().is_empty());
+
+    let controls = test.delegate.controls_shown.borrow();
+    let EmbedderControl::InputMethod(ime) = &controls[0] else {
+        panic!("Expected embedder control to be an InputMethod");
+    };
+    assert_eq!(ime.input_method_type(), InputMethodType::Text);
+    assert!(ime.multiline());
+}
+
+#[test]
+fn test_commit_without_composition() {
+    let test = InputMethodTest::new(
+        "<!DOCTYPE html> \
+        <input id=\"my-input\" />",
+    );
+    test.install_event_listeners("my-input");
+    test.focus("my-input");
+    test.send_input_event(InputEvent::Ime(ImeEvent::Commit("hello".to_owned())));
+    assert_eq!(test.get_text_control_value("my-input"), "hello");
+    test.send_input_event(InputEvent::Ime(ImeEvent::Commit("世界".to_owned())));
+    assert_eq!(test.get_text_control_value("my-input"), "hello世界");
+    assert_eq!(
+        test.drain_received_events().as_slice(),
+        &[
+            InputMethodEvent::BeforeInput("insertText".to_owned(), Some("hello".to_owned())),
+            InputMethodEvent::Input("insertText".to_owned(), Some("hello".to_owned())),
+            InputMethodEvent::BeforeInput("insertText".to_owned(), Some("世界".to_owned())),
+            InputMethodEvent::Input("insertText".to_owned(), Some("世界".to_owned())),
         ]
     );
 }

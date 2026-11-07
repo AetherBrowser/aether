@@ -32,8 +32,10 @@ use file::FileProtocolHander;
 
 type FutureResponse<'a> = Pin<Box<dyn Future<Output = Response> + Send + 'a>>;
 
-// The set of schemes that can't be registered.
-static FORBIDDEN_SCHEMES: [&str; 4] = ["http", "https", "chrome", "about"];
+// Schemes an embedder cannot replace. `about:blank` and `about:memory` are
+// handled in scheme fetch before any registered handler, so `about` itself
+// can be registered for pages such as `about:newtab`.
+static FORBIDDEN_SCHEMES: [&str; 3] = ["http", "https", "chrome"];
 
 pub trait ProtocolHandler: Send + Sync {
     /// A list of schema-less URLs that can be resolved against this handler's

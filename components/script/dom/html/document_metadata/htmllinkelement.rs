@@ -14,7 +14,7 @@ use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use net_traits::image_cache::{
     Image, ImageCache, ImageCacheResponseCallback, ImageCacheResult, ImageLoadListener,
-    ImageOrMetadataAvailable, ImageResponse, PendingImageId,
+    ImageOrMetadataAvailable, ImageResponse, PendingImageId, RasterizationResult,
 };
 use net_traits::request::{Destination, Initiator, ParserMetadata, RequestBuilder, RequestId};
 use net_traits::{
@@ -174,7 +174,7 @@ impl HTMLLinkElement {
 
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     fn remove_stylesheet(&self, no_gc: &NoGC) {
-        if let Some(stylesheet) = self.stylesheet.borrow_mut().take() {
+        if let Some(stylesheet) = self.stylesheet.safe_borrow_mut(no_gc).take() {
             let owner = self.stylesheet_list_owner();
             owner.remove_stylesheet(
                 StylesheetSource::Element(Dom::from_ref(self.upcast())),
@@ -190,7 +190,11 @@ impl HTMLLinkElement {
     #[cfg_attr(crown, expect(crown::unrooted_must_root))]
     pub(crate) fn set_stylesheet(&self, no_gc: &NoGC, new_stylesheet: Arc<Stylesheet>) {
         let owner = self.stylesheet_list_owner();
-        if let Some(old_stylesheet) = self.stylesheet.borrow_mut().replace(new_stylesheet.clone()) {
+        if let Some(old_stylesheet) = self
+            .stylesheet
+            .safe_borrow_mut(no_gc)
+            .replace(new_stylesheet.clone())
+        {
             owner.remove_stylesheet(
                 StylesheetSource::Element(Dom::from_ref(self.upcast())),
                 &old_stylesheet,
@@ -348,7 +352,7 @@ impl VirtualMethods for HTMLLinkElement {
             },
             local_name!("imagesrcset") => {
                 self.source_set
-                    .borrow_mut()
+                    .safe_borrow_mut(cx.no_gc())
                     .update_source_set(cx.no_gc(), self.upcast::<Element>());
             },
             local_name!("imagesizes") => {
@@ -357,7 +361,7 @@ impl VirtualMethods for HTMLLinkElement {
                     .has_attribute(&local_name!("imagesrcset"))
                 {
                     self.source_set
-                        .borrow_mut()
+                        .safe_borrow_mut(cx.no_gc())
                         .update_source_set(cx.no_gc(), self.upcast::<Element>());
                 }
             },
@@ -427,7 +431,7 @@ impl VirtualMethods for HTMLLinkElement {
                         _ => {},
                     };
                 } else if self.relations.get().contains(LinkRelations::STYLESHEET) &&
-                    let Some(ref stylesheet) = *self.stylesheet.borrow_mut()
+                    let Some(ref stylesheet) = *self.stylesheet.safe_borrow_mut(cx.no_gc())
                 {
                     let document = self.owner_document();
                     let shared_lock = document.style_shared_author_lock().clone();
@@ -548,7 +552,6 @@ impl HTMLLinkElement {
             policy_container: document.policy_container().clone(),
             source_set: Some(self.source_set.borrow().clone()),
             origin: document.borrow().origin().immutable().to_owned(),
-            base_url: document.borrow().base_url(),
             request_client: global.request_client(None),
             referrer: global.get_referrer(),
         };
@@ -587,9 +590,12 @@ impl HTMLLinkElement {
         let options = self.processing_options();
 
         // Step 2. Let request be the result of creating a link request given options.
-        let Some(request) =
-            options.create_link_request(self.owner_window().webview_id(), &self.owner_global())
-        else {
+        let document = self.upcast::<Node>().owner_doc();
+        let Some(request) = options.create_link_request(
+            self.owner_window().webview_id(),
+            &self.owner_global(),
+            &document,
+        ) else {
             // Step 3. If request is null, then return.
             return None;
         };
@@ -663,9 +669,12 @@ impl HTMLLinkElement {
         options.destination = Destination::None;
 
         // Step 4. Let request be the result of creating a link request given options.
-        let Some(request) =
-            options.create_link_request(self.owner_window().webview_id(), &self.owner_global())
-        else {
+        let document = self.upcast::<Node>().owner_doc();
+        let Some(request) = options.create_link_request(
+            self.owner_window().webview_id(),
+            &self.owner_global(),
+            &document,
+        ) else {
             // Step 5. If request is null, then return.
             return;
         };
@@ -677,7 +686,6 @@ impl HTMLLinkElement {
         // (Step 7, firing load/error events is handled in the FetchResponseListener impl for LinkFetchContext)
 
         // Step 8. The user agent should fetch request, with processResponseConsumeBody set to processPrefetchResponse.
-        let document = self.upcast::<Node>().owner_doc();
         let fetch_context = LinkFetchContext {
             url,
             link: Some(Trusted::new(self)),
@@ -715,7 +723,7 @@ impl HTMLLinkElement {
         }
 
         // Step 2.
-        let link_url = match document.base_url().join(&href.str()) {
+        let link_url = match document.encoding_parse_a_url(&href.str()) {
             Ok(url) => url,
             Err(e) => {
                 debug!("Parsing url {} failed: {}", href, e);
@@ -779,7 +787,10 @@ impl HTMLLinkElement {
         if !window.is_top_level() {
             return;
         }
-        let Ok(href) = self.Href().parse() else {
+
+        // Use the document's encoding to parse the URL, as the favicon URL is not necessarily UTF-8.
+        let document = self.upcast::<Node>().owner_doc();
+        let Ok(href) = document.encoding_parse_a_url(&self.Href()) else {
             return;
         };
 
@@ -905,20 +916,23 @@ impl HTMLLinkElement {
                 let size = DeviceIntSize::new(250, 250);
 
                 let image_cache = window.image_cache();
-                if let Some(raster_image) =
-                    image_cache.rasterize_vector_image(vector_image.id, size, None)
-                {
-                    send_rasterized_favicon_to_embedder(&raster_image);
-                } else {
-                    // The rasterization callback will end up calling "process_favicon_response" again,
-                    // but this time with a raster image.
-                    let image_cache_sender = self.register_image_cache_callback(vector_image.id);
-                    image_cache.add_rasterization_complete_listener(
-                        window.pipeline_id(),
-                        vector_image.id,
-                        size,
-                        image_cache_sender,
-                    );
+                match image_cache.rasterize_vector_image(vector_image.id, size, None) {
+                    RasterizationResult::Image(raster_image) => {
+                        send_rasterized_favicon_to_embedder(&raster_image);
+                    },
+                    RasterizationResult::PendingRasterization => {
+                        // The rasterization callback will end up calling "process_favicon_response" again,
+                        // but this time with a raster image.
+                        let image_cache_sender =
+                            self.register_image_cache_callback(vector_image.id);
+                        image_cache.add_rasterization_complete_listener(
+                            window.pipeline_id(),
+                            vector_image.id,
+                            size,
+                            image_cache_sender,
+                        );
+                    },
+                    RasterizationResult::InvalidSvgParameters => {},
                 }
             },
         }
@@ -929,7 +943,7 @@ impl HTMLLinkElement {
     fn handle_preload_url(&self, no_gc: &NoGC) {
         // Step 1. Update the source set for el.
         self.source_set
-            .borrow_mut()
+            .safe_borrow_mut(no_gc)
             .update_source_set(no_gc, self.upcast::<Element>());
         // Step 2. Let options be the result of creating link options from el.
         let mut options = self.processing_options();
@@ -953,7 +967,7 @@ impl HTMLLinkElement {
         // Step 6. Preload options, with the following steps given a response response:
         let document = self.upcast::<Node>().owner_doc();
         options.preload(
-            self.owner_window().webview_id(),
+            self.owner_window_unrooted(no_gc).webview_id(),
             Some(Trusted::new(self)),
             &document,
         );

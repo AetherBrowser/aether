@@ -11,7 +11,7 @@
 //!
 //! Aether keeps the same split in plain JSON at `{config_dir}/search.json`.
 //! `{searchTerms}` is accepted and stored as `%s`, which the location bar
-//! already substitutes. Changes from `servo:settings#search` are written back
+//! already substitutes. Changes from `about:settings#search` are written back
 //! to that file.
 
 use std::cmp::Ordering;
@@ -198,7 +198,7 @@ struct InstalledSearchEngines {
 
 static INSTALLED: Mutex<Option<InstalledSearchEngines>> = Mutex::new(None);
 
-/// Remember the engines loaded at startup so `servo:settings#search` and the
+/// Remember the engines loaded at startup so `about:settings#search` and the
 /// location bar share one list.
 pub(crate) fn install_search_engines(config_dir: Option<PathBuf>, engines: SearchEngines) {
     *INSTALLED
@@ -218,7 +218,7 @@ pub(crate) fn default_search_url() -> Option<String> {
         .map(|state| state.engines.default_engine().url.clone())
 }
 
-/// Answer `servo:search-engines`. A query string applies one change and saves it.
+/// Answer `about:search-engines`. A query string applies one change and saves it.
 pub(crate) fn handle_search_engines_request(query: Option<&str>) -> String {
     let mut installed = INSTALLED
         .lock()

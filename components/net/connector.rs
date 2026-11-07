@@ -677,5 +677,17 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
         // limit controls the maximum idle connections per host, which we still don't want to grow
         // without bound.
         .pool_max_idle_per_host(6)
+        // hyper's default SETTINGS_MAX_HEADER_LIST_SIZE is 16 KiB.
+        // Then h2 resets the stream with PROTOCOL_ERROR.
+        // 256 KiB matches Chromium.
+        //
+        // That budget is per stream. HTTP/2 multiplexes onto one connection
+        // per origin, and the peer's SETTINGS_MAX_CONCURRENT_STREAMS replaces
+        // our initial send-stream cap, so a server can allow many streams at
+        // once. Each in-flight response can therefore hold up to 256 KiB of
+        // decoded headers until the stream ends. Fetches are not gated by a
+        // global permit; the bound is however many requests the page has in
+        // flight. Header memory is released when the stream completes.
+        .http2_max_header_list_size(256 * 1024)
         .build(InstrumentedConnector::from(connector))
 }

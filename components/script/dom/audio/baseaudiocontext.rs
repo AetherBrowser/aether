@@ -150,7 +150,7 @@ impl BaseAudioContext {
             ClientContextId::build(pipeline_id.namespace_id.0, pipeline_id.index.0.get());
         let audio_context_impl = ServoMedia::get()
             .create_audio_context(&client_context_id, options.convert())
-            .map_err(|_| Error::NotSupported(None))?;
+            .map_err(|_| Error::NotSupported(Some("Failed to create audio context".into())))?;
 
         Ok(BaseAudioContext {
             eventtarget: EventTarget::new_inherited(),
@@ -319,7 +319,10 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
 
         // Step 2.
         if self.audio_context_impl.lock().unwrap().state() == ProcessingState::Closed {
-            promise.reject_error(cx, Error::InvalidState(None));
+            promise.reject_error(
+                cx,
+                Error::InvalidState(Some("Cannot resume a closed AudioContext".into())),
+            );
             return promise;
         }
 
@@ -530,7 +533,9 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
             length == 0 ||
             *sample_rate <= 0.
         {
-            return Err(Error::NotSupported(None));
+            return Err(Error::NotSupported(Some(
+                "Invalid number of channels, length or sample rate".into(),
+            )));
         }
         Ok(AudioBuffer::new(
             cx,
@@ -642,21 +647,23 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
                     decoded_audio[channel].extend_from_slice((*buffer).as_ref());
                 })
                 .eos(move || {
+                    let mut decoded_audio = std::mem::take(&mut *decoded_audio__.lock().unwrap());
+                    for channel in &mut decoded_audio {
+                        channel.shrink_to_fit();
+                    }
                     task_source.queue(task!(audio_decode_eos: move |cx| {
                         let this = this.root();
-                        let decoded_audio = decoded_audio__.lock().unwrap();
                         let length = if !decoded_audio.is_empty() {
                             decoded_audio[0].len()
                         } else {
                             0
                         };
-                        let buffer = AudioBuffer::new(
+                        let buffer = AudioBuffer::new_with_channel_data(
                             cx,
                             this.global().as_window(),
-                            decoded_audio.len() as u32 /* number of channels */,
                             length as u32,
                             this.sample_rate,
-                            Some(decoded_audio.as_slice()),
+                            decoded_audio,
                         );
                         rooted!(&in(cx) let resolver = this
                             .decode_resolvers

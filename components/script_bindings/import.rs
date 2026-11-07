@@ -14,7 +14,8 @@ pub(crate) mod base {
     pub(crate) use js::error::throw_type_error;
     pub(crate) use js::gc::RootedVec;
     pub(crate) use js::jsapi::{
-        HandleValue as RawHandleValue, HandleValueArray, Heap, IsCallable, JSObject, Value,
+        CheckedUnwrapStatic, GetNonCCWObjectGlobal, HandleValue as RawHandleValue,
+        HandleValueArray, Heap, IsCallable, JSObject, Value,
     };
     pub(crate) use js::jsval::{JSVal, NullValue, ObjectOrNullValue, ObjectValue, UndefinedValue};
     pub(crate) use js::panic::maybe_resume_unwind;
@@ -45,7 +46,6 @@ pub(crate) mod base {
     pub(crate) use crate::lock::ThreadUnsafeOnceLock;
     pub(crate) use crate::num::Finite;
     pub(crate) use crate::proxyhandler::{CrossOriginProperties, is_platform_object_same_origin};
-    pub(crate) use crate::reflector::DomObject;
     pub(crate) use crate::root::DomRoot;
     pub(crate) use crate::str::{ByteString, DOMString, USVString};
     pub(crate) use crate::trace::RootedTraceableBox;

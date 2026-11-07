@@ -331,7 +331,7 @@ mod tests {
     fn viewed_url_refuses_unviewable_schemes() {
         for url in [
             "view-source:view-source:https://example.com/",
-            "view-source:servo:newtab",
+            "view-source:about:newtab",
             "view-source:",
         ] {
             let parsed = ServoUrl::parse(url).expect("should parse");

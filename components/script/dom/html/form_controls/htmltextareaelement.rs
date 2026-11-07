@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell};
 use std::default::Default;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderControlRequest, InputMethodRequest, InputMethodType};
 use html5ever::{LocalName, Prefix, local_name, ns};
@@ -17,6 +18,7 @@ use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use style::attr::AttrValue;
 use stylo_dom::ElementState;
 
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
 use crate::dom::bindings::codegen::Bindings::HTMLTextAreaElementBinding::HTMLTextAreaElementMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
@@ -37,7 +39,6 @@ use crate::dom::html::form_controls::input_type::text_input_widget::TextInputWid
 use crate::dom::html::form_controls::text_control::TextControlElement;
 use crate::dom::html::form_controls::text_input::{KeyReaction, Lines, TextInput};
 use crate::dom::html::htmlelement::HTMLElement;
-use crate::dom::html::htmlfieldsetelement::HTMLFieldSetElement;
 use crate::dom::html::htmlformelement::{FormControl, HTMLFormElement};
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
@@ -53,7 +54,7 @@ use crate::dom::validitystate::{ValidationFlags, ValidityState};
 pub(crate) struct HTMLTextAreaElement {
     htmlelement: HTMLElement,
     #[no_trace]
-    text_input: DomRefCell<TextInput<EmbedderClipboardProvider>>,
+    text_input: AtomicRefCell<TextInput<EmbedderClipboardProvider>>,
     placeholder: RefCell<TracedDOMString>,
     // https://html.spec.whatwg.org/multipage/#concept-textarea-dirty
     value_dirty: Cell<bool>,
@@ -70,8 +71,7 @@ pub(crate) struct HTMLTextAreaElement {
 impl LayoutDom<'_, HTMLTextAreaElement> {
     pub(crate) fn selection_for_layout(self) -> Option<RangeAny<Utf32CodeUnits>> {
         let element = self.unsafe_get();
-        #[expect(unsafe_code)]
-        let text_input = unsafe { element.text_input.borrow_for_layout() };
+        let text_input = element.text_input.borrow();
         text_input.selection_for_layout
     }
 
@@ -110,13 +110,13 @@ impl HTMLTextAreaElement {
             .clone();
         HTMLTextAreaElement {
             htmlelement: HTMLElement::new_inherited_with_state(
-                ElementState::ENABLED | ElementState::READWRITE,
+                ElementState::ENABLED | ElementState::READWRITE | ElementState::OPTIONAL_,
                 local_name,
                 prefix,
                 document,
             ),
             placeholder: Default::default(),
-            text_input: DomRefCell::new(TextInput::new(
+            text_input: AtomicRefCell::new(TextInput::new(
                 Lines::Multiple,
                 DOMString::new(),
                 EmbedderClipboardProvider {
@@ -185,7 +185,7 @@ impl HTMLTextAreaElement {
                     input_method_type: InputMethodType::Text,
                     text: String::from(self.Value()),
                     insertion_point: self.GetSelectionEnd(),
-                    multiline: false,
+                    multiline: true,
                     // We follow chromium's heuristic to show the virtual keyboard only if user had interacted before.
                     allow_virtual_keyboard: self.owner_window().has_sticky_activation(),
                 }),
@@ -238,11 +238,11 @@ impl TextControlElement for HTMLTextAreaElement {
         self.upcast()
     }
 
-    fn text_input(&self) -> Ref<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input(&self) -> AtomicRef<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow()
     }
 
-    fn text_input_mut(&self) -> RefMut<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input_mut(&self) -> AtomicRefMut<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow_mut()
     }
 
@@ -335,8 +335,8 @@ impl TextControlElement for HTMLTextAreaElement {
     fn handle_key_reaction(&self, cx: &mut JSContext, action: KeyReaction) {
         match action {
             KeyReaction::TriggerDefaultAction => (),
-            KeyReaction::DispatchInput(text, is_composing, input_type) => {
-                self.queue_input_event(text, is_composing, input_type);
+            KeyReaction::DispatchInput(text, input_type) => {
+                self.queue_input_event(text, input_type);
                 self.value_dirty.set(true);
                 self.handle_text_content_changed(cx);
                 self.maybe_update_shared_selection();
@@ -623,16 +623,9 @@ impl VirtualMethods for HTMLTextAreaElement {
                 let el = self.upcast::<Element>();
                 match mutation {
                     AttributeMutation::Set(_) => {
-                        el.set_disabled_state(cx.no_gc(), true);
-                        el.set_enabled_state(cx.no_gc(), false);
-
                         el.set_read_write_state(cx.no_gc(), false);
                     },
                     AttributeMutation::Removed => {
-                        el.set_disabled_state(cx.no_gc(), false);
-                        el.set_enabled_state(cx.no_gc(), true);
-                        el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-
                         if !el.disabled_state() && !el.read_write_state() {
                             el.set_read_write_state(cx.no_gc(), true);
                         }
@@ -692,6 +685,19 @@ impl VirtualMethods for HTMLTextAreaElement {
             local_name!("form") => {
                 self.form_attribute_mutated(cx, mutation);
             },
+            local_name!("required") => {
+                // https://html.spec.whatwg.org/multipage/#selector-required
+                // > The :required pseudo-class must match any element falling into one of the following categories:
+                // > - textarea elements that have a required attribute
+                let element = self.upcast::<Element>();
+                let required = matches!(mutation, AttributeMutation::Set(_));
+                element.set_state(cx.no_gc(), ElementState::REQUIRED, required);
+
+                // https://html.spec.whatwg.org/multipage/#selector-optional
+                // > The :optional pseudo-class must match any element falling into one of the following categories:
+                // > - textarea elements that do not have a required attribute
+                element.set_state(cx.no_gc(), ElementState::OPTIONAL_, !required);
+            },
             _ => {},
         }
 
@@ -703,10 +709,6 @@ impl VirtualMethods for HTMLTextAreaElement {
         if let Some(s) = self.super_type() {
             s.bind_to_tree(cx, context);
         }
-
-        self.upcast::<Element>()
-            .check_ancestors_disabled_state_for_form_control(cx.no_gc());
-
         self.handle_text_content_changed(cx);
     }
 
@@ -734,18 +736,6 @@ impl VirtualMethods for HTMLTextAreaElement {
             .hide_embedder_control(self.upcast());
 
         self.super_type().unwrap().unbind_from_tree(cx, context);
-
-        let node = self.upcast::<Node>();
-        let el = self.upcast::<Element>();
-        if node
-            .ancestors()
-            .any(|ancestor| ancestor.is::<HTMLFieldSetElement>())
-        {
-            el.check_ancestors_disabled_state_for_form_control(cx.no_gc());
-        } else {
-            el.check_disabled_attribute(cx.no_gc());
-        }
-
         self.validity_state(cx)
             .perform_validation_and_update(cx, ValidationFlags::all());
     }
@@ -764,10 +754,9 @@ impl VirtualMethods for HTMLTextAreaElement {
         }
         let el = copy.downcast::<HTMLTextAreaElement>().unwrap();
         el.value_dirty.set(self.value_dirty.get());
-        {
-            let mut text_input = el.text_input.safe_borrow_mut(cx.no_gc());
-            text_input.set_content(self.text_input.borrow().get_content());
-        }
+        el.text_input
+            .safe_borrow_mut(cx.no_gc())
+            .clone_content_from(&self.text_input.borrow());
         el.validity_state(cx)
             .perform_validation_and_update(cx, ValidationFlags::all());
     }

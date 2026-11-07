@@ -20,6 +20,7 @@ use rustc_hash::FxBuildHasher;
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::DocumentFragmentBinding::DocumentFragmentMethods;
 use script_bindings::dom::UnrootedDom;
+use script_bindings::domstring::TracedDOMString;
 use script_bindings::match_domstring_ascii;
 use script_bindings::reflector::DomObject;
 use servo_constellation_traits::{LoadData, LoadOrigin, NavigationHistoryBehavior};
@@ -209,6 +210,44 @@ impl HTMLFormElement {
             .iter()
             .filter(|n| HTMLFormElement::filter_for_radio_list(mode, n, name))
             .count() as u32
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#default-button>
+    pub(crate) fn default_button(&self) -> Option<DomRoot<Element>> {
+        // > A form element's default button is the first submit button in tree order whose form owner
+        // > is that form element. `controls` holds exactly the elements owned by this form, kept in
+        // > tree order.
+        self.controls
+            .borrow()
+            .iter()
+            .find(|control| {
+                control
+                    .downcast::<HTMLInputElement>()
+                    .is_some_and(HTMLInputElement::is_submit_button) ||
+                    control
+                        .downcast::<HTMLButtonElement>()
+                        .is_some_and(HTMLButtonElement::is_submit_button)
+            })
+            .map(|control| control.as_rooted())
+    }
+
+    pub(crate) fn invalidate_default_button(&self, no_gc: &NoGC) {
+        let default_button = self.default_button();
+        for control in self.controls.borrow().iter() {
+            Self::update_control_default_state(
+                no_gc,
+                control,
+                default_button.as_deref() == Some(&**control),
+            );
+        }
+    }
+
+    fn update_control_default_state(no_gc: &NoGC, control: &Element, is_default_button: bool) {
+        if let Some(button) = control.downcast::<HTMLButtonElement>() {
+            button.update_default_state(is_default_button, no_gc);
+        } else if let Some(input) = control.downcast::<HTMLInputElement>() {
+            input.update_default_state(is_default_button, no_gc);
+        }
     }
 }
 
@@ -651,7 +690,7 @@ impl HTMLFormElementMethods<crate::DomTypeHolder> for HTMLFormElement {
         let mut names_vec: Vec<DOMString> = Vec::new();
         for elem in sourced_names_vec.iter() {
             if !names_vec.iter().any(|name| *name == *elem.name) {
-                names_vec.push(DOMString::from(&*elem.name));
+                names_vec.push(TracedDOMString::from(elem.name.clone()).root());
             }
         }
 
@@ -862,7 +901,7 @@ impl HTMLFormElement {
         // for choosing a navigable given target, form's node navigable, and noopener.
         let Some(chosen) = doc.browsing_context().and_then(|source| {
             source
-                .choose_a_navigable(cx, target.unwrap_or_default(), noopener)
+                .choose_a_navigable(cx, &target.unwrap_or_default(), noopener)
                 .0
         }) else {
             // Step 23. If targetNavigable is null, then return.
@@ -1726,6 +1765,7 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
         node.set_flag(NodeFlags::PARSER_ASSOCIATED_FORM_OWNER, true);
         form.add_control(cx, self);
         self.set_form_owner(cx, Some(form));
+        form.invalidate_default_button(cx.no_gc());
     }
 
     /// <https://html.spec.whatwg.org/multipage/#reset-the-form-owner>
@@ -1767,8 +1807,8 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
         };
 
         if old_owner != new_owner {
-            if let Some(o) = old_owner {
-                o.remove_control(cx, self);
+            if let Some(ref old_owner) = old_owner {
+                old_owner.remove_control(cx, self);
             }
             if let Some(ref new_owner) = new_owner {
                 new_owner.add_control(cx, self);
@@ -1787,6 +1827,14 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
                 )
             }
             self.set_form_owner(cx, new_owner.as_deref());
+
+            if let Some(old_owner) = old_owner {
+                old_owner.invalidate_default_button(cx.no_gc());
+            }
+            match new_owner {
+                Some(new_owner) => new_owner.invalidate_default_button(cx.no_gc()),
+                None => HTMLFormElement::update_control_default_state(cx.no_gc(), elem, false),
+            }
         }
     }
 

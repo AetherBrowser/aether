@@ -441,6 +441,7 @@ pub enum ConsoleLogLevel {
     Error,
     Trace,
     Dir,
+    Table,
 }
 
 impl From<ConsoleLogLevel> for log::Level {
@@ -453,6 +454,7 @@ impl From<ConsoleLogLevel> for log::Level {
             ConsoleLogLevel::Error => log::Level::Error,
             ConsoleLogLevel::Trace => log::Level::Trace,
             ConsoleLogLevel::Dir => log::Level::Info,
+            ConsoleLogLevel::Table => log::Level::Info,
         }
     }
 }
@@ -822,6 +824,9 @@ pub enum LoadStatus {
     /// `document.readyState` == `complete`.
     /// See <https://developer.mozilla.org/en-US/docs/Web/API/Document/readyState>
     Complete,
+    /// The current load was stopped, either by the embedder or by script on the page
+    /// (for instance, by calling `window.stop()`).
+    Stopped,
 }
 
 /// How the active entry of the session history of a `WebView` changed when one of its

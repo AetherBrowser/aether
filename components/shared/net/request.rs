@@ -25,9 +25,13 @@ use uuid::Uuid;
 use crate::ReferrerPolicy;
 use crate::blob_url_store::UrlWithBlobClaim;
 use crate::policy_container::{PolicyContainer, RequestPolicyContainer};
-use crate::pub_domains::is_same_site;
+use crate::pub_domains::{Site, is_same_site};
 use crate::resource_fetch_timing::ResourceTimingType;
 use crate::response::{RedirectTaint, Response};
+
+/// A [network partition key](https://fetch.spec.whatwg.org/#network-partition-keys).
+/// Currently consists of a top-level site, or null if unpartitioned.
+pub type NetworkPartitionKey = Option<Site>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
 /// An id to differentiate one network request from another.
@@ -226,6 +230,8 @@ pub struct RequestClient {
     pub insecure_requests_policy: InsecureRequestsPolicy,
     /// <https://w3c.github.io/webappsec-secure-contexts/#potentially-trustworthy-origin>
     pub has_trustworthy_ancestor_origin: bool,
+    /// <https://fetch.spec.whatwg.org/#determining-the-network-partition-key>
+    pub network_partition_key: NetworkPartitionKey,
 }
 
 /// <https://html.spec.whatwg.org/multipage/#system-visibility-state>
@@ -487,6 +493,9 @@ pub struct RequestBuilder {
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
 
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub user_activation: bool,
+
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
 
@@ -547,6 +556,7 @@ impl RequestBuilder {
             keep_alive: false,
             credentials_mode: CredentialsMode::CredentialsSameOrigin,
             use_url_credentials: false,
+            user_activation: false,
             origin: Origin::Client,
             client: None,
             policy_container: RequestPolicyContainer::default(),
@@ -627,6 +637,12 @@ impl RequestBuilder {
     /// <https://fetch.spec.whatwg.org/#request-keepalive-flag>
     pub fn keep_alive(mut self, keep_alive: bool) -> RequestBuilder {
         self.keep_alive = keep_alive;
+        self
+    }
+
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub fn user_activation(mut self, user_activation: bool) -> RequestBuilder {
+        self.user_activation = user_activation;
         self
     }
 
@@ -775,6 +791,7 @@ impl RequestBuilder {
         request.response_tainting = self.response_tainting;
         request.crash = self.crash;
         request.client = self.client;
+        request.user_activation = self.user_activation;
         request.policy_container = self.policy_container;
         request.is_internal_request = self.is_internal_request;
         request.embedder_initiated = self.embedder_initiated;
@@ -831,10 +848,11 @@ pub struct Request {
     pub origin: Origin,
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
-    /// Document URL when this request was started by a `servo:` page.
+    /// Document URL when this request was started by an internal page
+    /// (`servo:` or `about:`, other than `about:blank` and `about:srcdoc`).
     ///
     /// Those pages have an opaque origin, so the referrer is omitted and a
-    /// protocol handler cannot tell `servo:settings` from `file:` or another
+    /// protocol handler cannot tell `about:settings` from `file:` or another
     /// opaque caller. `main_fetch` records the URL here and still sends no
     /// `Referer` header.
     pub source_document_url: Option<ServoUrl>,
@@ -869,6 +887,8 @@ pub struct Request {
     pub parser_metadata: ParserMetadata,
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub user_activation: bool,
     /// Servo internal: if crash details are present, trigger a crash error page with these details.
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
@@ -914,6 +934,7 @@ impl Request {
             use_cors_preflight: false,
             credentials_mode: CredentialsMode::CredentialsSameOrigin,
             use_url_credentials: false,
+            user_activation: false,
             cache_mode: CacheMode::Default,
             redirect_mode: RedirectMode::Follow,
             integrity_metadata: String::new(),
@@ -1290,14 +1311,13 @@ pub fn get_cors_unsafe_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
 
 /// <https://fetch.spec.whatwg.org/#ref-for-convert-header-names-to-a-sorted-lowercase-set>
 pub fn convert_header_names_to_sorted_lowercase_set(
-    header_names: Vec<&HeaderName>,
+    mut header_names: Vec<&HeaderName>,
 ) -> Vec<HeaderName> {
     // HeaderName does not implement the needed traits to use a BTreeSet
-    // So create a new Vec, sort, then dedup
-    let mut ordered_set = header_names.to_vec();
-    ordered_set.sort_by(|a, b| a.as_str().partial_cmp(b.as_str()).unwrap());
-    ordered_set.dedup();
-    ordered_set.into_iter().cloned().collect()
+    // So sort the Vec, then dedup
+    header_names.sort_by(|a, b| a.as_str().partial_cmp(b.as_str()).unwrap());
+    header_names.dedup();
+    header_names.into_iter().cloned().collect()
 }
 
 pub fn create_request_body_with_content(content: String) -> RequestBody {

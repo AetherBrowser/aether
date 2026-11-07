@@ -12,8 +12,8 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, MediaSessionEvent, PermissionRequest, RenderingContext, ScreenGeometry,
-    WebView, WebViewBuilder, WebViewId,
+    InputEventResult, PermissionRequest, RenderingContext, ScreenGeometry, WebView, WebViewBuilder,
+    WebViewId,
 };
 use url::Url;
 
@@ -42,10 +42,22 @@ impl From<u64> for ServoShellWindowId {
     }
 }
 
+impl From<u32> for ServoShellWindowId {
+    fn from(value: u32) -> Self {
+        Self(u64::from(value))
+    }
+}
+
 impl ServoShellWindowId {
     #[cfg_attr(not(any(target_os = "android", target_env = "ohos")), expect(unused))]
     pub(crate) fn next() -> ServoShellWindowId {
         ServoShellWindowId(SERVOSHELL_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Expose the inner ID
+    #[cfg_attr(not(target_env = "ohos"), expect(unused))]
+    pub(crate) fn raw(self) -> u64 {
+        self.0
     }
 }
 
@@ -363,7 +375,7 @@ impl ServoShellWindow {
                 },
                 UserInterfaceCommand::NewWebView => {
                     self.set_needs_update();
-                    let url = Url::parse("servo:newtab").expect("Should always be able to parse");
+                    let url = Url::parse("about:newtab").expect("Should always be able to parse");
                     self.create_and_activate_toplevel_webview(
                         state.clone(),
                         TopLevelWebViewCreationRequest::WithUrl(url),
@@ -380,7 +392,7 @@ impl ServoShellWindow {
                     let url = match &creation_request {
                         TopLevelWebViewCreationRequest::WithUrl(url) => url.clone(),
                         TopLevelWebViewCreationRequest::WithCreateRequest(..) => {
-                            Url::parse("servo:newtab").unwrap()
+                            Url::parse("about:newtab").unwrap()
                         },
                     };
                     let platform_window = create_platform_window(url);
@@ -464,7 +476,6 @@ pub(crate) trait PlatformWindow {
     ) {
     }
 
-    fn notify_media_session_event(&self, _: MediaSessionEvent) {}
     fn notify_crashed(&self, _: WebView, _reason: String, _backtrace: Option<String>) {}
     fn show_console_message(&self, _level: ConsoleLogLevel, _message: &str) {}
 

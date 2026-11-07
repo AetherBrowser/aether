@@ -208,7 +208,7 @@ impl FileManager {
     pub fn fetch_file_in_chunks(
         &self,
         done_sender: &mut TokioSender<Data>,
-        mut reader: BufReader<File>,
+        mut reader: impl BufRead + Send + 'static,
         res_body: ServoArc<Mutex<ResponseBody>>,
         cancellation_listener: Arc<CancellationListener>,
         range: RelativePos,
@@ -696,7 +696,7 @@ impl FileManagerStore {
                     .and_then(|osstr| osstr.to_str())
                     .map(|s| s.to_string());
 
-                let mime = mime_guess::from_path(metadata.path.clone()).first();
+                let mime = mime_guess::from_path(&metadata.path).first();
                 let range = rel_pos.to_abs_range(metadata.size as usize);
 
                 let mut file = tokio::fs::File::open(&metadata.path)

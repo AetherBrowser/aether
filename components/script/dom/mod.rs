@@ -230,6 +230,8 @@ pub(crate) mod characterdata;
 pub(crate) use self::characterdata::*;
 pub(crate) mod clipboard;
 pub(crate) use self::clipboard::*;
+pub(crate) mod closewatcher;
+pub(crate) use self::closewatcher::*;
 pub(crate) mod console;
 pub(crate) mod cookiestore;
 pub(crate) use self::cookiestore::*;
@@ -351,11 +353,7 @@ pub(crate) use self::webxr::*;
 pub(crate) mod webgpu;
 #[cfg(feature = "webgpu")]
 pub(crate) use self::webgpu::*;
-#[cfg(not(feature = "webgpu"))]
-pub(crate) mod gpucanvascontext;
-#[cfg(feature = "webcrypto")]
 pub(crate) mod webcrypto;
-#[cfg(feature = "webcrypto")]
 pub(crate) use self::webcrypto::*;
 pub(crate) mod webrtc;
 pub(crate) use self::webrtc::*;

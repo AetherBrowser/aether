@@ -535,6 +535,18 @@ impl GlobalScope {
         new_registration
     }
 
+    fn send_service_worker_state_update_done(&self, worker_id: ServiceWorkerId) {
+        let res = self.script_to_constellation_chan().send(
+            ScriptToConstellationMessage::ServiceWorkerStateUpdateDone(
+                worker_id,
+                self.pipeline_id(),
+            ),
+        );
+        if res.is_err() {
+            error!("Sending ServiceWorkerStateUpdateDone failed");
+        }
+    }
+
     /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
     pub(crate) fn update_service_worker_state(
         &self,
@@ -548,6 +560,7 @@ impl GlobalScope {
         // Step 4.3: Let workerObj be objectMap[worker].
         let Some(worker) = object_map.get(&worker_id) else {
             // Step 4.2: If objectMap[worker] does not exist, then abort these steps.
+            self.send_service_worker_state_update_done(worker_id);
             return;
         };
 
@@ -556,6 +569,8 @@ impl GlobalScope {
 
         // Step 4.5: Fire an event named statechange at workerObj.
         worker.upcast().fire_event(cx, atom!("statechange"));
+
+        self.send_service_worker_state_update_done(worker_id);
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
@@ -872,19 +887,15 @@ impl GlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-close>
     pub(crate) fn close_message_port(&self, port_id: &MessagePortId) {
         if let MessagePortState::Managed(_id, message_ports) =
-            &mut *self.message_port_state.borrow_mut()
+            &mut *self.message_port_state.borrow_mut() &&
+            let Some(managed_port) = message_ports.get_mut(port_id)
         {
-            match message_ports.get_mut(port_id) {
-                None => panic!("close_message_port called on an unknown port."),
-                Some(managed_port) => {
-                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
-                        port_impl.close();
-                        managed_port.explicitly_closed = true;
-                    } else {
-                        panic!("managed-port has no port-impl.");
-                    }
-                },
-            };
+            if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                port_impl.close();
+                managed_port.explicitly_closed = true;
+            } else {
+                panic!("managed-port has no port-impl.");
+            }
         } else {
             warn!("close_message_port called on a global not managing any ports.")
         }
@@ -2312,6 +2323,7 @@ impl GlobalScope {
             is_nested_browsing_context: false,
             insecure_requests_policy: self.insecure_requests_policy(),
             has_trustworthy_ancestor_origin: false,
+            network_partition_key: None,
         }
     }
 
@@ -2394,10 +2406,12 @@ impl GlobalScope {
             // Substep 3."client".2.2. If document’s origin is an opaque origin, return no referrer.
             if let ImmutableOrigin::Opaque(_) = document.origin().immutable() {
                 let url = document.url();
-                // `servo:` documents are opaque, so this step would drop the page
+                // Internal pages are opaque, so this step would drop the page
                 // URL. Return it so `main_fetch` can record `source_document_url`
                 // for internal protocol checks. That step still sends no Referer.
-                if url.scheme() == "servo" {
+                if url.scheme() == "servo" ||
+                    (url.scheme() == "about" && !matches!(url.path(), "blank" | "srcdoc"))
+                {
                     return Referrer::Client(url);
                 }
                 return Referrer::NoReferrer;

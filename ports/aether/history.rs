@@ -115,7 +115,7 @@ pub(crate) fn open_history(opts: &Opts) -> (HistoryService, HistoryPage) {
     (history, page)
 }
 
-/// The settings and actions of the `servo:history` page.
+/// The settings and actions of the `about:history` page.
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) struct HistoryPage {
     /// Where `history.json` is saved, or `None` when the settings stay in memory.
@@ -126,7 +126,7 @@ pub(crate) struct HistoryPage {
 
 #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 impl HistoryPage {
-    /// Answers `servo:history-data`, applying its `retentionDays` and `delete` parameters.
+    /// Answers `about:history-data`, applying its `retentionDays` and `delete` parameters.
     pub(crate) fn handle_request(
         &mut self,
         query: Option<&str>,
@@ -227,7 +227,7 @@ fn save_retention_days(config_dir: &Path, days: u32) -> Result<(), String> {
 }
 
 /// Whether visits of `url` belong in the history: web pages only, not internal pages
-/// (`servo:`, `about:`), `data:` and `blob:` URLs, or local files.
+/// (`about:`), `data:` and `blob:` URLs, or local files.
 pub(crate) fn should_record(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
 }
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn replacing_an_entry_without_visit_records_a_new_one() {
         let new_tab = ActiveEntry {
-            url: url("servo:newtab"),
+            url: url("about:newtab"),
             visit_date: None,
         };
 
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn pages_that_are_not_recorded_have_no_visit() {
         let (update, active_entry) =
-            history_update(None, &url("servo:newtab"), NavigationType::Push, date(1));
+            history_update(None, &url("about:newtab"), NavigationType::Push, date(1));
 
         assert_eq!(update, None);
         assert_eq!(active_entry.visit_date, None);
@@ -392,7 +392,7 @@ mod tests {
         for (url, recorded) in [
             ("https://servo.org/", true),
             ("http://example.com/page#section", true),
-            ("servo:newtab", false),
+            ("about:newtab", false),
             ("about:blank", false),
             ("data:text/html,hello", false),
             ("blob:https://servo.org/0c1d2e3f", false),

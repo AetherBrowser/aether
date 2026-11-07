@@ -49,6 +49,8 @@ internal class JNIServo {
 
     external fun keyup(keycode: Int, unicode: Int)
 
+    external fun imeComposition(state: Int, text: String)
+
     external fun touchDown(x: Float, y: Float, pointer_id: Int)
 
     external fun touchMove(x: Float, y: Float, pointer_id: Int)
@@ -60,8 +62,6 @@ internal class JNIServo {
     external fun pausePainting()
 
     external fun resumePainting(surface: Surface, size: Size)
-
-    external fun mediaSessionAction(action: Int)
 
     external fun setExperimentalMode(enable: Boolean)
 
@@ -91,11 +91,5 @@ internal class JNIServo {
         fun onImeShow()
 
         fun onImeHide()
-
-        fun onMediaSessionMetadata(title: String, artist: String, album: String)
-
-        fun onMediaSessionPlaybackStateChange(state: Int)
-
-        fun onMediaSessionSetPositionState(duration: Float, position: Float, playbackRate: Float)
     }
 }

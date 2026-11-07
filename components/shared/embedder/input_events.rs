@@ -227,7 +227,7 @@ impl MouseButtonEvent {
 /// The types of mouse buttons.
 ///
 /// <https://w3c.github.io/pointerevents/#the-button-property>
-#[derive(Clone, Copy, Debug, Deserialize, MallocSizeOf, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
 pub enum MouseButton {
     #[doc(hidden)]
     None,
@@ -417,7 +417,12 @@ impl WheelEvent {
 /// The types of an input method event.
 #[derive(Clone, Debug, Deserialize, MallocSizeOf, Serialize)]
 pub enum ImeEvent {
+    /// See [CompositionEvent].
     Composition(CompositionEvent),
+    /// The input method committed text. Note that this can be sent without
+    /// an active composition.
+    Commit(String),
+    /// The input method was dismissed.
     Dismissed,
 }
 
