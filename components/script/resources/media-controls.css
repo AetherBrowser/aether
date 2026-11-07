@@ -42,6 +42,29 @@ button {
   display: none;
 }
 
+#playback-rate {
+  height: 24px;
+  margin: 6px;
+  padding: 0 2px;
+  border: 1px solid rgba(255,255,255,.4);
+  border-radius: 3px;
+  background-color: transparent;
+  color: #ffffff;
+  font: 12px sans-serif;
+}
+
+#playback-rate option {
+  background-color: #1a1a1a;
+  color: #ffffff;
+}
+
+/* Keyboard users need to see which control has the focus. */
+#playback-rate:focus-visible,
+button:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 1px;
+}
+
 .playing {
   background: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAALElEQVR4AWMYQeD///8KQOwAxQq4xQkb1PAfARpwiQ9Kg0YNGjWI8iwycgAA8BVdyMCA4SwAAAAASUVORK5CYII=") no-repeat;
 }
