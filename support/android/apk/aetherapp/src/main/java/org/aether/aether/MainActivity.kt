@@ -119,6 +119,9 @@ class MainActivity : ComponentActivity(), Servo.Client {
                         }
                         Omnibox(
                             urlTextFieldState,
+                            canBookmark = navigator.canBookmark,
+                            bookmarked = navigator.isBookmarked,
+                            onToggleBookmark = navigator::toggleBookmark,
                             onSearch = { search ->
                                 navigator.navigate(search)
                                 servoFocusRequester.requestFocus()
@@ -447,14 +450,28 @@ private fun AppMenuItem(
     )
 }
 
+@Composable
+private fun BookmarkStar(bookmarked: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(
+            painterResource(if (bookmarked) R.drawable.star else R.drawable.star_border),
+            stringResource(if (bookmarked) R.string.bookmark_remove else R.string.bookmark_add),
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Omnibox(
     textFieldState: TextFieldState,
+    canBookmark: Boolean,
+    bookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
     onSearch: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val searchBarState = rememberSearchBarState()
+    var focused by remember { mutableStateOf(false) }
 
     SearchBar(
         state = searchBarState,
@@ -467,11 +484,18 @@ private fun Omnibox(
                 onSearch = onSearch,
                 modifier =
                     Modifier.onFocusChanged { focusState ->
+                        focused = focusState.isFocused
                         if (focusState.isFocused) {
                             coroutineScope.launch { textFieldState.edit { selectAll() } }
                         }
                     },
                 placeholder = { Text(stringResource(R.string.url_or_search)) },
+                trailingIcon =
+                    if (canBookmark && !focused) {
+                        { BookmarkStar(bookmarked, onToggleBookmark) }
+                    } else {
+                        null
+                    },
             )
         },
         modifier = modifier,

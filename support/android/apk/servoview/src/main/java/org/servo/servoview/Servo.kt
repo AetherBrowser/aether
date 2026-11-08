@@ -183,6 +183,8 @@ class ServoNavigator {
         data object Reload : NavigationEvent
 
         data object Stop : NavigationEvent
+
+        data object ToggleBookmark : NavigationEvent
     }
 
     private val coroutineScope = CoroutineScope(EmptyCoroutineContext)
@@ -196,6 +198,7 @@ class ServoNavigator {
                 NavigationEvent.Forward -> servo.goForward()
                 NavigationEvent.Reload -> servo.reload()
                 NavigationEvent.Stop -> servo.stop()
+                NavigationEvent.ToggleBookmark -> servo.toggleBookmark()
             }
         }
     }
@@ -204,6 +207,12 @@ class ServoNavigator {
         internal set
 
     var canGoForward by mutableStateOf(false)
+        internal set
+
+    var canBookmark by mutableStateOf(false)
+        internal set
+
+    var isBookmarked by mutableStateOf(false)
         internal set
 
     fun navigate(uri: String) {
@@ -224,6 +233,10 @@ class ServoNavigator {
 
     fun stop() {
         coroutineScope.launch { navigationEvents.emit(NavigationEvent.Stop) }
+    }
+
+    fun toggleBookmark() {
+        coroutineScope.launch { navigationEvents.emit(NavigationEvent.ToggleBookmark) }
     }
 }
 
@@ -458,6 +471,10 @@ internal constructor(
         scope.launch(glDispatcher) { jni.loadUri(uri) }
     }
 
+    fun toggleBookmark() {
+        scope.launch(glDispatcher) { jni.toggleBookmark() }
+    }
+
     fun onKeyDown(keyCode: Int, event: KeyEvent) {
         scope.launch(glDispatcher) { jni.keydown(keyCode, event.unicodeChar) }
     }
@@ -573,6 +590,11 @@ internal constructor(
         override fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean) {
             navigator.canGoBack = canGoBack
             navigator.canGoForward = canGoForward
+        }
+
+        override fun onBookmarkStateChanged(canBookmark: Boolean, bookmarked: Boolean) {
+            navigator.canBookmark = canBookmark
+            navigator.isBookmarked = bookmarked
         }
     }
 }

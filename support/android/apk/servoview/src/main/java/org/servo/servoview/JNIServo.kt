@@ -45,6 +45,8 @@ internal class JNIServo {
 
     external fun loadUri(uri: String)
 
+    external fun toggleBookmark()
+
     external fun keydown(keycode: Int, unicode: Int)
 
     external fun keyup(keycode: Int, unicode: Int)
@@ -87,6 +89,8 @@ internal class JNIServo {
         fun onUrlChanged(url: String)
 
         fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
+
+        fun onBookmarkStateChanged(canBookmark: Boolean, bookmarked: Boolean)
 
         fun onImeShow()
 

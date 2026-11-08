@@ -26,6 +26,8 @@ pub trait HostTrait {
     /// Back/forward state has changed.
     /// Back/forward buttons need to be disabled/enabled.
     fn on_history_changed(&self, can_go_back: bool, can_go_forward: bool);
+    /// The active page can now be bookmarked or not, or was added to or removed from the bookmarks.
+    fn on_bookmark_state_changed(&self, can_bookmark: bool, bookmarked: bool);
     /// Servo finished shutting down.
     fn on_shutdown_complete(&self);
     /// A text input is focused.

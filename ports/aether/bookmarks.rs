@@ -10,17 +10,16 @@ use url::Url;
 
 /// The bookmarked pages, kept in memory for the session.
 #[derive(Default)]
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) struct Bookmarks {
     urls: HashSet<Url>,
 }
 
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 impl Bookmarks {
     pub(crate) fn contains(&self, url: &Url) -> bool {
         self.urls.contains(&without_credentials(url))
     }
 
+    #[cfg_attr(target_env = "ohos", expect(dead_code))]
     pub(crate) fn toggle(&mut self, url: &Url) {
         let url = without_credentials(url);
         if !self.urls.remove(&url) {
@@ -29,12 +28,10 @@ impl Bookmarks {
     }
 }
 
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 pub(crate) fn can_bookmark(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
 }
 
-#[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
 fn without_credentials(url: &Url) -> Url {
     let mut url = url.clone();
     let _ = url.set_username("");
