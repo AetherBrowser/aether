@@ -40,6 +40,7 @@ use servo::{
 };
 use url::Url;
 
+use crate::bookmarks::Bookmarks;
 #[cfg(all(
     feature = "gamepad",
     not(any(target_os = "android", target_env = "ohos"))
@@ -252,6 +253,10 @@ pub(crate) struct RunningAppState {
     /// The browsing history of the profile.
     history: HistoryService,
 
+    /// The bookmarks of the profile.
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    bookmarks: RefCell<Bookmarks>,
+
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
     exit_scheduled: Cell<bool>,
@@ -326,6 +331,7 @@ impl RunningAppState {
             exit_scheduled: Default::default(),
             user_content_manager,
             history,
+            bookmarks: Default::default(),
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -462,6 +468,19 @@ impl RunningAppState {
         }
         for pref in EXPERIMENTAL_PREFS {
             self.servo.set_preference(pref, PrefValue::Bool(new_value));
+        }
+    }
+
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    pub(crate) fn is_bookmarked(&self, url: &Url) -> bool {
+        self.bookmarks.borrow().contains(url)
+    }
+
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
+    pub(crate) fn toggle_bookmark(&self, url: &Url) {
+        self.bookmarks.borrow_mut().toggle(url);
+        for window in self.windows().iter() {
+            window.set_needs_repaint();
         }
     }
 
