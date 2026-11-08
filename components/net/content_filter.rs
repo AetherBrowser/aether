@@ -86,20 +86,33 @@ struct DomainCond {
 
 #[derive(Clone, Debug)]
 enum Pattern {
-    /// A host and its subdomains, on any scheme.
-    Site { host: String, port: Option<u16> },
-    /// A host plus a path. `exact` refuses a longer path.
+    /// A host, and its subdomains unless `host_exact`. `scheme` limits the rule
+    /// when the list entry included one (`https://ads.example`).
+    Site {
+        host: String,
+        port: Option<u16>,
+        scheme: Option<String>,
+        host_exact: bool,
+    },
+    /// A host plus a path. `exact` refuses a longer path. `boundary` requires
+    /// the next character to be `/` or `?` (plain URL entries). Network rules
+    /// such as `||tracker.example/ads` leave it false so `/ads.js` still matches.
     Url {
         host: String,
         port: Option<u16>,
         scheme: Option<String>,
         path_prefix: String,
         exact: bool,
+        host_exact: bool,
+        boundary: bool,
     },
     /// Plain text that must appear in the path or query. Not a regular expression.
     Contains(String),
-    /// `*` wildcard matched against `host + path`.
-    Glob(String),
+    /// `*` wildcard. `^` is a separator. `case_sensitive` honors `$match-case`.
+    Glob {
+        text: String,
+        case_sensitive: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -183,7 +196,22 @@ impl ContentFilter {
         // Stamp the files before reading them. A save that lands between the
         // read and the stamp would otherwise look fresh while the rules are old.
         let mut watched = vec![watch(&config_path), watch(&blocklist_path)];
-        let (enabled, whitelist, lists) = read_config(&config_path);
+        let (enabled, whitelist, lists) = match read_config(&config_path) {
+            Ok(config) => config,
+            Err(()) => {
+                warn!(
+                    "Network filter: keeping the previous rules, {} could not be read",
+                    config_path.display()
+                );
+                if !self.watched.is_empty() {
+                    for file in &mut self.watched {
+                        file.modified = mtime(&file.path);
+                    }
+                    return;
+                }
+                (true, Vec::new(), Vec::new())
+            },
+        };
         let mut texts = Vec::new();
         if let Ok(text) = fs::read_to_string(&blocklist_path) {
             texts.push(text);
@@ -239,6 +267,15 @@ impl ContentFilter {
 
     /// `true` when this request must not be sent.
     pub fn blocks(&self, url: &str, source: Option<&str>, destination: Destination) -> bool {
+        self.decide(url, source, destination_kind(destination))
+    }
+
+    /// `$websocket` rules. WebSocket requests do not use a fetch destination.
+    pub fn blocks_websocket(&self, url: &str, source: Option<&str>) -> bool {
+        self.decide(url, source, ResourceKind::Websocket)
+    }
+
+    fn decide(&self, url: &str, source: Option<&str>, kind: ResourceKind) -> bool {
         if !self.enabled || self.rules.is_empty() {
             return false;
         }
@@ -254,7 +291,6 @@ impl ContentFilter {
         }
 
         let source_host = source.and_then(host_of);
-        let kind = destination_kind(destination);
         let mut blocked = false;
         let mut important_block = false;
         let mut exception = false;
@@ -352,8 +388,8 @@ fn destination_kind(destination: Destination) -> ResourceKind {
         Destination::Style => ResourceKind::Stylesheet,
         Destination::Font => ResourceKind::Font,
         Destination::Document => ResourceKind::Document,
-        Destination::Frame | Destination::IFrame | Destination::Embed => ResourceKind::Subdocument,
-        Destination::Object => ResourceKind::Object,
+        Destination::Frame | Destination::IFrame => ResourceKind::Subdocument,
+        Destination::Object | Destination::Embed => ResourceKind::Object,
         Destination::Audio | Destination::Video | Destination::Track => ResourceKind::Media,
         Destination::Json | Destination::None | Destination::Text => ResourceKind::Xhr,
         Destination::AudioWorklet |
@@ -394,16 +430,26 @@ fn parse_rule(line: &str) -> Option<Rule> {
         None => (line, false),
     };
     let (pattern_text, options) = split_options(line);
+    let parsed_options = options.and_then(parse_options);
+    // A trailing `$metadata` or `$script` on a URL is part of the address.
+    // Real options (`$script` after `||host^`, `$domain=`) still parse.
+    let (pattern_text, parsed_options) = match parsed_options {
+        Some(parsed) => (pattern_text, Some(parsed)),
+        None => (line, None),
+    };
     let pattern_text = pattern_text.trim();
     if pattern_text.is_empty() {
         return None;
     }
-    let (types, party, domains, important) = match options {
-        Some(options) => parse_options(options)?,
-        None => (TypeFilter::default(), Party::Any, Vec::new(), false),
-    };
+    let (types, party, domains, important, case_sensitive) = parsed_options.unwrap_or((
+        TypeFilter::default(),
+        Party::Any,
+        Vec::new(),
+        false,
+        false,
+    ));
     Some(Rule {
-        pattern: parse_pattern(pattern_text)?,
+        pattern: parse_pattern(pattern_text, case_sensitive)?,
         exception,
         important,
         types,
@@ -420,7 +466,12 @@ fn split_options(line: &str) -> (&str, Option<&str>) {
     if options.is_empty() || !options.split(',').all(option_is_shaped) {
         return (line, None);
     }
-    (&line[..index], Some(options))
+    // `https://ads.example/file$script` is a URL. `||ads.example^$script` is a rule.
+    let pattern = &line[..index];
+    if pattern.contains("://") && !options.contains(',') && !options.contains('=') {
+        return (line, None);
+    }
+    (pattern, Some(options))
 }
 
 fn option_is_shaped(token: &str) -> bool {
@@ -441,11 +492,14 @@ fn option_is_shaped(token: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '~' | '-' | '.' | '|'))
 }
 
-fn parse_options(options: &str) -> Option<(TypeFilter, Party, Vec<DomainCond>, bool)> {
+fn parse_options(
+    options: &str,
+) -> Option<(TypeFilter, Party, Vec<DomainCond>, bool, bool)> {
     let mut types = TypeFilter::default();
     let mut party = Party::Any;
     let mut domains = Vec::new();
     let mut important = false;
+    let mut case_sensitive = false;
     for token in options.split(',') {
         let token = token.trim();
         if token.is_empty() {
@@ -456,6 +510,7 @@ fn parse_options(options: &str) -> Option<(TypeFilter, Party, Vec<DomainCond>, b
             continue;
         }
         if token == "match-case" {
+            case_sensitive = true;
             continue;
         }
         if token == "third-party" || token == "3p" {
@@ -502,7 +557,7 @@ fn parse_options(options: &str) -> Option<(TypeFilter, Party, Vec<DomainCond>, b
             types.only.push(kind);
         }
     }
-    Some((types, party, domains, important))
+    Some((types, party, domains, important, case_sensitive))
 }
 
 fn resource_kind_from_option(name: &str) -> Option<ResourceKind> {
@@ -523,7 +578,7 @@ fn resource_kind_from_option(name: &str) -> Option<ResourceKind> {
     })
 }
 
-fn parse_pattern(text: &str) -> Option<Pattern> {
+fn parse_pattern(text: &str, case_sensitive: bool) -> Option<Pattern> {
     let text = text.trim();
     if text.is_empty() || text == "*" || text == "^" {
         return None;
@@ -538,30 +593,34 @@ fn parse_pattern(text: &str) -> Option<Pattern> {
         return Some(Pattern::Contains(inner.to_owned()));
     }
     if text.contains('*') {
-        let body = text
-            .trim_start_matches('|')
-            .trim_end_matches('^')
-            .trim()
-            .to_ascii_lowercase();
-        if body.is_empty() || body.chars().all(|character| character == '*') {
+        let body = text.trim_start_matches('|').trim();
+        if body.is_empty() || body.chars().all(|character| character == '*' || character == '^') {
             return None;
         }
-        return Some(Pattern::Glob(body));
+        let text = if case_sensitive {
+            body.to_owned()
+        } else {
+            body.to_ascii_lowercase()
+        };
+        return Some(Pattern::Glob {
+            text,
+            case_sensitive,
+        });
     }
     if let Some(exact) = text
         .strip_prefix('|')
         .filter(|rest| !rest.starts_with('|'))
         .and_then(|rest| rest.strip_suffix('|'))
     {
-        return loose_pattern(exact.trim(), true);
+        return loose_pattern(exact.trim(), true, true, true);
     }
     if let Some(host_rule) = text.strip_prefix("||") {
-        return loose_pattern(host_rule.trim_end_matches('^').trim(), false);
+        return loose_pattern(host_rule.trim_end_matches('^').trim(), false, false, false);
     }
     if let Some(anchored) = text.strip_prefix('|') {
-        return loose_pattern(anchored.trim_end_matches('^').trim(), false);
+        return loose_pattern(anchored.trim_end_matches('^').trim(), false, false, true);
     }
-    loose_pattern(text.trim_end_matches('^').trim(), false)
+    loose_pattern(text.trim_end_matches('^').trim(), false, false, true)
 }
 
 fn looks_like_regular_expression(text: &str) -> bool {
@@ -573,7 +632,12 @@ fn looks_like_regular_expression(text: &str) -> bool {
     })
 }
 
-fn loose_pattern(text: &str, exact: bool) -> Option<Pattern> {
+fn loose_pattern(
+    text: &str,
+    path_exact: bool,
+    host_exact: bool,
+    boundary: bool,
+) -> Option<Pattern> {
     if text.is_empty() {
         return None;
     }
@@ -588,11 +652,14 @@ fn loose_pattern(text: &str, exact: bool) -> Option<Pattern> {
         return None;
     }
     let scheme = with_scheme.then(|| parsed.scheme().to_ascii_lowercase());
+    let port = explicit_port(text).or_else(|| parsed.port());
     let explicit_path = parsed.query().is_some() || parsed.path() != "/" || text.ends_with('/');
     if !explicit_path {
         return Some(Pattern::Site {
             host,
-            port: parsed.port(),
+            port,
+            scheme,
+            host_exact,
         });
     }
     let mut path_prefix = parsed.path().to_owned();
@@ -602,17 +669,38 @@ fn loose_pattern(text: &str, exact: bool) -> Option<Pattern> {
     }
     Some(Pattern::Url {
         host,
-        port: parsed.port(),
+        port,
         scheme,
         path_prefix,
-        exact,
+        exact: path_exact,
+        host_exact,
+        boundary,
     })
+}
+
+/// The port written in the rule, including defaults such as `:443` that
+/// [`Url`] drops while parsing.
+fn explicit_port(text: &str) -> Option<u16> {
+    let after_scheme = text.rsplit_once("://").map(|(_, rest)| rest).unwrap_or(text);
+    let host = after_scheme.split(['/', '?', '#']).next()?;
+    let (_, port) = host.rsplit_once(':')?;
+    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    port.parse().ok()
 }
 
 fn pattern_matches(pattern: &Pattern, request: &ParsedRequest) -> bool {
     match pattern {
-        Pattern::Site { host, port } => {
-            host_matches(&request.host, host) && port_matches(*port, &request.scheme, request.port)
+        Pattern::Site {
+            host,
+            port,
+            scheme,
+            host_exact,
+        } => {
+            hosts_agree(&request.host, host, *host_exact) &&
+                port_matches(*port, &request.scheme, request.port) &&
+                scheme.as_ref().is_none_or(|scheme| scheme == &request.scheme)
         },
         Pattern::Url {
             host,
@@ -620,8 +708,10 @@ fn pattern_matches(pattern: &Pattern, request: &ParsedRequest) -> bool {
             scheme,
             path_prefix,
             exact,
+            host_exact,
+            boundary,
         } => {
-            if !host_matches(&request.host, host) ||
+            if !hosts_agree(&request.host, host, *host_exact) ||
                 !port_matches(*port, &request.scheme, request.port)
             {
                 return false;
@@ -631,27 +721,45 @@ fn pattern_matches(pattern: &Pattern, request: &ParsedRequest) -> bool {
             {
                 return false;
             }
-            path_matches(&request.path_and_query, path_prefix, *exact)
+            path_matches(&request.path_and_query, path_prefix, *exact, *boundary)
         },
         Pattern::Contains(text) => request.path_and_query.contains(text.as_str()),
-        Pattern::Glob(pattern) => {
-            let target = if pattern.contains('/') {
-                request.host_and_path.as_str()
+        Pattern::Glob {
+            text,
+            case_sensitive,
+        } => {
+            let target = if text.contains("://") {
+                format!("{}://{}", request.scheme, request.host_and_path)
+            } else if text.contains('/') {
+                request.host_and_path.clone()
             } else {
-                request.host.as_str()
+                request.host.clone()
             };
-            glob_matches_site(pattern, target)
+            glob_matches_site(text, &target, *case_sensitive)
         },
     }
 }
 
-fn path_matches(path: &str, prefix: &str, exact: bool) -> bool {
+fn hosts_agree(host: &str, rule_host: &str, exact: bool) -> bool {
+    if exact {
+        host.eq_ignore_ascii_case(rule_host)
+    } else {
+        host_matches(host, rule_host)
+    }
+}
+
+fn path_matches(path: &str, prefix: &str, exact: bool, boundary: bool) -> bool {
     if exact || path == prefix {
         return path == prefix;
     }
-    path.starts_with(prefix) &&
-        (prefix.ends_with('/') ||
-            matches!(path.as_bytes().get(prefix.len()), Some(b'/') | Some(b'?')))
+    if !path.starts_with(prefix) {
+        return false;
+    }
+    if !boundary {
+        return true;
+    }
+    prefix.ends_with('/') ||
+        matches!(path.as_bytes().get(prefix.len()), Some(b'/') | Some(b'?'))
 }
 
 fn port_matches(rule_port: Option<u16>, scheme: &str, request_port: Option<u16>) -> bool {
@@ -669,45 +777,72 @@ fn effective_port(scheme: &str, port: Option<u16>) -> Option<u16> {
     })
 }
 
-fn glob_matches_site(pattern: &str, host_and_path: &str) -> bool {
-    let host_and_path = host_and_path.to_ascii_lowercase();
-    let mut rest = host_and_path.as_str();
+fn glob_matches_site(pattern: &str, host_and_path: &str, case_sensitive: bool) -> bool {
+    let lowered_pattern;
+    let lowered_text;
+    let (pattern, host_and_path) = if case_sensitive {
+        (pattern, host_and_path)
+    } else {
+        lowered_pattern = pattern.to_ascii_lowercase();
+        lowered_text = host_and_path.to_ascii_lowercase();
+        (lowered_pattern.as_str(), lowered_text.as_str())
+    };
+    let mut rest = host_and_path;
     loop {
         if glob_match(pattern, rest) {
             return true;
         }
-        let Some((_, after_dot)) = rest.split_once('.') else {
+        let Some((before_dot, after_dot)) = rest.split_once('.') else {
             return false;
         };
-        if after_dot.is_empty() {
+        // A dot in the path or query is not another hostname label.
+        if before_dot.contains('/') || before_dot.contains('?') || after_dot.is_empty() {
             return false;
         }
         rest = after_dot;
     }
 }
 
+fn is_separator(byte: u8) -> bool {
+    !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.' | b'%')
+}
+
+/// `*` is a wildcard and `^` is a separator, including the end of the address.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        return pattern == text;
-    }
-    if !text.starts_with(parts[0]) {
-        return false;
-    }
-    let mut rest = &text[parts[0].len()..];
-    for (index, part) in parts.iter().enumerate().skip(1) {
-        if index + 1 == parts.len() {
-            return rest.ends_with(part);
+    fn rec(pattern: &[u8], text: &[u8]) -> bool {
+        let mut pattern_index = 0;
+        let mut text_index = 0;
+        while pattern_index < pattern.len() {
+            match pattern[pattern_index] {
+                b'*' => {
+                    if pattern_index + 1 == pattern.len() {
+                        return true;
+                    }
+                    return (text_index..=text.len())
+                        .any(|next| rec(&pattern[pattern_index + 1..], &text[next..]));
+                },
+                b'^' => {
+                    if text_index == text.len() || is_separator(text[text_index]) {
+                        if text_index < text.len() && is_separator(text[text_index]) {
+                            text_index += 1;
+                        }
+                        pattern_index += 1;
+                        continue;
+                    }
+                    return false;
+                },
+                byte => {
+                    if text.get(text_index) != Some(&byte) {
+                        return false;
+                    }
+                    pattern_index += 1;
+                    text_index += 1;
+                },
+            }
         }
-        if part.is_empty() {
-            continue;
-        }
-        let Some(found) = rest.find(part) else {
-            return false;
-        };
-        rest = &rest[found + part.len()..];
+        text_index == text.len()
     }
-    true
+    rec(pattern.as_bytes(), text.as_bytes())
 }
 
 fn host_matches(host: &str, rule_host: &str) -> bool {
@@ -722,12 +857,14 @@ fn host_matches(host: &str, rule_host: &str) -> bool {
 }
 
 fn same_site(request_host: &str, source_host: &str) -> bool {
-    if host_matches(request_host, source_host) || host_matches(source_host, request_host) {
+    if request_host.eq_ignore_ascii_case(source_host) {
         return true;
     }
     let request_site = reg_suffix(request_host);
     let source_site = reg_suffix(source_host);
-    !request_site.is_empty() && request_site.eq_ignore_ascii_case(source_site)
+    !request_site.is_empty() &&
+        request_site.eq_ignore_ascii_case(source_site) &&
+        !net_traits::pub_domains::is_pub_domain(request_site)
 }
 
 fn source_domains_allow(domains: &[DomainCond], source_host: Option<&str>) -> bool {
@@ -760,16 +897,26 @@ fn normalize_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-fn read_config(path: &Path) -> (bool, Vec<String>, Vec<PathBuf>) {
-    let Ok(text) = fs::read_to_string(path) else {
-        return (true, Vec::new(), Vec::new());
+fn read_config(path: &Path) -> Result<(bool, Vec<String>, Vec<PathBuf>), ()> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((true, Vec::new(), Vec::new()));
+        },
+        Err(error) => {
+            warn!(
+                "Network filter: could not read {}: {error}",
+                path.display()
+            );
+            return Err(());
+        },
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         warn!(
             "Network filter: ignoring unreadable config {}",
             path.display()
         );
-        return (true, Vec::new(), Vec::new());
+        return Err(());
     };
     let enabled = value
         .get(PREF_ENABLED)
@@ -789,7 +936,7 @@ fn read_config(path: &Path) -> (bool, Vec<String>, Vec<PathBuf>) {
     .into_iter()
     .map(PathBuf::from)
     .collect();
-    (enabled, whitelist, lists)
+    Ok((enabled, whitelist, lists))
 }
 
 fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {

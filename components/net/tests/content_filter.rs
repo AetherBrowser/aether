@@ -100,6 +100,96 @@ kept.example
 }
 
 #[test]
+fn wildcard_separator_scheme_case_and_anchors() {
+    assert!(blocks("||tracker.example^*\n", "https://tracker.example/a.js"));
+    assert!(!blocks(
+        "||ads.example/*\n",
+        "https://safe.example/redirect.ads.example/banner",
+    ));
+    assert!(blocks(
+        "https://ads.example/banner/*\n",
+        "https://ads.example/banner/a.js",
+    ));
+    assert!(!blocks(
+        "https://ads.example/banner/*\n",
+        "http://ads.example/banner/a.js",
+    ));
+    assert!(blocks("https://ads.example\n", "https://ads.example/a"));
+    assert!(!blocks("https://ads.example\n", "http://ads.example/a"));
+    assert!(blocks(
+        "https://ads.example:443/banner\n",
+        "https://ads.example/banner",
+    ));
+    assert!(!blocks(
+        "https://ads.example:443/banner\n",
+        "https://ads.example:8443/banner",
+    ));
+    assert!(blocks(
+        "|https://ads.example/banner|\n",
+        "https://ads.example/banner",
+    ));
+    assert!(!blocks(
+        "|https://ads.example/banner|\n",
+        "https://cdn.ads.example/banner",
+    ));
+    assert!(blocks("||tracker.example/ads\n", "https://tracker.example/ads.js"));
+    assert!(!blocks(
+        "||ads.example/Banner*$match-case\n",
+        "https://ads.example/banner.js",
+    ));
+    assert!(blocks(
+        "||ads.example/Banner*$match-case\n",
+        "https://ads.example/Banner.js",
+    ));
+    assert!(blocks(
+        "https://ads.example/file$metadata\n",
+        "https://ads.example/file$metadata",
+    ));
+    assert!(blocks_as(
+        "||cdn.example^$third-party\n",
+        "https://cdn.example/a.js",
+        "https://tenant.github.io/",
+        Destination::Script,
+    ));
+    assert!(blocks_as(
+        "||cdn.example^$third-party\n",
+        "https://cdn.example/a.js",
+        "https://other.github.io/",
+        Destination::Script,
+    ));
+    assert!(blocks_as(
+        "||widgets.example^$object\n",
+        "https://widgets.example/plugin",
+        "https://news.example/",
+        Destination::Embed,
+    ));
+    assert!(ContentFilter::from_list("||realtime.example^$websocket\n").blocks_websocket(
+        "wss://realtime.example/socket",
+        Some("https://news.example/"),
+    ));
+}
+
+#[test]
+fn a_broken_config_keeps_the_previous_rules() {
+    let dir = temp_dir("broken");
+    fs::write(dir.join(BLOCKLIST_FILE), "blocked.example\n").unwrap();
+    fs::write(
+        dir.join(CONFIG_FILE),
+        r#"{ "privacy.trackingprotection.enabled": true, "urlclassifier.trackingWhitelistTable": ["allowed.example"], "urlclassifier.trackingTable": [] }"#,
+    )
+    .unwrap();
+    let mut filter = ContentFilter::load(Some(&dir));
+    assert!(filter.blocks("https://blocked.example/", None, Destination::Document));
+    assert!(!filter.blocks("https://allowed.example/", None, Destination::Document));
+
+    fs::write(dir.join(CONFIG_FILE), "{").unwrap();
+    filter.reload();
+    assert!(filter.blocks("https://blocked.example/", None, Destination::Document));
+    assert!(!filter.blocks("https://allowed.example/", None, Destination::Document));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn data_and_file_urls_are_not_filtered() {
     let filter = ContentFilter::from_list("example");
     assert!(!filter.blocks("data:text/plain,hi", None, Destination::Document));
