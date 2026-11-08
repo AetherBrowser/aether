@@ -545,10 +545,14 @@
       const blocklist = document.getElementById("blocklist");
       const sectionIds = ["home", "search", "network", "download", "appearance", "about"];
       let networkReady = false;
+      let savedBlocklist = "";
 
-      function renderNetwork(data) {
+      function renderNetwork(data, replaceList) {
         filterEnabled.checked = !!data.enabled;
-        blocklist.value = data.blocklist || "";
+        if (replaceList) {
+          savedBlocklist = data.blocklist || "";
+          blocklist.value = savedBlocklist;
+        }
       }
 
       async function loadNetwork() {
@@ -557,25 +561,27 @@
           const data = await response.json();
           if (data.error) {
             networkError.textContent = data.error;
+            networkPane.dataset.loaded = "";
             return;
           }
           networkError.textContent = "";
-          renderNetwork(data);
+          renderNetwork(data, true);
           networkReady = true;
         } catch (error) {
           networkError.textContent = "Could not load the network filter.";
+          networkPane.dataset.loaded = "";
         }
       }
 
-      async function saveNetwork() {
+      async function saveNetwork(includeList) {
         if (!networkReady) {
           return;
         }
-        const query =
-          "enabled=" +
-          filterEnabled.checked +
-          "&blocklist=" +
-          encodeURIComponent(blocklist.value);
+        const listAtStart = blocklist.value;
+        let query = "enabled=" + filterEnabled.checked;
+        if (includeList) {
+          query += "&blocklist=" + encodeURIComponent(listAtStart);
+        }
         try {
           const response = await fetch("about:content-filter?" + query);
           const data = await response.json();
@@ -584,14 +590,22 @@
             return;
           }
           networkError.textContent = "";
-          renderNetwork(data);
+          const editedSince = blocklist.value !== listAtStart;
+          renderNetwork(data, includeList && !editedSince);
+          if (includeList && !editedSince) {
+            savedBlocklist = data.blocklist || "";
+          }
         } catch (error) {
           networkError.textContent = "Could not save the network filter.";
         }
       }
 
-      filterEnabled.addEventListener("change", saveNetwork);
-      document.getElementById("save-blocklist").addEventListener("click", saveNetwork);
+      filterEnabled.addEventListener("change", function () {
+        saveNetwork(false);
+      });
+      document.getElementById("save-blocklist").addEventListener("click", function () {
+        saveNetwork(true);
+      });
 
       async function loadAbout() {
         aboutPane.dataset.loading = "1";
@@ -635,7 +649,7 @@
           searchPane.dataset.loaded = "1";
           apply();
         }
-        if (current === "network" && !networkPane.dataset.loaded) {
+        if (current === "network" && networkPane.dataset.loaded !== "1") {
           networkPane.dataset.loaded = "1";
           loadNetwork();
         }
