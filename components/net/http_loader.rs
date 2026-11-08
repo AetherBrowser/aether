@@ -212,8 +212,10 @@ fn blocked_by(
     source: Option<&str>,
     request: &Request,
 ) -> bool {
-    if matches!(request.mode, RequestMode::WebSocket { .. }) {
-        return filter.blocks_websocket(url, source);
+    if let RequestMode::WebSocket { original_url, .. } = &request.mode {
+        // Fetch may already have rewritten ws(s) to http(s). Match the rule
+        // against the WebSocket URL that started the handshake.
+        return filter.blocks_websocket(original_url.as_str(), source);
     }
     filter.blocks(url, source, request.destination)
 }
