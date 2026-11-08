@@ -180,8 +180,10 @@ impl ContentFilter {
         };
         let config_path = config_dir.join(CONFIG_FILE);
         let blocklist_path = config_dir.join(BLOCKLIST_FILE);
-        let (enabled, whitelist, lists) = read_config(&config_path);
+        // Stamp the files before reading them. A save that lands between the
+        // read and the stamp would otherwise look fresh while the rules are old.
         let mut watched = vec![watch(&config_path), watch(&blocklist_path)];
+        let (enabled, whitelist, lists) = read_config(&config_path);
         let mut texts = Vec::new();
         if let Ok(text) = fs::read_to_string(&blocklist_path) {
             texts.push(text);
