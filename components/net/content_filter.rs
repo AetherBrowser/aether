@@ -6,7 +6,10 @@
 //!
 //! The profile directory holds two files:
 //! - `blocklist.txt` — one site, URL, or network filter per line
-//! - `content_filter.json` — `enabled`, `whitelist_domains`, and extra `filter_lists`
+//! - `content_filter.json` for tracking protection settings:
+//!   - `privacy.trackingprotection.enabled`
+//!   - `urlclassifier.trackingWhitelistTable` — hosts that are never blocked
+//!   - `urlclassifier.trackingTable` — extra filter files, beside `blocklist.txt`
 //!
 //! `servo:settings#network` writes those files. The resource thread reads them
 //! when a request is about to be sent, and again when either file changes.
@@ -29,6 +32,13 @@ use url::Url;
 pub const BLOCKLIST_FILE: &str = "blocklist.txt";
 /// Enable flag, allow-list, and extra filter files.
 pub const CONFIG_FILE: &str = "content_filter.json";
+
+/// `privacy.trackingprotection.enabled` in Firefox.
+const PREF_ENABLED: &str = "privacy.trackingprotection.enabled";
+/// Firefox stores entity allow-list table names here. Aether stores hosts.
+const PREF_WHITELIST: &str = "urlclassifier.trackingWhitelistTable";
+/// Firefox stores tracking block-list table names here. Aether stores filter files.
+const PREF_FILTER_LISTS: &str = "urlclassifier.trackingTable";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceKind {
@@ -760,20 +770,23 @@ fn read_config(path: &Path) -> (bool, Vec<String>, Vec<PathBuf>) {
         return (true, Vec::new(), Vec::new());
     };
     let enabled = value
-        .get("enabled")
+        .get(PREF_ENABLED)
+        .or_else(|| value.get("enabled"))
         .and_then(|item| item.as_bool())
         .unwrap_or(true);
-    let whitelist = string_list(value.get("whitelist_domains"));
-    let lists = value
-        .get("filter_lists")
-        .and_then(|item| item.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str().map(PathBuf::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let whitelist = string_list(
+        value
+            .get(PREF_WHITELIST)
+            .or_else(|| value.get("whitelist_domains")),
+    );
+    let lists = string_list(
+        value
+            .get(PREF_FILTER_LISTS)
+            .or_else(|| value.get("filter_lists")),
+    )
+    .into_iter()
+    .map(PathBuf::from)
+    .collect();
     (enabled, whitelist, lists)
 }
 

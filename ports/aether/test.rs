@@ -455,7 +455,7 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("<section id=\"network\" hidden>"));
     assert!(html.contains("id=\"blocklist\""));
     assert!(html.contains("id=\"filter-enabled\""));
-    assert!(html.contains("servo:content-filter"));
+    assert!(html.contains("about:content-filter"));
     assert!(html.contains("id=\"save-blocklist\""));
 }
 

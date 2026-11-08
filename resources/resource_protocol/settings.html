@@ -553,7 +553,7 @@
 
       async function loadNetwork() {
         try {
-          const response = await fetch("servo:content-filter");
+          const response = await fetch("about:content-filter");
           const data = await response.json();
           if (data.error) {
             networkError.textContent = data.error;
@@ -577,7 +577,7 @@
           "&blocklist=" +
           encodeURIComponent(blocklist.value);
         try {
-          const response = await fetch("servo:content-filter?" + query);
+          const response = await fetch("about:content-filter?" + query);
           const data = await response.json();
           if (data.error) {
             networkError.textContent = data.error;

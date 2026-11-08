@@ -118,9 +118,9 @@ fn profile_files_enable_whitelist_and_extra_lists() {
     fs::write(
         dir.join(CONFIG_FILE),
         r#"{
-            "enabled": true,
-            "whitelist_domains": ["allowed.example"],
-            "filter_lists": ["extra.txt"]
+            "privacy.trackingprotection.enabled": true,
+            "urlclassifier.trackingWhitelistTable": ["allowed.example"],
+            "urlclassifier.trackingTable": ["extra.txt"]
         }"#,
     )
     .unwrap();
@@ -133,7 +133,7 @@ fn profile_files_enable_whitelist_and_extra_lists() {
 
     fs::write(
         dir.join(CONFIG_FILE),
-        r#"{ "enabled": false, "whitelist_domains": [], "filter_lists": ["extra.txt"] }"#,
+        r#"{ "privacy.trackingprotection.enabled": false, "urlclassifier.trackingWhitelistTable": [], "urlclassifier.trackingTable": ["extra.txt"] }"#,
     )
     .unwrap();
     let mut filter = filter;

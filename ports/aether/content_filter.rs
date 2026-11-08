@@ -2,10 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Profile files for the network filter edited from `servo:settings#network`.
+//! Profile files for the network filter edited from `about:settings#network`.
 //!
 //! The network stack reads the same files (`blocklist.txt` and
 //! `content_filter.json`) and applies them on the next request.
+//!
+//! The JSON keys are the Firefox preference names, as in `home.json`:
+//! - `privacy.trackingprotection.enabled`
+//! - `urlclassifier.trackingWhitelistTable` — hosts that are never blocked
+//! - `urlclassifier.trackingTable` — extra filter files, beside `blocklist.txt`
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,13 +21,17 @@ use serde_json::{Value, json};
 const BLOCKLIST_FILE: &str = "blocklist.txt";
 const CONFIG_FILE: &str = "content_filter.json";
 
+const PREF_ENABLED: &str = "privacy.trackingprotection.enabled";
+const PREF_WHITELIST: &str = "urlclassifier.trackingWhitelistTable";
+const PREF_FILTER_LISTS: &str = "urlclassifier.trackingTable";
+
 struct InstalledFilter {
     config_dir: Option<PathBuf>,
 }
 
 static INSTALLED: Mutex<InstalledFilter> = Mutex::new(InstalledFilter { config_dir: None });
 
-/// Remember the profile directory so `servo:content-filter` writes the list
+/// Remember the profile directory so `about:content-filter` writes the list
 /// the network stack is watching.
 pub(crate) fn install_content_filter(config_dir: Option<PathBuf>) {
     INSTALLED
@@ -31,7 +40,7 @@ pub(crate) fn install_content_filter(config_dir: Option<PathBuf>) {
         .config_dir = config_dir;
 }
 
-/// Answer `servo:content-filter`. A query string saves the enable flag and the list.
+/// Answer `about:content-filter`. A query string saves the enable flag and the list.
 pub(crate) fn handle_content_filter_request(query: Option<&str>) -> String {
     let config_dir = INSTALLED
         .lock()
@@ -75,7 +84,12 @@ fn load_settings(config_dir: &Path) -> FilterSettings {
     let enabled = fs::read_to_string(config_dir.join(CONFIG_FILE))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| value.get("enabled").and_then(Value::as_bool))
+        .and_then(|value| {
+            value
+                .get(PREF_ENABLED)
+                .or_else(|| value.get("enabled"))
+                .and_then(Value::as_bool)
+        })
         .unwrap_or(true);
     let blocklist = fs::read_to_string(config_dir.join(BLOCKLIST_FILE)).unwrap_or_default();
     FilterSettings { enabled, blocklist }
@@ -83,18 +97,23 @@ fn load_settings(config_dir: &Path) -> FilterSettings {
 
 fn save_settings(config_dir: &Path, enabled: bool, blocklist: &str) -> Result<(), String> {
     fs::create_dir_all(config_dir).map_err(|error| error.to_string())?;
-    let mut config = fs::read_to_string(config_dir.join(CONFIG_FILE))
+    let current = fs::read_to_string(config_dir.join(CONFIG_FILE))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .filter(|value| value.is_object())
         .unwrap_or_else(|| json!({}));
-    config["enabled"] = Value::Bool(enabled);
-    if config.get("whitelist_domains").is_none() {
-        config["whitelist_domains"] = json!([]);
-    }
-    if config.get("filter_lists").is_none() {
-        config["filter_lists"] = json!([]);
-    }
+    let config = json!({
+        PREF_ENABLED: enabled,
+        PREF_WHITELIST: string_list(
+            current
+                .get(PREF_WHITELIST)
+                .or_else(|| current.get("whitelist_domains")),
+        ),
+        PREF_FILTER_LISTS: string_list(
+            current
+                .get(PREF_FILTER_LISTS)
+                .or_else(|| current.get("filter_lists")),
+        ),
+    });
     let config_text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
     write_atomic(
         &config_dir.join(CONFIG_FILE),
@@ -112,6 +131,18 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = path.with_extension("tmp");
     fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
     fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn string_list(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn json_settings(enabled: bool, blocklist: &str, error: Option<&str>) -> String {
@@ -155,9 +186,13 @@ mod tests {
 
         let stored: Value =
             serde_json::from_str(&fs::read_to_string(dir.join(CONFIG_FILE)).unwrap()).unwrap();
-        assert_eq!(stored["enabled"], true);
-        assert_eq!(stored["filter_lists"][0], "easylist.txt");
-        assert_eq!(stored["whitelist_domains"][0], "ok.example");
+        assert_eq!(stored["privacy.trackingprotection.enabled"], true);
+        assert_eq!(stored["urlclassifier.trackingTable"][0], "easylist.txt");
+        assert_eq!(
+            stored["urlclassifier.trackingWhitelistTable"][0],
+            "ok.example"
+        );
+        assert!(stored.get("enabled").is_none());
         assert_eq!(
             fs::read_to_string(dir.join(BLOCKLIST_FILE)).unwrap(),
             "ads.example\nhttps://tracker.example/pixel\n"
