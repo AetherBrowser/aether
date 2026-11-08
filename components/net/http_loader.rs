@@ -192,18 +192,37 @@ impl HttpState {
             .source_document_url
             .as_ref()
             .or_else(|| request.referrer.to_url())
-            .map(|source| source.as_str().to_owned());
-        let destination = request.destination;
+            .map(|source| source.as_str().to_owned())
+            .or_else(|| origin_url(request));
         {
             let filter = self.content_filter.read();
             if !filter.is_stale() {
-                return filter.blocks(url.as_str(), source.as_deref(), destination);
+                return blocked_by(&filter, url.as_str(), source.as_deref(), request);
             }
         }
         let mut filter = self.content_filter.write();
         filter.reload_if_stale();
-        filter.blocks(url.as_str(), source.as_deref(), destination)
+        blocked_by(&filter, url.as_str(), source.as_deref(), request)
     }
+}
+
+fn blocked_by(
+    filter: &crate::content_filter::ContentFilter,
+    url: &str,
+    source: Option<&str>,
+    request: &Request,
+) -> bool {
+    if matches!(request.mode, RequestMode::WebSocket { .. }) {
+        return filter.blocks_websocket(url, source);
+    }
+    filter.blocks(url, source, request.destination)
+}
+
+fn origin_url(request: &Request) -> Option<String> {
+    let Origin::Origin(ImmutableOrigin::Tuple(scheme, host, _)) = &request.origin else {
+        return None;
+    };
+    Some(format!("{scheme}://{host}/"))
 }
 
 /// Step 11 of <https://fetch.spec.whatwg.org/#concept-fetch>.

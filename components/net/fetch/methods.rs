@@ -520,6 +520,15 @@ pub async fn main_fetch(
             .get_referrer_policy();
     }
 
+    // Keep the page that started the request even when the referrer policy
+    // is `no-referrer`. The filter uses this for `$third-party` and `$domain=`.
+    // The referrer sent on the wire is still decided below.
+    if request.source_document_url.is_none() &&
+        let Referrer::Client(url) | Referrer::ReferrerUrl(url) = &request.referrer
+    {
+        request.source_document_url = Some(url.clone());
+    }
+
     // Internal pages (`servo:` and `about:` other than `about:blank` /
     // `about:srcdoc`) have an opaque origin. Script passes their document URL
     // as the referrer so protocol handlers can recognize `about:settings`.
