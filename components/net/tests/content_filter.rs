@@ -141,6 +141,42 @@ fn wildcard_separator_scheme_case_and_anchors() {
         "||ads.example/Banner*$match-case\n",
         "https://ads.example/Banner.js",
     ));
+    assert!(blocks_as(
+        "|https://ads.example/banner/*$script\n",
+        "https://ads.example/banner/a.js",
+        "https://news.example/",
+        Destination::Script,
+    ));
+    assert!(!blocks_as(
+        "|https://ads.example/banner/*$script\n",
+        "https://ads.example/banner/a.js",
+        "https://news.example/",
+        Destination::Image,
+    ));
+    assert!(blocks(
+        "|https://ads.example/banner/*|\n",
+        "https://ads.example/banner/a.js",
+    ));
+    assert!(!blocks(
+        "|https://ads.example/banner\n",
+        "https://cdn.ads.example/banner",
+    ));
+    assert!(blocks(
+        "https://ads.example:8443/banner/*\n",
+        "https://ads.example:8443/banner/a.js",
+    ));
+    assert!(!blocks(
+        "https://ads.example:8443/banner/*\n",
+        "https://ads.example/banner/a.js",
+    ));
+    assert!(blocks(
+        "*tracking_pixel*\n",
+        "https://news.example/assets/tracking_pixel.gif",
+    ));
+    assert!(blocks(
+        "*banner^\n",
+        "https://tracker.example/banner?x=1",
+    ));
     assert!(blocks(
         "https://ads.example/file$metadata\n",
         "https://ads.example/file$metadata",

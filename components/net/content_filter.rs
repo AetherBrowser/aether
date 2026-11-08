@@ -109,9 +109,13 @@ enum Pattern {
     /// Plain text that must appear in the path or query. Not a regular expression.
     Contains(String),
     /// `*` wildcard. `^` is a separator. `case_sensitive` honors `$match-case`.
+    /// `domain` is `||` (hostname labels). `start` and `end` are single `|` anchors.
     Glob {
         text: String,
         case_sensitive: bool,
+        domain: bool,
+        start: bool,
+        end: bool,
     },
 }
 
@@ -466,9 +470,15 @@ fn split_options(line: &str) -> (&str, Option<&str>) {
     if options.is_empty() || !options.split(',').all(option_is_shaped) {
         return (line, None);
     }
-    // `https://ads.example/file$script` is a URL. `||ads.example^$script` is a rule.
+    // `https://ads.example/file$script` is a URL. Anchored and wildcard rules
+    // still carry options: `|https://ads.example/banner/*$script`.
     let pattern = &line[..index];
-    if pattern.contains("://") && !options.contains(',') && !options.contains('=') {
+    let filter_syntax = pattern.starts_with('|') || pattern.contains('*');
+    if pattern.contains("://") &&
+        !filter_syntax &&
+        !options.contains(',') &&
+        !options.contains('=')
+    {
         return (line, None);
     }
     (pattern, Some(options))
@@ -593,7 +603,10 @@ fn parse_pattern(text: &str, case_sensitive: bool) -> Option<Pattern> {
         return Some(Pattern::Contains(inner.to_owned()));
     }
     if text.contains('*') {
-        let body = text.trim_start_matches('|').trim();
+        let domain = text.starts_with("||");
+        let start = text.starts_with('|');
+        let end = text.ends_with('|') && !text.ends_with("||");
+        let body = text.trim_matches('|').trim();
         if body.is_empty() || body.chars().all(|character| character == '*' || character == '^') {
             return None;
         }
@@ -605,6 +618,9 @@ fn parse_pattern(text: &str, case_sensitive: bool) -> Option<Pattern> {
         return Some(Pattern::Glob {
             text,
             case_sensitive,
+            domain,
+            start,
+            end,
         });
     }
     if let Some(exact) = text
@@ -618,7 +634,8 @@ fn parse_pattern(text: &str, case_sensitive: bool) -> Option<Pattern> {
         return loose_pattern(host_rule.trim_end_matches('^').trim(), false, false, false);
     }
     if let Some(anchored) = text.strip_prefix('|') {
-        return loose_pattern(anchored.trim_end_matches('^').trim(), false, false, true);
+        // A single leading `|` anchors the address. Subdomains do not match.
+        return loose_pattern(anchored.trim_end_matches('^').trim(), false, true, true);
     }
     loose_pattern(text.trim_end_matches('^').trim(), false, false, true)
 }
@@ -727,15 +744,12 @@ fn pattern_matches(pattern: &Pattern, request: &ParsedRequest) -> bool {
         Pattern::Glob {
             text,
             case_sensitive,
+            domain,
+            start,
+            end,
         } => {
-            let target = if text.contains("://") {
-                format!("{}://{}", request.scheme, request.host_and_path)
-            } else if text.contains('/') {
-                request.host_and_path.clone()
-            } else {
-                request.host.clone()
-            };
-            glob_matches_site(text, &target, *case_sensitive)
+            let target = glob_target(request, text, *domain);
+            glob_matches_site(text, &target, *case_sensitive, *domain, *start, *end)
         },
     }
 }
@@ -777,7 +791,35 @@ fn effective_port(scheme: &str, port: Option<u16>) -> Option<u16> {
     })
 }
 
-fn glob_matches_site(pattern: &str, host_and_path: &str, case_sensitive: bool) -> bool {
+fn glob_target(request: &ParsedRequest, pattern: &str, domain: bool) -> String {
+    let address = if explicit_port(pattern).is_some() &&
+        let Some(port) = effective_port(&request.scheme, request.port)
+    {
+        let mut with_port = request.host.clone();
+        with_port.push(':');
+        with_port.push_str(&port.to_string());
+        with_port.push_str(&request.path_and_query);
+        with_port
+    } else {
+        request.host_and_path.clone()
+    };
+    if pattern.contains("://") || !domain {
+        format!("{}://{address}", request.scheme)
+    } else if pattern.contains('/') {
+        address
+    } else {
+        request.host.clone()
+    }
+}
+
+fn glob_matches_site(
+    pattern: &str,
+    host_and_path: &str,
+    case_sensitive: bool,
+    domain: bool,
+    start: bool,
+    end: bool,
+) -> bool {
     let lowered_pattern;
     let lowered_text;
     let (pattern, host_and_path) = if case_sensitive {
@@ -787,20 +829,41 @@ fn glob_matches_site(pattern: &str, host_and_path: &str, case_sensitive: bool) -
         lowered_text = host_and_path.to_ascii_lowercase();
         (lowered_pattern.as_str(), lowered_text.as_str())
     };
-    let mut rest = host_and_path;
-    loop {
-        if glob_match(pattern, rest) {
+    let mut budget = 20_000u32;
+    if domain {
+        let mut rest = host_and_path;
+        loop {
+            if glob_match(pattern, rest, end, &mut budget) {
+                return true;
+            }
+            let Some((before_dot, after_dot)) = rest.split_once('.') else {
+                return false;
+            };
+            // A dot in the path or query is not another hostname label.
+            if before_dot.contains('/') || before_dot.contains('?') || after_dot.is_empty() {
+                return false;
+            }
+            rest = after_dot;
+        }
+    }
+    if start {
+        return glob_match(pattern, host_and_path, end, &mut budget);
+    }
+    let mut offset = 0;
+    while offset <= host_and_path.len() {
+        if glob_match(pattern, &host_and_path[offset..], end, &mut budget) {
             return true;
         }
-        let Some((before_dot, after_dot)) = rest.split_once('.') else {
-            return false;
-        };
-        // A dot in the path or query is not another hostname label.
-        if before_dot.contains('/') || before_dot.contains('?') || after_dot.is_empty() {
+        offset += host_and_path[offset..]
+            .chars()
+            .next()
+            .map(char::len_utf8)
+            .unwrap_or(1);
+        if budget == 0 {
             return false;
         }
-        rest = after_dot;
     }
+    false
 }
 
 fn is_separator(byte: u8) -> bool {
@@ -808,8 +871,14 @@ fn is_separator(byte: u8) -> bool {
 }
 
 /// `*` is a wildcard and `^` is a separator, including the end of the address.
-fn glob_match(pattern: &str, text: &str) -> bool {
-    fn rec(pattern: &[u8], text: &[u8]) -> bool {
+/// `end_anchor` requires the pattern to finish at the end of `text`.
+/// `budget` stops a long path from exploring every wildcard split.
+fn glob_match(pattern: &str, text: &str, end_anchor: bool, budget: &mut u32) -> bool {
+    fn rec(pattern: &[u8], text: &[u8], end_anchor: bool, budget: &mut u32) -> bool {
+        if *budget == 0 {
+            return false;
+        }
+        *budget -= 1;
         let mut pattern_index = 0;
         let mut text_index = 0;
         while pattern_index < pattern.len() {
@@ -818,8 +887,17 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                     if pattern_index + 1 == pattern.len() {
                         return true;
                     }
-                    return (text_index..=text.len())
-                        .any(|next| rec(&pattern[pattern_index + 1..], &text[next..]));
+                    let mut next = text_index;
+                    while next <= text.len() {
+                        if rec(&pattern[pattern_index + 1..], &text[next..], end_anchor, budget) {
+                            return true;
+                        }
+                        if *budget == 0 || next == text.len() {
+                            return false;
+                        }
+                        next += 1;
+                    }
+                    return false;
                 },
                 b'^' => {
                     if text_index == text.len() || is_separator(text[text_index]) {
@@ -840,9 +918,9 @@ fn glob_match(pattern: &str, text: &str) -> bool {
                 },
             }
         }
-        text_index == text.len()
+        !end_anchor || text_index == text.len()
     }
-    rec(pattern.as_bytes(), text.as_bytes())
+    rec(pattern.as_bytes(), text.as_bytes(), end_anchor, budget)
 }
 
 fn host_matches(host: &str, rule_host: &str) -> bool {
