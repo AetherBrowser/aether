@@ -445,13 +445,8 @@ fn parse_rule(line: &str) -> Option<Rule> {
     if pattern_text.is_empty() {
         return None;
     }
-    let (types, party, domains, important, case_sensitive) = parsed_options.unwrap_or((
-        TypeFilter::default(),
-        Party::Any,
-        Vec::new(),
-        false,
-        false,
-    ));
+    let (types, party, domains, important, case_sensitive) =
+        parsed_options.unwrap_or((TypeFilter::default(), Party::Any, Vec::new(), false, false));
     Some(Rule {
         pattern: parse_pattern(pattern_text, case_sensitive)?,
         exception,
@@ -474,10 +469,7 @@ fn split_options(line: &str) -> (&str, Option<&str>) {
     // still carry options: `|https://ads.example/banner/*$script`.
     let pattern = &line[..index];
     let filter_syntax = pattern.starts_with('|') || pattern.contains('*');
-    if pattern.contains("://") &&
-        !filter_syntax &&
-        !options.contains(',') &&
-        !options.contains('=')
+    if pattern.contains("://") && !filter_syntax && !options.contains(',') && !options.contains('=')
     {
         return (line, None);
     }
@@ -502,9 +494,7 @@ fn option_is_shaped(token: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '~' | '-' | '.' | '|'))
 }
 
-fn parse_options(
-    options: &str,
-) -> Option<(TypeFilter, Party, Vec<DomainCond>, bool, bool)> {
+fn parse_options(options: &str) -> Option<(TypeFilter, Party, Vec<DomainCond>, bool, bool)> {
     let mut types = TypeFilter::default();
     let mut party = Party::Any;
     let mut domains = Vec::new();
@@ -607,7 +597,10 @@ fn parse_pattern(text: &str, case_sensitive: bool) -> Option<Pattern> {
         let start = text.starts_with('|');
         let end = text.ends_with('|') && !text.ends_with("||");
         let body = text.trim_matches('|').trim();
-        if body.is_empty() || body.chars().all(|character| character == '*' || character == '^') {
+        if body.is_empty() ||
+            body.chars()
+                .all(|character| character == '*' || character == '^')
+        {
             return None;
         }
         let text = if case_sensitive {
@@ -698,7 +691,10 @@ fn loose_pattern(
 /// The port written in the rule, including defaults such as `:443` that
 /// [`Url`] drops while parsing.
 fn explicit_port(text: &str) -> Option<u16> {
-    let after_scheme = text.rsplit_once("://").map(|(_, rest)| rest).unwrap_or(text);
+    let after_scheme = text
+        .rsplit_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(text);
     let host = after_scheme.split(['/', '?', '#']).next()?;
     let (_, port) = host.rsplit_once(':')?;
     if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -717,7 +713,9 @@ fn pattern_matches(pattern: &Pattern, request: &ParsedRequest) -> bool {
         } => {
             hosts_agree(&request.host, host, *host_exact) &&
                 port_matches(*port, &request.scheme, request.port) &&
-                scheme.as_ref().is_none_or(|scheme| scheme == &request.scheme)
+                scheme
+                    .as_ref()
+                    .is_none_or(|scheme| scheme == &request.scheme)
         },
         Pattern::Url {
             host,
@@ -772,8 +770,7 @@ fn path_matches(path: &str, prefix: &str, exact: bool, boundary: bool) -> bool {
     if !boundary {
         return true;
     }
-    prefix.ends_with('/') ||
-        matches!(path.as_bytes().get(prefix.len()), Some(b'/') | Some(b'?'))
+    prefix.ends_with('/') || matches!(path.as_bytes().get(prefix.len()), Some(b'/') | Some(b'?'))
 }
 
 fn port_matches(rule_port: Option<u16>, scheme: &str, request_port: Option<u16>) -> bool {
@@ -889,7 +886,12 @@ fn glob_match(pattern: &str, text: &str, end_anchor: bool, budget: &mut u32) -> 
                     }
                     let mut next = text_index;
                     while next <= text.len() {
-                        if rec(&pattern[pattern_index + 1..], &text[next..], end_anchor, budget) {
+                        if rec(
+                            &pattern[pattern_index + 1..],
+                            &text[next..],
+                            end_anchor,
+                            budget,
+                        ) {
                             return true;
                         }
                         if *budget == 0 || next == text.len() {
@@ -982,10 +984,7 @@ fn read_config(path: &Path) -> Result<(bool, Vec<String>, Vec<PathBuf>), ()> {
             return Ok((true, Vec::new(), Vec::new()));
         },
         Err(error) => {
-            warn!(
-                "Network filter: could not read {}: {error}",
-                path.display()
-            );
+            warn!("Network filter: could not read {}: {error}", path.display());
             return Err(());
         },
     };

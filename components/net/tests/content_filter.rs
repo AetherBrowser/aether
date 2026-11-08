@@ -101,7 +101,10 @@ kept.example
 
 #[test]
 fn wildcard_separator_scheme_case_and_anchors() {
-    assert!(blocks("||tracker.example^*\n", "https://tracker.example/a.js"));
+    assert!(blocks(
+        "||tracker.example^*\n",
+        "https://tracker.example/a.js"
+    ));
     assert!(!blocks(
         "||ads.example/*\n",
         "https://safe.example/redirect.ads.example/banner",
@@ -132,7 +135,10 @@ fn wildcard_separator_scheme_case_and_anchors() {
         "|https://ads.example/banner|\n",
         "https://cdn.ads.example/banner",
     ));
-    assert!(blocks("||tracker.example/ads\n", "https://tracker.example/ads.js"));
+    assert!(blocks(
+        "||tracker.example/ads\n",
+        "https://tracker.example/ads.js"
+    ));
     assert!(!blocks(
         "||ads.example/Banner*$match-case\n",
         "https://ads.example/banner.js",
@@ -173,10 +179,7 @@ fn wildcard_separator_scheme_case_and_anchors() {
         "*tracking_pixel*\n",
         "https://news.example/assets/tracking_pixel.gif",
     ));
-    assert!(blocks(
-        "*banner^\n",
-        "https://tracker.example/banner?x=1",
-    ));
+    assert!(blocks("*banner^\n", "https://tracker.example/banner?x=1",));
     assert!(blocks(
         "https://ads.example/file$metadata\n",
         "https://ads.example/file$metadata",
@@ -199,10 +202,12 @@ fn wildcard_separator_scheme_case_and_anchors() {
         "https://news.example/",
         Destination::Embed,
     ));
-    assert!(ContentFilter::from_list("||realtime.example^$websocket\n").blocks_websocket(
-        "wss://realtime.example/socket",
-        Some("https://news.example/"),
-    ));
+    assert!(
+        ContentFilter::from_list("||realtime.example^$websocket\n").blocks_websocket(
+            "wss://realtime.example/socket",
+            Some("https://news.example/"),
+        )
+    );
 }
 
 #[test]
