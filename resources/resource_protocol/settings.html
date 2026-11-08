@@ -321,12 +321,12 @@
             Lines starting with <code>!</code> are comments.
           </p>
           <label class="check" for="filter-enabled">
-            <input id="filter-enabled" type="checkbox" checked />
+            <input id="filter-enabled" type="checkbox" disabled />
             Block sites from this list
           </label>
           <label for="blocklist">Sites and URLs</label>
-          <textarea id="blocklist" spellcheck="false" placeholder="ads.example"></textarea>
-          <button type="button" id="save-blocklist">Save</button>
+          <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
+          <button type="button" id="save-blocklist" disabled>Save</button>
         </section>
         <section id="download" hidden>
           <h2>Downloads</h2>
@@ -544,11 +544,22 @@
       const filterEnabled = document.getElementById("filter-enabled");
       const blocklist = document.getElementById("blocklist");
       const sectionIds = ["home", "search", "network", "download", "appearance", "about"];
+      const saveBlocklist = document.getElementById("save-blocklist");
       let networkReady = false;
       let savedBlocklist = "";
+      let checkboxGeneration = 0;
 
-      function renderNetwork(data, replaceList) {
-        filterEnabled.checked = !!data.enabled;
+      function setNetworkEditable(editable) {
+        filterEnabled.disabled = !editable;
+        blocklist.disabled = !editable;
+        saveBlocklist.disabled = !editable;
+      }
+
+      function renderNetwork(data, replaceList, replaceEnabled) {
+        if (replaceEnabled) {
+          filterEnabled.indeterminate = false;
+          filterEnabled.checked = !!data.enabled;
+        }
         if (replaceList) {
           savedBlocklist = data.blocklist || "";
           blocklist.value = savedBlocklist;
@@ -565,11 +576,31 @@
             return;
           }
           networkError.textContent = "";
-          renderNetwork(data, true);
+          renderNetwork(data, true, checkboxGeneration === 0);
           networkReady = true;
+          setNetworkEditable(true);
         } catch (error) {
           networkError.textContent = "Could not load the network filter.";
           networkPane.dataset.loaded = "";
+          setNetworkEditable(false);
+        }
+      }
+
+      async function reloadCheckbox(generation) {
+        try {
+          const response = await fetch("about:content-filter");
+          const data = await response.json();
+          if (generation !== checkboxGeneration || data.error) {
+            if (generation === checkboxGeneration) {
+              filterEnabled.indeterminate = true;
+            }
+            return;
+          }
+          renderNetwork(data, false, true);
+        } catch (error) {
+          if (generation === checkboxGeneration) {
+            filterEnabled.indeterminate = true;
+          }
         }
       }
 
@@ -578,7 +609,9 @@
           return;
         }
         const listAtStart = blocklist.value;
-        let query = "enabled=" + filterEnabled.checked;
+        const generation = checkboxGeneration;
+        const enabledAtStart = filterEnabled.checked;
+        let query = "enabled=" + enabledAtStart;
         if (includeList) {
           query += "&blocklist=" + encodeURIComponent(listAtStart);
         }
@@ -587,20 +620,29 @@
           const data = await response.json();
           if (data.error) {
             networkError.textContent = data.error;
+            if (!includeList) {
+              reloadCheckbox(generation);
+            }
             return;
           }
           networkError.textContent = "";
           const editedSince = blocklist.value !== listAtStart;
-          renderNetwork(data, includeList && !editedSince);
+          const checkboxMoved = generation !== checkboxGeneration;
+          renderNetwork(data, includeList && !editedSince, !checkboxMoved && filterEnabled.checked === enabledAtStart);
           if (includeList && !editedSince) {
             savedBlocklist = data.blocklist || "";
           }
         } catch (error) {
           networkError.textContent = "Could not save the network filter.";
+          if (!includeList) {
+            reloadCheckbox(generation);
+          }
         }
       }
 
       filterEnabled.addEventListener("change", function () {
+        checkboxGeneration += 1;
+        filterEnabled.indeterminate = false;
         saveNetwork(false);
       });
       document.getElementById("save-blocklist").addEventListener("click", function () {
