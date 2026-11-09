@@ -90,7 +90,7 @@ impl App {
             self.servoshell_preferences.home_settings.clone(),
         );
 
-        let (places, history_page) = open_places(&self.opts);
+        let (places, history_page) = open_places(&self.opts, self.waker.clone());
 
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(

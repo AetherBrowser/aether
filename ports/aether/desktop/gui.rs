@@ -55,7 +55,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::Window;
 
-use crate::bookmarks::can_bookmark;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{
@@ -855,13 +854,14 @@ impl Gui {
 
                                     if !*location_dirty &&
                                         let Some(webview) = window.active_webview() &&
-                                        let Some(url) = webview.url().filter(can_bookmark)
+                                        let Some(url) = webview.url() &&
+                                        let Some(bookmarked) = state.bookmark_state(&url)
                                     {
                                         let bookmark_star = Self::bookmark_star(
                                             ui,
                                             toolbar_icons,
                                             location_field.rect,
-                                            state.is_bookmarked(&url),
+                                            bookmarked,
                                         );
                                         if bookmark_star.clicked() {
                                             state.toggle_bookmark(&webview);

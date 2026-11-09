@@ -21,7 +21,6 @@ use servo::{
 use url::Url;
 
 use super::protocols;
-use crate::bookmarks::can_bookmark;
 use crate::egl::host_trait::HostTrait;
 use crate::history::open_places;
 use crate::prefs::ServoShellPreferences;
@@ -47,8 +46,8 @@ pub(crate) struct EmbeddedPlatformWindow {
     current_can_go_back: Cell<bool>,
     /// Whether or not the active WebView is currently able to go forward.
     current_can_go_forward: Cell<bool>,
-    /// Whether the active page can be bookmarked, and whether it is.
-    current_bookmark_state: Cell<(bool, bool)>,
+    /// Whether the active page is bookmarked, or `None` when it has no bookmark star.
+    current_bookmark_state: Cell<Option<bool>>,
     /// The current load status of the active WebView.
     current_load_status: Cell<Option<LoadStatus>>,
 
@@ -131,14 +130,14 @@ impl PlatformWindow for EmbeddedPlatformWindow {
             .current_url
             .borrow()
             .as_ref()
-            .map_or((false, false), |url| {
-                (can_bookmark(url), state.is_bookmarked(url))
-            });
+            .and_then(|url| state.bookmark_state(url));
         let bookmark_state_changed = new_bookmark_state != self.current_bookmark_state.get();
         if bookmark_state_changed {
             self.current_bookmark_state.set(new_bookmark_state);
-            self.host
-                .on_bookmark_state_changed(new_bookmark_state.0, new_bookmark_state.1);
+            self.host.on_bookmark_state_changed(
+                new_bookmark_state.is_some(),
+                new_bookmark_state == Some(true),
+            );
         }
 
         let new_load_status = active_webview.load_status();
@@ -322,7 +321,7 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.search_engines.clone(),
         );
-        let (places, _) = open_places(&init.opts);
+        let (places, _) = open_places(&init.opts, init.event_loop_waker.clone());
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);

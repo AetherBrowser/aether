@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use crossbeam_channel::{Receiver, Sender, bounded, select, tick, unbounded};
+use crossbeam_channel::{Receiver, Sender, select, tick, unbounded};
 use log::{error, warn};
 use tokio::sync::oneshot;
 use url::Url;
@@ -29,7 +29,7 @@ pub struct PlacesService {
     sender: Option<Sender<PlacesCommand>>,
     cleaner: HistoryCleaner,
     thread: Option<JoinHandle<()>>,
-    initial_bookmarks: Vec<Url>,
+    bookmarks: Receiver<Vec<Url>>,
 }
 
 const HISTORY_UNAVAILABLE: &str = "The history is not available";
@@ -39,6 +39,19 @@ type Reply = oneshot::Sender<Result<(), String>>;
 enum CleanerRequest {
     SetRetention(Duration, Reply),
     DeleteVisitsSince(SystemTime, Reply),
+}
+
+/// Sends the saved bookmarks to the owner of a [`PlacesService`], and tells it to take them.
+struct BookmarksPublisher {
+    sender: Sender<Vec<Url>>,
+    notify: Box<dyn Fn() + Send>,
+}
+
+impl BookmarksPublisher {
+    fn publish(&self, urls: Vec<Url>) {
+        let _ = self.sender.send(urls);
+        (self.notify)();
+    }
 }
 
 /// Deletes visits of a [`PlacesService`], after the changes already sent to it.
@@ -78,39 +91,48 @@ impl Future for CleanerReply {
 }
 
 impl PlacesService {
-    /// Starts a service writing to the places database at `path`.
-    pub fn open(path: PathBuf, retention: Duration) -> Self {
-        Self::start(move || PlacesStore::open(&path), retention)
+    /// Starts a service writing to the places database at `path`. `notify` is called from
+    /// another thread when [`Self::take_bookmarks`] has something new.
+    pub fn open(path: PathBuf, retention: Duration, notify: impl Fn() + Send + 'static) -> Self {
+        Self::start(move || PlacesStore::open(&path), retention, notify)
     }
 
     /// Starts a service whose database is never written to disk.
-    pub fn open_in_memory(retention: Duration) -> Self {
-        Self::start(PlacesStore::open_in_memory, retention)
+    pub fn open_in_memory(retention: Duration, notify: impl Fn() + Send + 'static) -> Self {
+        Self::start(PlacesStore::open_in_memory, retention, notify)
     }
 
     fn start(
         open_store: impl FnOnce() -> rusqlite::Result<PlacesStore> + Send + 'static,
         retention: Duration,
+        notify: impl Fn() + Send + 'static,
     ) -> Self {
         let (sender, receiver) = unbounded();
         let (cleaner_sender, cleaner_receiver) = unbounded();
-        let (bookmarks_sender, bookmarks_receiver) = bounded(1);
+        let (bookmarks_sender, bookmarks) = unbounded();
+        let publisher = BookmarksPublisher {
+            sender: bookmarks_sender,
+            notify: Box::new(notify),
+        };
         let thread = thread::Builder::new()
             .name("Places".to_owned())
             .spawn(move || match open_store() {
                 Ok(store) => {
-                    let _ = bookmarks_sender.send(load_bookmarks(&store));
-                    run(store, receiver, retention, cleaner_receiver)
+                    publisher.publish(read_bookmarks(&store).unwrap_or_default());
+                    run(store, receiver, retention, cleaner_receiver, publisher)
                 },
                 // Nothing is saved for this session, but browsing keeps working.
-                Err(error) => error!("Could not open the places database: {error}"),
+                Err(error) => {
+                    error!("Could not open the places database: {error}");
+                    publisher.publish(Vec::new());
+                },
             })
             .expect("Thread spawning failed");
         Self {
             sender: Some(sender),
             cleaner: HistoryCleaner(cleaner_sender),
             thread: Some(thread),
-            initial_bookmarks: bookmarks_receiver.recv().unwrap_or_default(),
+            bookmarks,
         }
     }
 
@@ -150,9 +172,10 @@ impl PlacesService {
         });
     }
 
-    /// The URLs that were bookmarked when the service started.
-    pub fn initial_bookmarks(&self) -> &[Url] {
-        &self.initial_bookmarks
+    /// The saved bookmarks, if they were sent since the last call: at startup and after a
+    /// failed write.
+    pub fn take_bookmarks(&self) -> Option<Vec<Url>> {
+        self.bookmarks.try_iter().last()
     }
 
     /// Bookmarks `url`, unless it already is.
@@ -188,11 +211,11 @@ impl Drop for PlacesService {
     }
 }
 
-fn load_bookmarks(store: &PlacesStore) -> Vec<Url> {
-    store.bookmarked_urls().unwrap_or_else(|error| {
-        warn!("Could not read the bookmarks: {error}");
-        Vec::new()
-    })
+fn read_bookmarks(store: &PlacesStore) -> Option<Vec<Url>> {
+    store
+        .bookmarked_urls()
+        .inspect_err(|error| warn!("Could not read the bookmarks: {error}"))
+        .ok()
 }
 
 fn run(
@@ -200,6 +223,7 @@ fn run(
     receiver: Receiver<PlacesCommand>,
     mut retention: Duration,
     cleaner_receiver: Receiver<CleanerRequest>,
+    publisher: BookmarksPublisher,
 ) {
     let expiration_timer = tick(EXPIRATION_INTERVAL);
     expire_or_warn(&mut store, retention);
@@ -212,13 +236,14 @@ fn run(
                     }
                     return;
                 };
-                write(&mut store, iter::once(command).chain(receiver.try_iter()).collect());
+                let commands = iter::once(command).chain(receiver.try_iter()).collect();
+                write(&mut store, commands, &publisher);
             },
             recv(cleaner_receiver) -> request => {
                 let Ok(request) = request else {
                     return;
                 };
-                write(&mut store, receiver.try_iter().collect());
+                write(&mut store, receiver.try_iter().collect(), &publisher);
                 clean(&mut store, request, &mut retention);
             },
             recv(expiration_timer) -> _ => expire_or_warn(&mut store, retention),
@@ -241,7 +266,7 @@ fn clean(store: &mut PlacesStore, request: CleanerRequest, retention: &mut Durat
     let _ = reply.send(result);
 }
 
-fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>) {
+fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>, publisher: &BookmarksPublisher) {
     if commands.is_empty() {
         return;
     }
@@ -250,6 +275,15 @@ fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>) {
             "Could not write {} changes to the places database: {error}",
             commands.len()
         );
+        let changes_bookmarks = commands.iter().any(|command| {
+            matches!(
+                command,
+                PlacesCommand::AddBookmark { .. } | PlacesCommand::RemoveBookmark { .. }
+            )
+        });
+        if changes_bookmarks && let Some(urls) = read_bookmarks(store) {
+            publisher.publish(urls);
+        }
     }
 }
 
@@ -268,9 +302,10 @@ fn expire_or_warn(store: &mut PlacesStore, retention: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use crossbeam_channel::{Receiver, unbounded};
     use futures::executor::block_on;
     use rusqlite::Connection;
     use url::Url;
@@ -294,7 +329,7 @@ mod tests {
 
     fn write_old_and_recent_visits(path: &Path) {
         let now = SystemTime::now();
-        let service = PlacesService::open(path.to_owned(), Duration::MAX);
+        let service = PlacesService::open(path.to_owned(), Duration::MAX, || {});
         let old = Url::parse("https://example.com/old").unwrap();
         let recent = Url::parse("https://example.com/recent").unwrap();
         service.record_visit(old, now - days(100), None);
@@ -306,7 +341,7 @@ mod tests {
     fn dropping_the_service_writes_pending_visits() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
 
         for index in 0..100 {
             let url = Url::parse(&format!("https://servo.org/{index}")).unwrap();
@@ -325,7 +360,7 @@ mod tests {
     fn titles_are_written_by_the_service() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         let url = Url::parse("https://servo.org/").unwrap();
 
         service.record_visit(url.clone(), UNIX_EPOCH, None);
@@ -343,7 +378,7 @@ mod tests {
     fn the_last_of_many_titles_is_written() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         let url = Url::parse("https://servo.org/").unwrap();
 
         service.record_visit(url.clone(), UNIX_EPOCH, None);
@@ -363,7 +398,7 @@ mod tests {
     fn replaced_visits_are_written_by_the_service() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         let redirect = Url::parse("https://servo.org/redirect").unwrap();
         let target = Url::parse("https://servo.org/").unwrap();
 
@@ -386,10 +421,38 @@ mod tests {
     fn a_database_that_cannot_be_opened_disables_the_history() {
         // SQLite cannot open a directory as a database.
         let directory = tempfile::tempdir().unwrap();
-        let service = PlacesService::open(directory.path().to_owned(), Duration::MAX);
+        let service = PlacesService::open(directory.path().to_owned(), Duration::MAX, || {});
 
         service.record_visit(Url::parse("https://servo.org/").unwrap(), UNIX_EPOCH, None);
         drop(service);
+    }
+
+    fn open_notified(path: PathBuf, retention: Duration) -> (PlacesService, Receiver<()>) {
+        let (sender, notifications) = unbounded();
+        let service = PlacesService::open(path, retention, move || {
+            let _ = sender.send(());
+        });
+        (service, notifications)
+    }
+
+    fn next_bookmarks(service: &PlacesService, notifications: &Receiver<()>) -> Vec<Url> {
+        notifications.recv_timeout(Duration::from_secs(10)).unwrap();
+        service.take_bookmarks().unwrap()
+    }
+
+    /// Waits until the commands already sent to `service` are written.
+    fn flush(service: &PlacesService) {
+        block_on(service.cleaner().set_retention(Duration::MAX)).unwrap();
+    }
+
+    fn reject_inserts_into(path: &Path, table: &str) {
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject BEFORE INSERT ON {table}
+                 BEGIN SELECT RAISE(ABORT, 'rejected'); END;"
+            ))
+            .unwrap();
     }
 
     #[test]
@@ -397,16 +460,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let page = Url::parse("https://servo.org/").unwrap();
-        let service = PlacesService::open(path.clone(), Duration::MAX);
-        assert!(service.initial_bookmarks().is_empty());
+        let (service, notifications) = open_notified(path.clone(), Duration::MAX);
+        assert!(next_bookmarks(&service, &notifications).is_empty());
 
         service.add_bookmark(page.clone(), Some("Servo".to_owned()), UNIX_EPOCH);
         drop(service);
 
-        assert_eq!(
-            PlacesService::open(path, Duration::MAX).initial_bookmarks(),
-            [page]
-        );
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        assert_eq!(next_bookmarks(&service, &notifications), [page]);
     }
 
     #[test]
@@ -414,17 +475,14 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let page = Url::parse("https://servo.org/").unwrap();
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
 
         service.add_bookmark(page.clone(), None, UNIX_EPOCH);
         service.remove_bookmark(page);
         drop(service);
 
-        assert!(
-            PlacesService::open(path, Duration::MAX)
-                .initial_bookmarks()
-                .is_empty()
-        );
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        assert!(next_bookmarks(&service, &notifications).is_empty());
     }
 
     #[test]
@@ -432,27 +490,62 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let page = Url::parse("https://servo.org/").unwrap();
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         service.record_visit(page.clone(), SystemTime::now() - days(100), None);
         service.add_bookmark(page.clone(), None, SystemTime::now() - days(100));
         drop(service);
 
-        drop(PlacesService::open(path.clone(), days(90)));
+        drop(PlacesService::open(path.clone(), days(90), || {}));
 
         assert!(urls(&path).is_empty());
-        assert_eq!(
-            PlacesService::open(path, days(90)).initial_bookmarks(),
-            [page]
-        );
+        let (service, notifications) = open_notified(path, days(90));
+        assert_eq!(next_bookmarks(&service, &notifications), [page]);
     }
 
     #[test]
-    fn a_database_that_cannot_be_opened_has_no_bookmarks() {
+    fn a_database_that_cannot_be_opened_sends_no_bookmarks_but_still_notifies() {
         let directory = tempfile::tempdir().unwrap();
 
-        let service = PlacesService::open(directory.path().to_owned(), Duration::MAX);
+        let (service, notifications) = open_notified(directory.path().to_owned(), Duration::MAX);
 
-        assert!(service.initial_bookmarks().is_empty());
+        assert!(next_bookmarks(&service, &notifications).is_empty());
+    }
+
+    #[test]
+    fn a_failed_bookmark_write_sends_the_saved_bookmarks_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let saved = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path.clone(), Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        service.add_bookmark(saved.clone(), None, UNIX_EPOCH);
+        flush(&service);
+        reject_inserts_into(&path, "bookmarks");
+
+        service.add_bookmark(
+            Url::parse("https://example.com/").unwrap(),
+            None,
+            UNIX_EPOCH,
+        );
+
+        assert_eq!(next_bookmarks(&service, &notifications), [saved]);
+    }
+
+    #[test]
+    fn only_failed_bookmark_writes_send_the_bookmarks_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path.clone(), Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        reject_inserts_into(&path, "visits");
+
+        service.record_visit(page.clone(), SystemTime::now(), None);
+        flush(&service);
+        service.add_bookmark(page, None, UNIX_EPOCH);
+        drop(service);
+
+        assert!(notifications.try_recv().is_err());
     }
 
     #[test]
@@ -461,7 +554,7 @@ mod tests {
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
 
-        drop(PlacesService::open(path.clone(), days(90)));
+        drop(PlacesService::open(path.clone(), days(90), || {}));
 
         assert_eq!(urls(&path), ["https://example.com/recent"]);
     }
@@ -471,7 +564,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
-        let service = PlacesService::open(path.clone(), days(365));
+        let service = PlacesService::open(path.clone(), days(365), || {});
 
         assert_eq!(block_on(service.cleaner().set_retention(days(90))), Ok(()));
 
@@ -483,7 +576,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let now = SystemTime::now();
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         service.record_visit(
             Url::parse("https://example.com/old").unwrap(),
             now - days(2),
@@ -506,7 +599,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
-        let service = PlacesService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         assert_eq!(
             block_on(service.cleaner().set_retention(Duration::MAX)),
             Ok(())
@@ -522,7 +615,7 @@ mod tests {
 
     #[test]
     fn the_cleaner_can_outlive_the_service() {
-        let service = PlacesService::open_in_memory(days(90));
+        let service = PlacesService::open_in_memory(days(90), || {});
         let cleaner = service.cleaner();
 
         drop(service);

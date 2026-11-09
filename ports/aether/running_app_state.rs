@@ -254,8 +254,8 @@ pub(crate) struct RunningAppState {
     /// The places database of the profile.
     places: PlacesService,
 
-    /// The bookmarks of the profile.
-    bookmarks: RefCell<Bookmarks>,
+    /// The bookmarks of the profile, once the places database has sent them.
+    bookmarks: RefCell<Option<Bookmarks>>,
 
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
@@ -313,8 +313,6 @@ impl RunningAppState {
         let experimental_preferences_enabled =
             Cell::new(servoshell_preferences.experimental_preferences_enabled);
 
-        let bookmarks = RefCell::new(Bookmarks::new(places.initial_bookmarks()));
-
         Self {
             windows: Default::default(),
             focused_window: Default::default(),
@@ -333,7 +331,7 @@ impl RunningAppState {
             exit_scheduled: Default::default(),
             user_content_manager,
             places,
-            bookmarks,
+            bookmarks: Default::default(),
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -473,8 +471,13 @@ impl RunningAppState {
         }
     }
 
-    pub(crate) fn is_bookmarked(&self, url: &Url) -> bool {
-        self.bookmarks.borrow().contains(url)
+    /// Whether `url` is bookmarked, or `None` when its bookmark star should not be shown.
+    pub(crate) fn bookmark_state(&self, url: &Url) -> Option<bool> {
+        self.bookmarks
+            .borrow()
+            .as_ref()
+            .filter(|_| can_bookmark(url))
+            .map(|bookmarks| bookmarks.contains(url))
     }
 
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
@@ -482,12 +485,27 @@ impl RunningAppState {
         let Some(url) = webview.url().filter(can_bookmark) else {
             return;
         };
-        if self.bookmarks.borrow_mut().toggle(&url) {
+        let mut bookmarks = self.bookmarks.borrow_mut();
+        let Some(bookmarks) = bookmarks.as_mut() else {
+            return;
+        };
+        if bookmarks.toggle(&url) {
             self.places
                 .add_bookmark(url, webview.page_title(), SystemTime::now());
         } else {
             self.places.remove_bookmark(url);
         }
+        self.refresh_bookmark_stars();
+    }
+
+    fn update_bookmarks(&self) {
+        if let Some(urls) = self.places.take_bookmarks() {
+            *self.bookmarks.borrow_mut() = Some(Bookmarks::new(&urls));
+            self.refresh_bookmark_stars();
+        }
+    }
+
+    fn refresh_bookmark_stars(&self) {
         for window in self.windows().iter() {
             window.set_needs_update();
             window.set_needs_repaint();
@@ -547,6 +565,7 @@ impl RunningAppState {
         } */
 
         self.servo.spin_event_loop();
+        self.update_bookmarks();
 
         for window in self.windows.borrow().iter() {
             window.update_and_request_repaint_if_necessary(self);

@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use aether_places::{CleanerReply, HistoryCleaner, PlacesService};
 use log::warn;
 use serde_json::Value;
-use servo::{NavigationType, Opts};
+use servo::{EventLoopWaker, NavigationType, Opts};
 use url::Url;
 
 const HISTORY_SETTINGS_FILE: &str = "history.json";
@@ -97,15 +97,21 @@ pub(crate) fn history_update(
 
 /// Opens the places database of the profile directory and the history settings. Both are kept
 /// in memory when storage is temporary or when there is no profile directory.
-pub(crate) fn open_places(opts: &Opts) -> (PlacesService, HistoryPage) {
+pub(crate) fn open_places(
+    opts: &Opts,
+    waker: Box<dyn EventLoopWaker>,
+) -> (PlacesService, HistoryPage) {
     let config_dir = opts.config_dir.clone().filter(|_| !opts.temporary_storage);
     let retention_days = config_dir
         .as_deref()
         .map_or(DEFAULT_RETENTION_DAYS, load_retention_days);
     let retention = retention_period(retention_days);
+    let notify = move || waker.wake();
     let places = match &config_dir {
-        Some(config_dir) => PlacesService::open(config_dir.join("places.sqlite"), retention),
-        None => PlacesService::open_in_memory(retention),
+        Some(config_dir) => {
+            PlacesService::open(config_dir.join("places.sqlite"), retention, notify)
+        },
+        None => PlacesService::open_in_memory(retention, notify),
     };
     let page = HistoryPage {
         config_dir,
@@ -431,7 +437,7 @@ mod tests {
     #[test]
     fn a_new_retention_period_is_saved() {
         let directory = tempfile::tempdir().unwrap();
-        let places = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX, || {});
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
@@ -449,7 +455,7 @@ mod tests {
     #[test]
     fn an_invalid_retention_period_is_rejected() {
         let directory = tempfile::tempdir().unwrap();
-        let places = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX, || {});
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
@@ -484,7 +490,7 @@ mod tests {
 
     #[test]
     fn an_invalid_deletion_is_rejected() {
-        let places = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX, || {});
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,
@@ -500,7 +506,7 @@ mod tests {
 
     #[test]
     fn a_failed_deletion_is_reported() {
-        let places = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX, || {});
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,
