@@ -8,23 +8,31 @@ use std::collections::HashSet;
 
 use url::Url;
 
-/// The bookmarked pages, kept in memory for the session.
+/// The bookmarked pages, read every frame by the interface, and saved in the places database.
 #[derive(Default)]
 pub(crate) struct Bookmarks {
     urls: HashSet<Url>,
 }
 
 impl Bookmarks {
+    pub(crate) fn new(urls: &[Url]) -> Self {
+        Self {
+            urls: urls.iter().cloned().collect(),
+        }
+    }
+
     pub(crate) fn contains(&self, url: &Url) -> bool {
         self.urls.contains(&without_credentials(url))
     }
 
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
-    pub(crate) fn toggle(&mut self, url: &Url) {
+    pub(crate) fn toggle(&mut self, url: &Url) -> bool {
         let url = without_credentials(url);
-        if !self.urls.remove(&url) {
+        let added = !self.urls.remove(&url);
+        if added {
             self.urls.insert(url);
         }
+        added
     }
 }
 
@@ -55,11 +63,21 @@ mod tests {
         let page = url("https://servo.org/");
         assert!(!bookmarks.contains(&page));
 
-        bookmarks.toggle(&page);
+        assert!(bookmarks.toggle(&page));
         assert!(bookmarks.contains(&page));
 
-        bookmarks.toggle(&page);
+        assert!(!bookmarks.toggle(&page));
         assert!(!bookmarks.contains(&page));
+    }
+
+    #[test]
+    fn saved_bookmarks_are_restored() {
+        let page = url("https://servo.org/");
+
+        let mut bookmarks = Bookmarks::new(std::slice::from_ref(&page));
+
+        assert!(bookmarks.contains(&page));
+        assert!(!bookmarks.toggle(&page));
     }
 
     #[test]

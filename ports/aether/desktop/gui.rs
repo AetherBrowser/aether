@@ -856,10 +856,8 @@ impl Gui {
                                     }
 
                                     if !*location_dirty &&
-                                        let Some(url) = window
-                                            .active_webview()
-                                            .and_then(|webview| webview.url())
-                                            .filter(can_bookmark)
+                                        let Some(webview) = window.active_webview() &&
+                                        let Some(url) = webview.url().filter(can_bookmark)
                                     {
                                         let bookmark_star = Self::bookmark_star(
                                             ui,
@@ -868,7 +866,7 @@ impl Gui {
                                             state.is_bookmarked(&url),
                                         );
                                         if bookmark_star.clicked() {
-                                            state.toggle_bookmark(&url);
+                                            state.toggle_bookmark(&webview);
                                         }
                                     }
                                 },

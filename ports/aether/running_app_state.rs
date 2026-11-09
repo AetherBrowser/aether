@@ -8,6 +8,7 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use aether_places::PlacesService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
@@ -40,7 +41,7 @@ use servo::{
 };
 use url::Url;
 
-use crate::bookmarks::Bookmarks;
+use crate::bookmarks::{Bookmarks, can_bookmark};
 #[cfg(all(
     feature = "gamepad",
     not(any(target_os = "android", target_env = "ohos"))
@@ -312,6 +313,8 @@ impl RunningAppState {
         let experimental_preferences_enabled =
             Cell::new(servoshell_preferences.experimental_preferences_enabled);
 
+        let bookmarks = RefCell::new(Bookmarks::new(places.initial_bookmarks()));
+
         Self {
             windows: Default::default(),
             focused_window: Default::default(),
@@ -330,7 +333,7 @@ impl RunningAppState {
             exit_scheduled: Default::default(),
             user_content_manager,
             places,
-            bookmarks: Default::default(),
+            bookmarks,
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -475,8 +478,16 @@ impl RunningAppState {
     }
 
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
-    pub(crate) fn toggle_bookmark(&self, url: &Url) {
-        self.bookmarks.borrow_mut().toggle(url);
+    pub(crate) fn toggle_bookmark(&self, webview: &WebView) {
+        let Some(url) = webview.url().filter(can_bookmark) else {
+            return;
+        };
+        if self.bookmarks.borrow_mut().toggle(&url) {
+            self.places
+                .add_bookmark(url, webview.page_title(), SystemTime::now());
+        } else {
+            self.places.remove_bookmark(url);
+        }
         for window in self.windows().iter() {
             window.set_needs_update();
             window.set_needs_repaint();

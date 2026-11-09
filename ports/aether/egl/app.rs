@@ -483,13 +483,8 @@ impl App {
 
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
     pub fn toggle_bookmark(&self) {
-        if let Some(url) = self
-            .window()
-            .active_webview()
-            .and_then(|webview| webview.url())
-            .filter(can_bookmark)
-        {
-            self.state.toggle_bookmark(&url);
+        if let Some(webview) = self.window().active_webview() {
+            self.state.toggle_bookmark(&webview);
             self.spin_event_loop();
         }
     }
