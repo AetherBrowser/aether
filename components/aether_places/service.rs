@@ -10,7 +10,7 @@ use std::task::{Context, Poll};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
-use crossbeam_channel::{Receiver, Sender, select, tick, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded, select, tick, unbounded};
 use log::{error, warn};
 use tokio::sync::oneshot;
 use url::Url;
@@ -29,6 +29,7 @@ pub struct PlacesService {
     sender: Option<Sender<PlacesCommand>>,
     cleaner: HistoryCleaner,
     thread: Option<JoinHandle<()>>,
+    initial_bookmarks: Vec<Url>,
 }
 
 const HISTORY_UNAVAILABLE: &str = "The history is not available";
@@ -93,10 +94,14 @@ impl PlacesService {
     ) -> Self {
         let (sender, receiver) = unbounded();
         let (cleaner_sender, cleaner_receiver) = unbounded();
+        let (bookmarks_sender, bookmarks_receiver) = bounded(1);
         let thread = thread::Builder::new()
             .name("Places".to_owned())
             .spawn(move || match open_store() {
-                Ok(store) => run(store, receiver, retention, cleaner_receiver),
+                Ok(store) => {
+                    let _ = bookmarks_sender.send(load_bookmarks(&store));
+                    run(store, receiver, retention, cleaner_receiver)
+                },
                 // The history is disabled for this session, but browsing keeps working.
                 Err(error) => error!("Could not open the places database: {error}"),
             })
@@ -105,6 +110,30 @@ impl PlacesService {
             sender: Some(sender),
             cleaner: HistoryCleaner(cleaner_sender),
             thread: Some(thread),
+            initial_bookmarks: bookmarks_receiver.recv().unwrap_or_default(),
+        }
+    }
+
+    /// The URLs that were bookmarked when the service started.
+    pub fn initial_bookmarks(&self) -> &[Url] {
+        &self.initial_bookmarks
+    }
+
+    /// Bookmarks `url`, unless it already is.
+    pub fn add_bookmark(&self, url: Url, title: Option<String>, date_added: SystemTime) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(PlacesCommand::AddBookmark {
+                url,
+                title,
+                date_added,
+            });
+        }
+    }
+
+    /// Removes the bookmark of `url`.
+    pub fn remove_bookmark(&self, url: Url) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(PlacesCommand::RemoveBookmark { url });
         }
     }
 
@@ -161,6 +190,13 @@ impl Drop for PlacesService {
             error!("The history thread panicked");
         }
     }
+}
+
+fn load_bookmarks(store: &PlacesStore) -> Vec<Url> {
+    store.bookmarked_urls().unwrap_or_else(|error| {
+        warn!("Could not read the bookmarks: {error}");
+        Vec::new()
+    })
 }
 
 fn run(
@@ -358,6 +394,69 @@ mod tests {
 
         service.record_visit(Url::parse("https://servo.org/").unwrap(), UNIX_EPOCH, None);
         drop(service);
+    }
+
+    #[test]
+    fn bookmarks_are_written_by_the_service_and_loaded_at_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let service = PlacesService::open(path.clone(), Duration::MAX);
+        assert!(service.initial_bookmarks().is_empty());
+
+        service.add_bookmark(page.clone(), Some("Servo".to_owned()), UNIX_EPOCH);
+        drop(service);
+
+        assert_eq!(
+            PlacesService::open(path, Duration::MAX).initial_bookmarks(),
+            [page]
+        );
+    }
+
+    #[test]
+    fn a_removed_bookmark_is_not_loaded_at_the_next_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let service = PlacesService::open(path.clone(), Duration::MAX);
+
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH);
+        service.remove_bookmark(page);
+        drop(service);
+
+        assert!(
+            PlacesService::open(path, Duration::MAX)
+                .initial_bookmarks()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn bookmarks_outlive_the_expiration_of_their_visits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let service = PlacesService::open(path.clone(), Duration::MAX);
+        service.record_visit(page.clone(), SystemTime::now() - days(100), None);
+        service.add_bookmark(page.clone(), None, SystemTime::now() - days(100));
+        drop(service);
+
+        drop(PlacesService::open(path.clone(), days(90)));
+
+        assert!(urls(&path).is_empty());
+        assert_eq!(
+            PlacesService::open(path, days(90)).initial_bookmarks(),
+            [page]
+        );
+    }
+
+    #[test]
+    fn a_database_that_cannot_be_opened_has_no_bookmarks() {
+        let directory = tempfile::tempdir().unwrap();
+
+        let service = PlacesService::open(directory.path().to_owned(), Duration::MAX);
+
+        assert!(service.initial_bookmarks().is_empty());
     }
 
     #[test]
