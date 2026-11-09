@@ -31,6 +31,11 @@ impl PlacesStore {
             return Ok(());
         }
         delete_unused_places(&transaction)?;
+        transaction.execute(
+            "UPDATE places SET title = NULL WHERE title IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
+            [],
+        )?;
         transaction.commit()?;
         self.erase_deleted_rows()
     }

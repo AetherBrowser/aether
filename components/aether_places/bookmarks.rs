@@ -232,6 +232,33 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_history_erases_the_last_title_of_a_bookmarked_page() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = PlacesStore::open(&directory.path().join("places.sqlite")).unwrap();
+        let page = url("https://example.com/test");
+        store
+            .apply(&[PlacesCommand::RecordVisit {
+                url: page.clone(),
+                visit_date: date(1),
+                title: Some("Title of the visit".to_owned()),
+            }])
+            .unwrap();
+        add(&mut store, &page, Some("Title of the bookmark"), date(2));
+
+        store.delete_visits_since(UNIX_EPOCH).unwrap();
+
+        assert!(!files_contain(directory.path(), "Title of the visit"));
+        assert_eq!(
+            bookmarks(&store.connection),
+            [(
+                "https://example.com/test".to_owned(),
+                Some("Title of the bookmark".to_owned()),
+                2
+            )]
+        );
+    }
+
+    #[test]
     fn bookmarks_are_kept_when_their_visit_is_replaced() {
         let mut store = PlacesStore::open_in_memory().unwrap();
         let bookmarked = url("https://servo.org/");
