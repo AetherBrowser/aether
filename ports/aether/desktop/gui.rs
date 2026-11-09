@@ -460,7 +460,7 @@ impl Gui {
             .inner;
         star.widget_info(|| {
             let mut info = WidgetInfo::new(WidgetType::Button);
-            info.label = Some("Bookmark this page".into());
+            info.label = Some(tooltip.into());
             info.selected = Some(bookmarked);
             info
         });
