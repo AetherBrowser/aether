@@ -258,6 +258,88 @@ mod tests {
         );
     }
 
+    fn place_titles(connection: &Connection) -> Vec<Option<String>> {
+        connection
+            .prepare("SELECT title FROM places ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn visit_with_title(store: &mut PlacesStore, url: &Url, visit_date: SystemTime) {
+        store
+            .apply(&[PlacesCommand::RecordVisit {
+                url: url.clone(),
+                visit_date,
+                title: Some("Title of the visit".to_owned()),
+            }])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_page_without_visits_does_not_store_its_new_title() {
+        let mut store = PlacesStore::open_in_memory().unwrap();
+        let page = url("https://servo.org/");
+        visit_with_title(&mut store, &page, date(1));
+        add(&mut store, &page, None, date(2));
+        store.delete_visits_since(UNIX_EPOCH).unwrap();
+
+        store
+            .apply(&[PlacesCommand::SetTitle {
+                url: page,
+                title: "New title".to_owned(),
+            }])
+            .unwrap();
+
+        assert_eq!(place_titles(&store.connection), [None]);
+    }
+
+    #[test]
+    fn replacing_the_last_visit_clears_the_title_of_a_bookmarked_page() {
+        for new_url in [None, Some(url("https://example.com/"))] {
+            let mut store = PlacesStore::open_in_memory().unwrap();
+            let page = url("https://servo.org/");
+            visit_with_title(&mut store, &page, date(1));
+            add(&mut store, &page, None, date(2));
+
+            store
+                .apply(&[PlacesCommand::ReplaceVisit {
+                    old_url: page,
+                    visit_date: date(1),
+                    new_url,
+                    title: None,
+                }])
+                .unwrap();
+
+            assert_eq!(place_titles(&store.connection)[0], None);
+        }
+    }
+
+    #[test]
+    fn replacing_one_visit_keeps_the_title_of_a_page_with_other_visits() {
+        let mut store = PlacesStore::open_in_memory().unwrap();
+        let page = url("https://servo.org/");
+        visit_with_title(&mut store, &page, date(1));
+        visit_with_title(&mut store, &page, date(2));
+        add(&mut store, &page, None, date(3));
+
+        store
+            .apply(&[PlacesCommand::ReplaceVisit {
+                old_url: page,
+                visit_date: date(2),
+                new_url: None,
+                title: None,
+            }])
+            .unwrap();
+
+        assert_eq!(
+            place_titles(&store.connection),
+            [Some("Title of the visit".to_owned())]
+        );
+    }
+
     #[test]
     fn bookmarks_are_kept_when_their_visit_is_replaced() {
         let mut store = PlacesStore::open_in_memory().unwrap();

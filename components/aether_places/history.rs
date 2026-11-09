@@ -12,6 +12,9 @@ use crate::database::{
     microseconds_since_epoch, stored_url,
 };
 
+/// The condition on `places` of a row without visits.
+const NO_VISIT: &str = "NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)";
+
 impl PlacesStore {
     /// Deletes the visits before `date`, and the places that nothing refers to anymore.
     pub(crate) fn delete_visits_before(&mut self, date: SystemTime) -> rusqlite::Result<()> {
@@ -32,8 +35,7 @@ impl PlacesStore {
         }
         delete_unused_places(&transaction)?;
         transaction.execute(
-            "UPDATE places SET title = NULL WHERE title IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
+            &format!("UPDATE places SET title = NULL WHERE title IS NOT NULL AND {NO_VISIT}"),
             [],
         )?;
         transaction.commit()?;
@@ -58,7 +60,8 @@ pub(crate) fn record_visit(
 
 pub(crate) fn set_title(connection: &Connection, url: &Url, title: &str) -> rusqlite::Result<()> {
     connection.execute(
-        "UPDATE places SET title = ?2 WHERE url = ?1",
+        "UPDATE places SET title = ?2 WHERE url = ?1
+         AND EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
         params![stored_url(url), title],
     )?;
     Ok(())
@@ -96,7 +99,12 @@ pub(crate) fn replace_visit(
         },
         None => connection.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?,
     };
-    delete_place_if_unused(connection, &old_url)
+    delete_place_if_unused(connection, &old_url)?;
+    connection.execute(
+        &format!("UPDATE places SET title = NULL WHERE url = ?1 AND {NO_VISIT}"),
+        [&old_url],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

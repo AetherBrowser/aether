@@ -147,8 +147,16 @@ impl PlacesStore {
 
     /// Erases the deleted rows from the database files, so that they cannot be read back.
     pub(crate) fn erase_deleted_rows(&self) -> rusqlite::Result<()> {
-        self.connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        let busy: i32 =
+            self.connection
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        if busy != 0 {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("another connection prevents the erasure of the deleted rows".to_owned()),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -236,9 +244,36 @@ pub(crate) fn files_contain(directory: &Path, text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use rusqlite::Connection;
 
     use super::{MIGRATIONS, PlacesStore};
+
+    #[test]
+    fn an_erasure_blocked_by_another_connection_is_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let store = PlacesStore::open(&path).unwrap();
+        store.connection.busy_timeout(Duration::ZERO).unwrap();
+        store
+            .connection
+            .execute_batch("INSERT INTO places (url, guid) VALUES ('https://servo.org/', 'guid')")
+            .unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM places;")
+            .unwrap();
+        store
+            .connection
+            .execute_batch("DELETE FROM places")
+            .unwrap();
+
+        assert!(store.erase_deleted_rows().is_err());
+
+        reader.execute_batch("COMMIT").unwrap();
+        assert!(store.erase_deleted_rows().is_ok());
+    }
 
     #[test]
     fn a_schema_newer_than_the_migrations_is_rejected() {
