@@ -23,7 +23,7 @@ use url::Url;
 use super::protocols;
 use crate::bookmarks::can_bookmark;
 use crate::egl::host_trait::HostTrait;
-use crate::history::open_history;
+use crate::history::open_places;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
@@ -322,7 +322,7 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.search_engines.clone(),
         );
-        let (history, _) = open_history(&init.opts);
+        let (places, _) = open_places(&init.opts);
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
@@ -348,7 +348,7 @@ impl App {
             init.event_loop_waker,
             user_content_manager,
             init.preferences,
-            history,
+            places,
         ));
 
         Rc::new(Self {

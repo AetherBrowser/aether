@@ -9,7 +9,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aether_history::{CleanerReply, HistoryCleaner, HistoryService};
+use aether_places::{CleanerReply, HistoryCleaner, PlacesService};
 use log::warn;
 use serde_json::Value;
 use servo::{NavigationType, Opts};
@@ -95,24 +95,24 @@ pub(crate) fn history_update(
     }
 }
 
-/// Opens the history of the profile directory and its settings. Both are kept in memory when
-/// storage is temporary or when there is no profile directory.
-pub(crate) fn open_history(opts: &Opts) -> (HistoryService, HistoryPage) {
+/// Opens the places database of the profile directory and the history settings. Both are kept
+/// in memory when storage is temporary or when there is no profile directory.
+pub(crate) fn open_places(opts: &Opts) -> (PlacesService, HistoryPage) {
     let config_dir = opts.config_dir.clone().filter(|_| !opts.temporary_storage);
     let retention_days = config_dir
         .as_deref()
         .map_or(DEFAULT_RETENTION_DAYS, load_retention_days);
     let retention = retention_period(retention_days);
-    let history = match &config_dir {
-        Some(config_dir) => HistoryService::open(config_dir.join("places.sqlite"), retention),
-        None => HistoryService::open_in_memory(retention),
+    let places = match &config_dir {
+        Some(config_dir) => PlacesService::open(config_dir.join("places.sqlite"), retention),
+        None => PlacesService::open_in_memory(retention),
     };
     let page = HistoryPage {
         config_dir,
         retention_days,
-        cleaner: history.cleaner(),
+        cleaner: places.cleaner(),
     };
-    (history, page)
+    (places, page)
 }
 
 /// The settings and actions of the `about:history` page.
@@ -237,7 +237,7 @@ mod tests {
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use aether_history::HistoryService;
+    use aether_places::PlacesService;
     use futures::executor::block_on;
     use serde_json::{Value, json};
     use servo::NavigationType;
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn a_new_retention_period_is_saved() {
         let directory = tempfile::tempdir().unwrap();
-        let history = HistoryService::open_in_memory(Duration::MAX);
+        let history = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
@@ -449,7 +449,7 @@ mod tests {
     #[test]
     fn an_invalid_retention_period_is_rejected() {
         let directory = tempfile::tempdir().unwrap();
-        let history = HistoryService::open_in_memory(Duration::MAX);
+        let history = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn an_invalid_deletion_is_rejected() {
-        let history = HistoryService::open_in_memory(Duration::MAX);
+        let history = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn a_failed_deletion_is_reported() {
-        let history = HistoryService::open_in_memory(Duration::MAX);
+        let history = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,

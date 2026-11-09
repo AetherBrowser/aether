@@ -2,117 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use url::Url;
 
-/// Schema migrations, in order. The database's `user_version` is the number of migrations
-/// already applied, so existing entries must never change: append a new one instead.
-const MIGRATIONS: &[&str] = &[
-    // Version 1: URLs and their visits. `places` will also be referenced by bookmarks, and its
-    // `guid` identifies a URL across devices for a future sync.
-    "CREATE TABLE places (
-        id INTEGER PRIMARY KEY,
-        url TEXT NOT NULL UNIQUE,
-        guid TEXT NOT NULL UNIQUE
-    );
-    CREATE TABLE visits (
-        id INTEGER PRIMARY KEY,
-        place_id INTEGER NOT NULL REFERENCES places(id) ON DELETE CASCADE,
-        visit_date INTEGER NOT NULL
-    );
-    CREATE INDEX visits_place_id_index ON visits(place_id);
-    CREATE INDEX visits_date_index ON visits(visit_date);",
-    // Version 2: the last title of each page, as shown in its tab.
-    "ALTER TABLE places ADD COLUMN title TEXT;",
-];
+use crate::database::{
+    PlacesStore, delete_place_if_unused, delete_unused_places, insert_place,
+    microseconds_since_epoch, stored_url,
+};
 
-pub(crate) enum HistoryCommand {
-    /// Records a visit of `url` at `visit_date`.
-    RecordVisit {
-        url: Url,
-        visit_date: SystemTime,
-        title: Option<String>,
-    },
-    /// Stores `title` as the last title of `url`, if `url` was visited.
-    SetTitle { url: Url, title: String },
-    /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
-    /// is `None`.
-    ReplaceVisit {
-        old_url: Url,
-        visit_date: SystemTime,
-        new_url: Option<Url>,
-        title: Option<String>,
-    },
-}
-
-pub struct HistoryStore {
-    connection: Connection,
-}
-
-impl HistoryStore {
-    /// Opens the history database at `path`, creating it if needed.
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
-        let connection = Connection::open(path)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "synchronous", "NORMAL")?;
-        Self::new(connection)
-    }
-
-    /// Opens a history that is never written to disk.
-    pub fn open_in_memory() -> rusqlite::Result<Self> {
-        Self::new(Connection::open_in_memory()?)
-    }
-
-    fn new(mut connection: Connection) -> rusqlite::Result<Self> {
-        connection.pragma_update(None, "foreign_keys", true)?;
-        connection.pragma_update(None, "secure_delete", true)?;
-        migrate(&mut connection)?;
-        Ok(Self { connection })
-    }
-
-    /// Writes `commands` in order, in one transaction. A title that a later command replaces
-    /// is not written.
-    pub(crate) fn apply(&mut self, commands: &[HistoryCommand]) -> rusqlite::Result<()> {
-        let mut last_titles = HashMap::new();
-        for (index, command) in commands.iter().enumerate() {
-            if let HistoryCommand::SetTitle { url, .. } = command {
-                last_titles.insert(url, index);
-            }
-        }
-        let transaction = self.connection.transaction()?;
-        for (index, command) in commands.iter().enumerate() {
-            match command {
-                HistoryCommand::RecordVisit {
-                    url,
-                    visit_date,
-                    title,
-                } => record_visit(&transaction, url, *visit_date, title.as_deref())?,
-                HistoryCommand::SetTitle { url, title } => {
-                    if last_titles[url] == index {
-                        set_title(&transaction, url, title)?
-                    }
-                },
-                HistoryCommand::ReplaceVisit {
-                    old_url,
-                    visit_date,
-                    new_url,
-                    title,
-                } => replace_visit(
-                    &transaction,
-                    old_url,
-                    *visit_date,
-                    new_url.as_ref(),
-                    title.as_deref(),
-                )?,
-            }
-        }
-        transaction.commit()
-    }
-
+impl PlacesStore {
     /// Deletes the visits before `date`, and the places left without visits.
     pub(crate) fn delete_visits_before(&mut self, date: SystemTime) -> rusqlite::Result<()> {
         self.delete_visits("DELETE FROM visits WHERE visit_date < ?1", date)
@@ -130,18 +30,13 @@ impl HistoryStore {
         if deleted == 0 {
             return Ok(());
         }
-        transaction.execute(
-            "DELETE FROM places
-             WHERE NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
-            [],
-        )?;
+        delete_unused_places(&transaction)?;
         transaction.commit()?;
-        self.connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        self.erase_deleted_rows()
     }
 }
 
-fn record_visit(
+pub(crate) fn record_visit(
     connection: &Connection,
     url: &Url,
     visit_date: SystemTime,
@@ -156,7 +51,7 @@ fn record_visit(
     Ok(())
 }
 
-fn set_title(connection: &Connection, url: &Url, title: &str) -> rusqlite::Result<()> {
+pub(crate) fn set_title(connection: &Connection, url: &Url, title: &str) -> rusqlite::Result<()> {
     connection.execute(
         "UPDATE places SET title = ?2 WHERE url = ?1",
         params![stored_url(url), title],
@@ -164,7 +59,7 @@ fn set_title(connection: &Connection, url: &Url, title: &str) -> rusqlite::Resul
     Ok(())
 }
 
-fn replace_visit(
+pub(crate) fn replace_visit(
     connection: &Connection,
     old_url: &Url,
     visit_date: SystemTime,
@@ -196,54 +91,7 @@ fn replace_visit(
         },
         None => connection.execute("DELETE FROM visits WHERE id = ?1", [visit_id])?,
     };
-    connection.execute(
-        "DELETE FROM places WHERE url = ?1
-         AND NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)",
-        [&old_url],
-    )?;
-    Ok(())
-}
-
-/// Adds `url` to the places if needed, and updates its title when `title` is known.
-fn insert_place(connection: &Connection, url: &str, title: Option<&str>) -> rusqlite::Result<()> {
-    connection.execute(
-        "INSERT INTO places (url, guid, title) VALUES (?1, lower(hex(randomblob(16))), ?2)
-         ON CONFLICT (url) DO UPDATE SET title = coalesce(excluded.title, places.title)",
-        params![url, title],
-    )?;
-    Ok(())
-}
-
-fn stored_url(url: &Url) -> String {
-    let mut url = url.clone();
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url.into()
-}
-
-fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
-    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version as usize > MIGRATIONS.len() {
-        return Err(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-            Some(format!(
-                "schema version {version} is newer than the supported version {}",
-                MIGRATIONS.len()
-            )),
-        ));
-    }
-    let transaction = connection.transaction()?;
-    for (migration, new_version) in MIGRATIONS.iter().zip(1_u32..).skip(version as usize) {
-        transaction.execute_batch(migration)?;
-        transaction.pragma_update(None, "user_version", new_version)?;
-    }
-    transaction.commit()
-}
-
-/// Dates before the Unix epoch, which only a wrong system clock produces, are stored as 0.
-fn microseconds_since_epoch(time: SystemTime) -> i64 {
-    time.duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_micros() as i64)
+    delete_place_if_unused(connection, &old_url)
 }
 
 #[cfg(test)]
@@ -255,16 +103,16 @@ mod tests {
     use rusqlite::Connection;
     use url::Url;
 
-    use super::{HistoryCommand, HistoryStore, MIGRATIONS};
+    use crate::database::{MIGRATIONS, PlacesCommand, PlacesStore};
 
-    impl HistoryStore {
+    impl PlacesStore {
         fn record_visit(
             &mut self,
             url: &Url,
             visit_date: SystemTime,
             title: Option<&str>,
         ) -> rusqlite::Result<()> {
-            self.apply(&[HistoryCommand::RecordVisit {
+            self.apply(&[PlacesCommand::RecordVisit {
                 url: url.clone(),
                 visit_date,
                 title: title.map(str::to_owned),
@@ -272,7 +120,7 @@ mod tests {
         }
 
         fn set_title(&mut self, url: &Url, title: &str) -> rusqlite::Result<()> {
-            self.apply(&[HistoryCommand::SetTitle {
+            self.apply(&[PlacesCommand::SetTitle {
                 url: url.clone(),
                 title: title.to_owned(),
             }])
@@ -285,7 +133,7 @@ mod tests {
             new_url: Option<&Url>,
             title: Option<&str>,
         ) -> rusqlite::Result<()> {
-            self.apply(&[HistoryCommand::ReplaceVisit {
+            self.apply(&[PlacesCommand::ReplaceVisit {
                 old_url: old_url.clone(),
                 visit_date,
                 new_url: new_url.cloned(),
@@ -309,7 +157,7 @@ mod tests {
 
     #[test]
     fn records_visits_with_their_date() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
 
         store
@@ -324,7 +172,7 @@ mod tests {
 
     #[test]
     fn visits_of_the_same_url_share_one_place() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let servo = Url::parse("https://servo.org/").unwrap();
         let rust = Url::parse("https://www.rust-lang.org/").unwrap();
 
@@ -351,13 +199,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let url = Url::parse("https://servo.org/").unwrap();
-        HistoryStore::open(&path)
+        PlacesStore::open(&path)
             .unwrap()
             .record_visit(&url, UNIX_EPOCH, None)
             .unwrap();
 
         // The second opening must not apply the migrations again.
-        let store = HistoryStore::open(&path).unwrap();
+        let store = PlacesStore::open(&path).unwrap();
 
         let version: u32 = store
             .connection
@@ -368,16 +216,6 @@ mod tests {
             visits(&store.connection),
             [("https://servo.org/".to_owned(), 0)]
         );
-    }
-
-    #[test]
-    fn a_schema_newer_than_the_migrations_is_rejected() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .pragma_update(None, "user_version", MIGRATIONS.len() as u32 + 1)
-            .unwrap();
-
-        assert!(HistoryStore::new(connection).is_err());
     }
 
     fn titles(connection: &Connection) -> Vec<(String, Option<String>)> {
@@ -392,7 +230,7 @@ mod tests {
 
     #[test]
     fn visits_keep_the_last_known_title() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
 
         store.record_visit(&url, UNIX_EPOCH, Some("Servo")).unwrap();
@@ -407,7 +245,7 @@ mod tests {
 
     #[test]
     fn titles_of_urls_without_visit_are_not_stored() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
 
         store
             .set_title(&Url::parse("https://servo.org/").unwrap(), "Servo")
@@ -418,7 +256,7 @@ mod tests {
 
     #[test]
     fn the_last_title_replaces_the_previous_one() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
         store.record_visit(&url, UNIX_EPOCH, Some("Servo")).unwrap();
 
@@ -435,9 +273,9 @@ mod tests {
 
     #[test]
     fn titles_replaced_in_the_same_batch_are_not_written() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
-        let set_title = |title: &str| HistoryCommand::SetTitle {
+        let set_title = |title: &str| PlacesCommand::SetTitle {
             url: url.clone(),
             title: title.to_owned(),
         };
@@ -445,7 +283,7 @@ mod tests {
 
         store
             .apply(&[
-                HistoryCommand::RecordVisit {
+                PlacesCommand::RecordVisit {
                     url: url.clone(),
                     visit_date: UNIX_EPOCH,
                     title: None,
@@ -469,29 +307,29 @@ mod tests {
 
     #[test]
     fn a_batch_is_written_in_order() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let redirect = Url::parse("https://duckduckgo.com/l/?uddg=wikipedia").unwrap();
         let target = Url::parse("https://www.wikipedia.org/").unwrap();
         let visit_date = UNIX_EPOCH + Duration::from_micros(42);
 
         store
             .apply(&[
-                HistoryCommand::RecordVisit {
+                PlacesCommand::RecordVisit {
                     url: redirect.clone(),
                     visit_date,
                     title: None,
                 },
-                HistoryCommand::SetTitle {
+                PlacesCommand::SetTitle {
                     url: redirect.clone(),
                     title: "DuckDuckGo".to_owned(),
                 },
-                HistoryCommand::ReplaceVisit {
+                PlacesCommand::ReplaceVisit {
                     old_url: redirect,
                     visit_date,
                     new_url: Some(target.clone()),
                     title: None,
                 },
-                HistoryCommand::SetTitle {
+                PlacesCommand::SetTitle {
                     url: target,
                     title: "Wikipedia".to_owned(),
                 },
@@ -523,7 +361,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut store = HistoryStore::new(connection).unwrap();
+        let mut store = PlacesStore::new(connection).unwrap();
         store
             .set_title(&Url::parse("https://servo.org/").unwrap(), "Servo")
             .unwrap();
@@ -540,7 +378,7 @@ mod tests {
 
     #[test]
     fn credentials_are_not_stored() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let with_password = Url::parse("https://user:secret@example.com/page").unwrap();
         let username_only = Url::parse("https://other@example.com/other").unwrap();
 
@@ -588,7 +426,7 @@ mod tests {
 
     #[test]
     fn a_replaced_visit_moves_to_the_new_url_with_its_date() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let redirect = Url::parse("https://duckduckgo.com/l/?uddg=wikipedia").unwrap();
         let target = Url::parse("https://www.wikipedia.org/").unwrap();
         let visit_date = UNIX_EPOCH + Duration::from_micros(42);
@@ -615,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_replaced_url_with_other_visits_is_kept() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let search = Url::parse("https://www.bing.com/search?q=hello").unwrap();
         let rewritten = Url::parse("https://www.bing.com/search?q=hello&rdr=1").unwrap();
         store.record_visit(&search, UNIX_EPOCH, None).unwrap();
@@ -643,7 +481,7 @@ mod tests {
 
     #[test]
     fn a_visit_replaced_by_an_unrecorded_page_is_deleted() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://servo.org/").unwrap();
         store.record_visit(&url, UNIX_EPOCH, None).unwrap();
 
@@ -655,7 +493,7 @@ mod tests {
 
     #[test]
     fn visits_before_a_date_are_deleted_with_their_places() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let first = Url::parse("https://example.com/first").unwrap();
         let second = Url::parse("https://example.com/second").unwrap();
         let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
@@ -682,7 +520,7 @@ mod tests {
 
     #[test]
     fn visits_since_a_date_are_deleted_with_their_places() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let first = Url::parse("https://example.com/first").unwrap();
         let second = Url::parse("https://example.com/second").unwrap();
         let date = |micros| UNIX_EPOCH + Duration::from_micros(micros);
@@ -709,7 +547,7 @@ mod tests {
 
     #[test]
     fn visits_dated_before_the_epoch_are_deleted_with_all_visits() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let url = Url::parse("https://example.com/test").unwrap();
         store
             .record_visit(&url, UNIX_EPOCH - Duration::from_secs(1), None)
@@ -732,7 +570,7 @@ mod tests {
     #[test]
     fn deleted_urls_and_titles_are_erased_from_the_files() {
         let directory = tempfile::tempdir().unwrap();
-        let mut store = HistoryStore::open(&directory.path().join("places.sqlite")).unwrap();
+        let mut store = PlacesStore::open(&directory.path().join("places.sqlite")).unwrap();
         let url = Url::parse("https://example.com/test").unwrap();
         store
             .record_visit(&url, UNIX_EPOCH, Some("Very secret title"))
@@ -747,7 +585,7 @@ mod tests {
 
     #[test]
     fn a_visit_that_no_longer_exists_is_not_recreated_by_its_replacement() {
-        let mut store = HistoryStore::open_in_memory().unwrap();
+        let mut store = PlacesStore::open_in_memory().unwrap();
         let old_url = Url::parse("https://example.com/test").unwrap();
         let new_url = Url::parse("https://example.com/new").unwrap();
 

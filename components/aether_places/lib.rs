@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Browsing history of an Aether profile, stored in a SQLite database.
+//! The places database of an Aether profile, stored in SQLite.
 //!
 //! The database follows the model of Firefox's `places.sqlite`: `places` lists each URL once
 //! and `visits` has one row per visit, dated in microseconds since the Unix epoch (UTC). To
@@ -13,8 +13,9 @@
 //!     FROM visits JOIN places ON places.id = visits.place_id ORDER BY visit_date"
 //! ```
 
+mod database;
+mod history;
 mod service;
-mod store;
 
-pub use service::{CleanerReply, HistoryCleaner, HistoryService};
-pub use store::HistoryStore;
+pub use database::PlacesStore;
+pub use service::{CleanerReply, HistoryCleaner, PlacesService};

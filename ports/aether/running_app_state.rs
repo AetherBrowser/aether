@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
 
-use aether_history::HistoryService;
+use aether_places::PlacesService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
 #[cfg(all(
@@ -250,8 +250,8 @@ pub(crate) struct RunningAppState {
     /// The [`UserContentManager`] for all `WebView`s created.
     pub(crate) user_content_manager: Rc<UserContentManager>,
 
-    /// The browsing history of the profile.
-    history: HistoryService,
+    /// The places database of the profile.
+    places: PlacesService,
 
     /// The bookmarks of the profile.
     bookmarks: RefCell<Bookmarks>,
@@ -289,7 +289,7 @@ impl RunningAppState {
         event_loop_waker: Box<dyn EventLoopWaker>,
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
-        history: HistoryService,
+        places: PlacesService,
         #[cfg(all(
             feature = "gamepad",
             not(any(target_os = "android", target_env = "ohos"))
@@ -329,7 +329,7 @@ impl RunningAppState {
             achieved_stable_image: Default::default(),
             exit_scheduled: Default::default(),
             user_content_manager,
-            history,
+            places,
             bookmarks: Default::default(),
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
@@ -832,7 +832,7 @@ impl WebViewDelegate for RunningAppState {
             navigation_type,
         ) {
             Some(HistoryUpdate::RecordVisit { url, visit_date }) => {
-                self.history
+                self.places
                     .record_visit(url, visit_date, webview.page_title())
             },
             Some(HistoryUpdate::ReplaceVisit {
@@ -840,7 +840,7 @@ impl WebViewDelegate for RunningAppState {
                 visit_date,
                 new_url,
             }) => self
-                .history
+                .places
                 .replace_visit(old_url, visit_date, new_url, webview.page_title()),
             None => {},
         }
@@ -852,7 +852,7 @@ impl WebViewDelegate for RunningAppState {
             let Some(url) = webview.url() &&
             should_record(&url)
         {
-            self.history.set_title(url, title);
+            self.places.set_title(url, title);
         }
     }
 

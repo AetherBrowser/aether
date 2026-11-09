@@ -15,18 +15,18 @@ use log::{error, warn};
 use tokio::sync::oneshot;
 use url::Url;
 
-use crate::HistoryStore;
-use crate::store::HistoryCommand;
+use crate::PlacesStore;
+use crate::database::PlacesCommand;
 
 const EXPIRATION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
-/// Writes the history from a dedicated thread, so that SQLite never blocks the caller.
+/// Writes the places database from a dedicated thread, so that SQLite never blocks the caller.
 ///
 /// Commands are applied in the order they are sent. Dropping the service waits until the
 /// pending ones are written.
-pub struct HistoryService {
+pub struct PlacesService {
     /// Only `None` while the service is dropped, to close the channel before joining.
-    sender: Option<Sender<HistoryCommand>>,
+    sender: Option<Sender<PlacesCommand>>,
     cleaner: HistoryCleaner,
     thread: Option<JoinHandle<()>>,
 }
@@ -40,7 +40,7 @@ enum CleanerRequest {
     DeleteVisitsSince(SystemTime, Reply),
 }
 
-/// Deletes visits of a [`HistoryService`], after the changes already sent to it.
+/// Deletes visits of a [`PlacesService`], after the changes already sent to it.
 #[derive(Clone)]
 pub struct HistoryCleaner(Sender<CleanerRequest>);
 
@@ -76,29 +76,29 @@ impl Future for CleanerReply {
     }
 }
 
-impl HistoryService {
+impl PlacesService {
     /// Starts a service writing to the history database at `path`.
     pub fn open(path: PathBuf, retention: Duration) -> Self {
-        Self::start(move || HistoryStore::open(&path), retention)
+        Self::start(move || PlacesStore::open(&path), retention)
     }
 
     /// Starts a service whose history is never written to disk.
     pub fn open_in_memory(retention: Duration) -> Self {
-        Self::start(HistoryStore::open_in_memory, retention)
+        Self::start(PlacesStore::open_in_memory, retention)
     }
 
     fn start(
-        open_store: impl FnOnce() -> rusqlite::Result<HistoryStore> + Send + 'static,
+        open_store: impl FnOnce() -> rusqlite::Result<PlacesStore> + Send + 'static,
         retention: Duration,
     ) -> Self {
         let (sender, receiver) = unbounded();
         let (cleaner_sender, cleaner_receiver) = unbounded();
         let thread = thread::Builder::new()
-            .name("History".to_owned())
+            .name("Places".to_owned())
             .spawn(move || match open_store() {
                 Ok(store) => run(store, receiver, retention, cleaner_receiver),
                 // The history is disabled for this session, but browsing keeps working.
-                Err(error) => error!("Could not open the history database: {error}"),
+                Err(error) => error!("Could not open the places database: {error}"),
             })
             .expect("Thread spawning failed");
         Self {
@@ -116,7 +116,7 @@ impl HistoryService {
     /// Records a visit of `url` at `visit_date`.
     pub fn record_visit(&self, url: Url, visit_date: SystemTime, title: Option<String>) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(HistoryCommand::RecordVisit {
+            let _ = sender.send(PlacesCommand::RecordVisit {
                 url,
                 visit_date,
                 title,
@@ -127,12 +127,12 @@ impl HistoryService {
     /// Stores `title` as the last title of `url`.
     pub fn set_title(&self, url: Url, title: String) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(HistoryCommand::SetTitle { url, title });
+            let _ = sender.send(PlacesCommand::SetTitle { url, title });
         }
     }
 
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
-    /// is `None`. See [`HistoryStore::replace_visit`].
+    /// is `None`.
     pub fn replace_visit(
         &self,
         old_url: Url,
@@ -141,7 +141,7 @@ impl HistoryService {
         title: Option<String>,
     ) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(HistoryCommand::ReplaceVisit {
+            let _ = sender.send(PlacesCommand::ReplaceVisit {
                 old_url,
                 visit_date,
                 new_url,
@@ -151,7 +151,7 @@ impl HistoryService {
     }
 }
 
-impl Drop for HistoryService {
+impl Drop for PlacesService {
     fn drop(&mut self) {
         // Closing the channel ends the thread once it has applied the pending commands.
         self.sender.take();
@@ -164,8 +164,8 @@ impl Drop for HistoryService {
 }
 
 fn run(
-    mut store: HistoryStore,
-    receiver: Receiver<HistoryCommand>,
+    mut store: PlacesStore,
+    receiver: Receiver<PlacesCommand>,
     mut retention: Duration,
     cleaner_receiver: Receiver<CleanerRequest>,
 ) {
@@ -194,7 +194,7 @@ fn run(
     }
 }
 
-fn clean(store: &mut HistoryStore, request: CleanerRequest, retention: &mut Duration) {
+fn clean(store: &mut PlacesStore, request: CleanerRequest, retention: &mut Duration) {
     let (result, reply) = match request {
         CleanerRequest::SetRetention(new_retention, reply) => {
             *retention = new_retention;
@@ -209,7 +209,7 @@ fn clean(store: &mut HistoryStore, request: CleanerRequest, retention: &mut Dura
     let _ = reply.send(result);
 }
 
-fn write(store: &mut HistoryStore, commands: Vec<HistoryCommand>) {
+fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>) {
     if commands.is_empty() {
         return;
     }
@@ -221,14 +221,14 @@ fn write(store: &mut HistoryStore, commands: Vec<HistoryCommand>) {
     }
 }
 
-fn expire(store: &mut HistoryStore, retention: Duration) -> rusqlite::Result<()> {
+fn expire(store: &mut PlacesStore, retention: Duration) -> rusqlite::Result<()> {
     match SystemTime::now().checked_sub(retention) {
         Some(date) => store.delete_visits_before(date),
         None => Ok(()),
     }
 }
 
-fn expire_or_warn(store: &mut HistoryStore, retention: Duration) {
+fn expire_or_warn(store: &mut PlacesStore, retention: Duration) {
     if let Err(error) = expire(store, retention) {
         warn!("Could not delete the expired history: {error}");
     }
@@ -243,7 +243,7 @@ mod tests {
     use rusqlite::Connection;
     use url::Url;
 
-    use super::{HISTORY_UNAVAILABLE, HistoryService};
+    use super::{HISTORY_UNAVAILABLE, PlacesService};
 
     fn days(days: u64) -> Duration {
         Duration::from_secs(days * 24 * 60 * 60)
@@ -262,7 +262,7 @@ mod tests {
 
     fn write_old_and_recent_visits(path: &Path) {
         let now = SystemTime::now();
-        let service = HistoryService::open(path.to_owned(), Duration::MAX);
+        let service = PlacesService::open(path.to_owned(), Duration::MAX);
         let old = Url::parse("https://example.com/old").unwrap();
         let recent = Url::parse("https://example.com/recent").unwrap();
         service.record_visit(old, now - days(100), None);
@@ -274,7 +274,7 @@ mod tests {
     fn dropping_the_service_writes_pending_visits() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
 
         for index in 0..100 {
             let url = Url::parse(&format!("https://servo.org/{index}")).unwrap();
@@ -293,7 +293,7 @@ mod tests {
     fn titles_are_written_by_the_service() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
         let url = Url::parse("https://servo.org/").unwrap();
 
         service.record_visit(url.clone(), UNIX_EPOCH, None);
@@ -311,7 +311,7 @@ mod tests {
     fn the_last_of_many_titles_is_written() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
         let url = Url::parse("https://servo.org/").unwrap();
 
         service.record_visit(url.clone(), UNIX_EPOCH, None);
@@ -331,7 +331,7 @@ mod tests {
     fn replaced_visits_are_written_by_the_service() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
         let redirect = Url::parse("https://servo.org/redirect").unwrap();
         let target = Url::parse("https://servo.org/").unwrap();
 
@@ -354,7 +354,7 @@ mod tests {
     fn a_database_that_cannot_be_opened_disables_the_history() {
         // SQLite cannot open a directory as a database.
         let directory = tempfile::tempdir().unwrap();
-        let service = HistoryService::open(directory.path().to_owned(), Duration::MAX);
+        let service = PlacesService::open(directory.path().to_owned(), Duration::MAX);
 
         service.record_visit(Url::parse("https://servo.org/").unwrap(), UNIX_EPOCH, None);
         drop(service);
@@ -366,7 +366,7 @@ mod tests {
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
 
-        drop(HistoryService::open(path.clone(), days(90)));
+        drop(PlacesService::open(path.clone(), days(90)));
 
         assert_eq!(urls(&path), ["https://example.com/recent"]);
     }
@@ -376,7 +376,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
-        let service = HistoryService::open(path.clone(), days(365));
+        let service = PlacesService::open(path.clone(), days(365));
 
         assert_eq!(block_on(service.cleaner().set_retention(days(90))), Ok(()));
 
@@ -388,7 +388,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let now = SystemTime::now();
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
         service.record_visit(
             Url::parse("https://example.com/old").unwrap(),
             now - days(2),
@@ -411,7 +411,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         write_old_and_recent_visits(&path);
-        let service = HistoryService::open(path.clone(), Duration::MAX);
+        let service = PlacesService::open(path.clone(), Duration::MAX);
         assert_eq!(
             block_on(service.cleaner().set_retention(Duration::MAX)),
             Ok(())
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn the_cleaner_can_outlive_the_service() {
-        let service = HistoryService::open_in_memory(days(90));
+        let service = PlacesService::open_in_memory(days(90));
         let cleaner = service.cleaner();
 
         drop(service);
