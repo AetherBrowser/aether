@@ -96,14 +96,12 @@ pub(crate) fn replace_visit(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::Path;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use rusqlite::Connection;
     use url::Url;
 
-    use crate::database::{MIGRATIONS, PlacesCommand, PlacesStore};
+    use crate::database::{MIGRATIONS, PlacesCommand, PlacesStore, files_contain};
 
     impl PlacesStore {
         fn record_visit(
@@ -556,15 +554,6 @@ mod tests {
         store.delete_visits_since(UNIX_EPOCH).unwrap();
 
         assert!(visits(&store.connection).is_empty());
-    }
-
-    fn files_contain(directory: &Path, text: &str) -> bool {
-        ["places.sqlite", "places.sqlite-wal"].iter().any(|file| {
-            fs::read(directory.join(file))
-                .unwrap_or_default()
-                .windows(text.len())
-                .any(|bytes| bytes == text.as_bytes())
-        })
     }
 
     #[test]

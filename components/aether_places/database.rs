@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, params};
 use url::Url;
 
+use crate::bookmarks::{add_bookmark, remove_bookmark};
 use crate::history::{record_visit, replace_visit, set_title};
 
 /// Schema migrations, in order. The database's `user_version` is the number of migrations
@@ -30,6 +31,14 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     CREATE INDEX visits_date_index ON visits(visit_date);",
     // Version 2: the last title of each page, as shown in its tab.
     "ALTER TABLE places ADD COLUMN title TEXT;",
+    // Version 3: the bookmarks, with the title of the page when it was added.
+    "CREATE TABLE bookmarks (
+        id INTEGER PRIMARY KEY,
+        place_id INTEGER NOT NULL UNIQUE REFERENCES places(id),
+        title TEXT,
+        date_added INTEGER NOT NULL,
+        guid TEXT NOT NULL UNIQUE
+    );",
 ];
 
 pub(crate) enum PlacesCommand {
@@ -49,10 +58,19 @@ pub(crate) enum PlacesCommand {
         new_url: Option<Url>,
         title: Option<String>,
     },
+    /// Bookmarks `url`, unless it already is.
+    AddBookmark {
+        url: Url,
+        title: Option<String>,
+        date_added: SystemTime,
+    },
+    /// Removes the bookmark of `url`.
+    RemoveBookmark { url: Url },
 }
 
 /// The condition on `places` of a row that nothing refers to.
-const UNUSED_PLACE: &str = "NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)";
+const UNUSED_PLACE: &str = "NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)
+    AND NOT EXISTS (SELECT 1 FROM bookmarks WHERE bookmarks.place_id = places.id)";
 
 pub struct PlacesStore {
     pub(crate) connection: Connection,
@@ -113,9 +131,22 @@ impl PlacesStore {
                     new_url.as_ref(),
                     title.as_deref(),
                 )?,
+                PlacesCommand::AddBookmark {
+                    url,
+                    title,
+                    date_added,
+                } => add_bookmark(&transaction, url, title.as_deref(), *date_added)?,
+                PlacesCommand::RemoveBookmark { url } => remove_bookmark(&transaction, url)?,
             }
         }
-        transaction.commit()
+        transaction.commit()?;
+        if commands
+            .iter()
+            .any(|command| matches!(command, PlacesCommand::RemoveBookmark { .. }))
+        {
+            self.erase_deleted_rows()?;
+        }
+        Ok(())
     }
 
     /// Erases the deleted rows from the database files, so that they cannot be read back.
@@ -159,6 +190,17 @@ pub(crate) fn delete_place_if_unused(connection: &Connection, url: &str) -> rusq
         [url],
     )?;
     Ok(())
+}
+
+/// Whether the files of the database in `directory` contain `text`.
+#[cfg(test)]
+pub(crate) fn files_contain(directory: &Path, text: &str) -> bool {
+    ["places.sqlite", "places.sqlite-wal"].iter().any(|file| {
+        std::fs::read(directory.join(file))
+            .unwrap_or_default()
+            .windows(text.len())
+            .any(|bytes| bytes == text.as_bytes())
+    })
 }
 
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {

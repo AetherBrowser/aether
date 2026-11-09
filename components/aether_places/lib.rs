@@ -4,15 +4,16 @@
 
 //! The places database of an Aether profile, stored in SQLite.
 //!
-//! The database follows the model of Firefox's `places.sqlite`: `places` lists each URL once
-//! and `visits` has one row per visit, dated in microseconds since the Unix epoch (UTC). To
-//! read it by hand:
+//! The database follows the model of Firefox's `places.sqlite`: `places` lists each URL once,
+//! `visits` has one row per visit, dated in microseconds since the Unix epoch (UTC), and
+//! `bookmarks` has one row per bookmarked place. To read the visits by hand:
 //!
 //! ```sh
 //! sqlite3 places.sqlite "SELECT datetime(visit_date / 1000000, 'unixepoch', 'localtime'), url
 //!     FROM visits JOIN places ON places.id = visits.place_id ORDER BY visit_date"
 //! ```
 
+mod bookmarks;
 mod database;
 mod history;
 mod service;
