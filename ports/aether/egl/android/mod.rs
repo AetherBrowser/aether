@@ -406,6 +406,19 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_goForward<'local>(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_toggleBookmark<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        debug!("toggleBookmark");
+        call(env, |s| s.toggle_bookmark());
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_org_servo_servoview_JNIServo_doFrame<'local>(
     mut env: EnvUnowned<'local>,
     _: JClass<'local>,
@@ -755,6 +768,23 @@ impl HostTrait for HostCallbacks {
                     jni_str!("onHistoryChanged"),
                     jni_sig!("(ZZ)V"),
                     &[can_go_back, can_go_forward],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn on_bookmark_state_changed(&self, can_bookmark: bool, bookmarked: bool) {
+        debug!("on_bookmark_state_changed");
+        self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let can_bookmark = JValue::Bool(can_bookmark as jboolean);
+                let bookmarked = JValue::Bool(bookmarked as jboolean);
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onBookmarkStateChanged"),
+                    jni_sig!("(ZZ)V"),
+                    &[can_bookmark, bookmarked],
                 )?;
                 Ok(())
             })

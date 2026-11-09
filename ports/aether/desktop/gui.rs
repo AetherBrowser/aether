@@ -55,9 +55,13 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::Window;
 
+use crate::bookmarks::can_bookmark;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
-use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
+use crate::desktop::icons::{
+    LOCATION_BUTTON_SIZE, NAVIGATION_CONTROL_SIZE, TOOLBAR_BUTTON_CORNER_RADIUS, ToolbarIcon,
+    ToolbarIconCache,
+};
 use crate::desktop::menu::AppMenu;
 use crate::desktop::shortcuts::BrowserAction;
 use crate::home::{AETHER_HOME_URL, BLANK_URL};
@@ -65,6 +69,20 @@ use crate::parser::complete_com_domain;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     ServoShellWindow, TopLevelWebViewCreationRequest, can_view_source, new_tab_url,
+};
+
+/// Space between the bookmark star and the frame of the location bar.
+const BOOKMARK_STAR_INSET: f32 = (NAVIGATION_CONTROL_SIZE - LOCATION_BUTTON_SIZE) / 2.0;
+
+/// Corner radius of the location bar, concentric with the hover square of the bookmark star.
+const LOCATION_CORNER_RADIUS: u8 = TOOLBAR_BUTTON_CORNER_RADIUS + BOOKMARK_STAR_INSET as u8;
+
+/// Margin of the location bar text, which stops before the bookmark star.
+const LOCATION_TEXT_MARGIN: egui::Margin = egui::Margin {
+    left: 8,
+    right: (LOCATION_BUTTON_SIZE + 2.0 * BOOKMARK_STAR_INSET) as i8,
+    top: 2,
+    bottom: 2,
 };
 
 /// The egui id of the location bar.
@@ -419,6 +437,36 @@ impl Gui {
         self.app_menu.contains_pointer(position)
     }
 
+    /// Draws the bookmark star over the right end of the location bar.
+    fn bookmark_star(
+        ui: &mut egui::Ui,
+        toolbar_icons: &mut ToolbarIconCache,
+        location_rect: egui::Rect,
+        bookmarked: bool,
+    ) -> egui::Response {
+        let (icon, tooltip) = if bookmarked {
+            (ToolbarIcon::Bookmark, "Remove bookmark")
+        } else {
+            (ToolbarIcon::BookmarkHollow, "Bookmark this page")
+        };
+        let mut star_rect = location_rect;
+        star_rect.max.x -= BOOKMARK_STAR_INSET;
+        let star = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(star_rect), |ui| {
+                toolbar_icons
+                    .location_button(ui, icon)
+                    .on_hover_text(tooltip)
+            })
+            .inner;
+        star.widget_info(|| {
+            let mut info = WidgetInfo::new(WidgetType::Button);
+            info.label = Some(tooltip.into());
+            info.selected = Some(bookmarked);
+            info
+        });
+        star
+    }
+
     /// Draws a browser tab, checking for clicks and queues appropriate [`UserInterfaceCommand`]s.
     /// Using a custom widget here would've been nice, but it doesn't seem as though egui
     /// supports that, so we arrange multiple Widgets in a way that they look connected.
@@ -434,7 +482,6 @@ impl Gui {
             (_, Some(url)) => url.to_string(),
             _ => "New Tab".into(),
         };
-
         let inactive_bg_color = ui.visuals().window_fill;
         let active_bg_color = ui.visuals().widgets.active.weak_bg_fill;
         let active = window.active_webview().map(|webview| webview.id()) == Some(webview.id());
@@ -596,10 +643,12 @@ impl Gui {
                         ui.available_size(),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+
                             let back_button = ui
                                 .add_enabled_ui(self.can_go_back, |ui| {
                                     toolbar_icons
-                                        .button(ui, ToolbarIcon::Back)
+                                        .navigation_button(ui, ToolbarIcon::Back)
                                         .on_hover_text("Back")
                                 })
                                 .inner;
@@ -616,7 +665,7 @@ impl Gui {
                             let forward_button = ui
                                 .add_enabled_ui(self.can_go_forward, |ui| {
                                     toolbar_icons
-                                        .button(ui, ToolbarIcon::Forward)
+                                        .navigation_button(ui, ToolbarIcon::Forward)
                                         .on_hover_text("Forward")
                                 })
                                 .inner;
@@ -633,7 +682,7 @@ impl Gui {
                             match self.load_status {
                                 LoadStatus::Started | LoadStatus::HeadParsed => {
                                     let stop_button = toolbar_icons
-                                        .button(ui, ToolbarIcon::Stop)
+                                        .navigation_button(ui, ToolbarIcon::Stop)
                                         .on_hover_text("Stop");
                                     stop_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -646,7 +695,7 @@ impl Gui {
                                 },
                                 LoadStatus::Complete | LoadStatus::Stopped => {
                                     let reload_button = toolbar_icons
-                                        .button(ui, ToolbarIcon::Reload)
+                                        .navigation_button(ui, ToolbarIcon::Reload)
                                         .on_hover_text("Reload");
                                     reload_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -663,7 +712,7 @@ impl Gui {
                             }
 
                             let home_button = toolbar_icons
-                                .button(ui, ToolbarIcon::Home)
+                                .navigation_button(ui, ToolbarIcon::Home)
                                 .on_hover_text("Home");
                             home_button.widget_info(|| {
                                 let mut info = WidgetInfo::new(WidgetType::Button);
@@ -674,14 +723,14 @@ impl Gui {
                                 *location_dirty = false;
                                 window.queue_user_interface_command(UserInterfaceCommand::Home);
                             }
-                            ui.add_space(2.0);
+                            ui.add_space(4.0);
 
                             ui.allocate_ui_with_layout(
                                 ui.available_size(),
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     let menu_button_response = toolbar_icons
-                                        .button(ui, ToolbarIcon::Menu)
+                                        .navigation_button(ui, ToolbarIcon::Menu)
                                         .on_hover_text("Menu");
                                     menu_button_response.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -691,10 +740,17 @@ impl Gui {
                                     });
                                     menu_button = Some(menu_button_response);
 
-                                    let mut experimental_preferences_enabled =
+                                    let experimental_preferences_enabled =
                                         state.experimental_preferences_enabled();
                                     let prefs_toggle = ui
-                                        .toggle_value(&mut experimental_preferences_enabled, "☢")
+                                        .add(
+                                            Button::selectable(
+                                                experimental_preferences_enabled,
+                                                "☢",
+                                            )
+                                            .min_size(egui::Vec2::splat(NAVIGATION_CONTROL_SIZE))
+                                            .corner_radius(TOOLBAR_BUTTON_CORNER_RADIUS),
+                                        )
                                         .on_hover_text("Enable experimental prefs");
                                     prefs_toggle.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -704,19 +760,32 @@ impl Gui {
                                     });
                                     if prefs_toggle.clicked() {
                                         state.set_experimental_preferences_enabled(
-                                            experimental_preferences_enabled,
+                                            !experimental_preferences_enabled,
                                         );
                                         *location_dirty = false;
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::ReloadAll,
                                         );
                                     }
+                                    ui.add_space(4.0);
+
+                                    let widgets = &mut ui.visuals_mut().widgets;
+                                    for visuals in [
+                                        &mut widgets.inactive,
+                                        &mut widgets.hovered,
+                                        &mut widgets.active,
+                                    ] {
+                                        visuals.corner_radius =
+                                            egui::CornerRadius::same(LOCATION_CORNER_RADIUS);
+                                    }
 
                                     let location_id = location_id();
                                     let location_field = ui.add_sized(
-                                        ui.available_size(),
+                                        egui::vec2(ui.available_width(), NAVIGATION_CONTROL_SIZE),
                                         egui::TextEdit::singleline(location)
                                             .id(location_id)
+                                            .margin(LOCATION_TEXT_MARGIN)
+                                            .vertical_align(egui::Align::Center)
                                             .hint_text("Search or enter address"),
                                     );
 
@@ -783,6 +852,23 @@ impl Gui {
                                             window.queue_user_interface_command(
                                                 UserInterfaceCommand::Go(location.clone()),
                                             );
+                                        }
+                                    }
+
+                                    if !*location_dirty &&
+                                        let Some(url) = window
+                                            .active_webview()
+                                            .and_then(|webview| webview.url())
+                                            .filter(can_bookmark)
+                                    {
+                                        let bookmark_star = Self::bookmark_star(
+                                            ui,
+                                            toolbar_icons,
+                                            location_field.rect,
+                                            state.is_bookmarked(&url),
+                                        );
+                                        if bookmark_star.clicked() {
+                                            state.toggle_bookmark(&url);
                                         }
                                     }
                                 },
@@ -1213,6 +1299,81 @@ mod tests {
             location_text(&url("https://example.com/")),
             "https://example.com/"
         );
+    }
+
+    /// Shows a location bar with its star and returns their responses.
+    fn location_bar_with_star(
+        ui: &mut egui::Ui,
+        icons: &mut ToolbarIconCache,
+        text: &mut String,
+    ) -> (egui::Response, egui::Response) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let field = ui.add_sized(
+                egui::vec2(400.0, NAVIGATION_CONTROL_SIZE),
+                egui::TextEdit::singleline(text).margin(LOCATION_TEXT_MARGIN),
+            );
+            let star = Gui::bookmark_star(ui, icons, field.rect, false);
+            (field, star)
+        })
+        .inner
+    }
+
+    #[test]
+    fn the_bookmark_star_stays_inside_the_frame_of_the_location_bar() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut text = String::new();
+
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+            let (field, star) = location_bar_with_star(ui, &mut icons, &mut text);
+
+            assert!(
+                field
+                    .rect
+                    .shrink(BOOKMARK_STAR_INSET)
+                    .contains_rect(star.rect)
+            );
+            assert_eq!(star.rect.right(), field.rect.right() - BOOKMARK_STAR_INSET);
+            assert_eq!(star.rect.center().y, field.rect.center().y);
+            assert!(field.rect.right() - star.rect.left() <= LOCATION_TEXT_MARGIN.right as f32);
+        });
+    }
+
+    #[test]
+    fn a_click_on_the_star_does_not_reach_the_location_bar() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut text = String::new();
+        let mut star_center = egui::Pos2::ZERO;
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+            star_center = location_bar_with_star(ui, &mut icons, &mut text)
+                .1
+                .rect
+                .center();
+        });
+
+        let button = |pressed| egui::Event::PointerButton {
+            pos: star_center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let mut star_clicked = false;
+        for events in [
+            vec![egui::Event::PointerMoved(star_center), button(true)],
+            vec![button(false)],
+            vec![],
+        ] {
+            let _ = ctx.run_ui(screen_input(events), |ui| {
+                let (field, star) = location_bar_with_star(ui, &mut icons, &mut text);
+
+                star_clicked |= star.clicked();
+                assert!(!field.clicked());
+                assert!(!field.has_focus());
+                assert!(!field.hovered());
+            });
+        }
+        assert!(star_clicked);
     }
 
     #[test]

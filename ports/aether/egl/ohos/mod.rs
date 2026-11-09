@@ -1277,6 +1277,8 @@ impl HostTrait for HostCallbacks {
 
     fn on_history_changed(&self, can_go_back: bool, can_go_forward: bool) {}
 
+    fn on_bookmark_state_changed(&self, _can_bookmark: bool, _bookmarked: bool) {}
+
     fn on_shutdown_complete(&self) {
         if let Some(terminate_fn) = TERMINATE_CALLBACK.get() {
             terminate_fn.call((), ThreadsafeFunctionCallMode::Blocking);

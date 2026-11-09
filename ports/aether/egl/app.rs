@@ -21,6 +21,7 @@ use servo::{
 use url::Url;
 
 use super::protocols;
+use crate::bookmarks::can_bookmark;
 use crate::egl::host_trait::HostTrait;
 use crate::history::open_history;
 use crate::prefs::ServoShellPreferences;
@@ -46,6 +47,8 @@ pub(crate) struct EmbeddedPlatformWindow {
     current_can_go_back: Cell<bool>,
     /// Whether or not the active WebView is currently able to go forward.
     current_can_go_forward: Cell<bool>,
+    /// Whether the active page can be bookmarked, and whether it is.
+    current_bookmark_state: Cell<(bool, bool)>,
     /// The current load status of the active WebView.
     current_load_status: Cell<Option<LoadStatus>>,
 
@@ -124,6 +127,20 @@ impl PlatformWindow for EmbeddedPlatformWindow {
                 .on_history_changed(new_back_forward.0, new_back_forward.1);
         }
 
+        let new_bookmark_state = self
+            .current_url
+            .borrow()
+            .as_ref()
+            .map_or((false, false), |url| {
+                (can_bookmark(url), state.is_bookmarked(url))
+            });
+        let bookmark_state_changed = new_bookmark_state != self.current_bookmark_state.get();
+        if bookmark_state_changed {
+            self.current_bookmark_state.set(new_bookmark_state);
+            self.host
+                .on_bookmark_state_changed(new_bookmark_state.0, new_bookmark_state.1);
+        }
+
         let new_load_status = active_webview.load_status();
         let load_status_changed = Some(new_load_status) != self.current_load_status.get();
         if load_status_changed {
@@ -159,7 +176,11 @@ impl PlatformWindow for EmbeddedPlatformWindow {
             }
         }
 
-        title_changed || url_changed || back_forward_changed || load_status_changed
+        title_changed ||
+            url_changed ||
+            back_forward_changed ||
+            bookmark_state_changed ||
+            load_status_changed
     }
 
     fn request_repaint(&self, window: &ServoShellWindow) {
@@ -369,6 +390,7 @@ impl App {
             current_url: Default::default(),
             current_can_go_back: Default::default(),
             current_can_go_forward: Default::default(),
+            current_bookmark_state: Default::default(),
             current_load_status: Default::default(),
         });
         self.state.open_window(
@@ -457,6 +479,19 @@ impl App {
         self.window()
             .queue_user_interface_command(UserInterfaceCommand::Forward);
         self.spin_event_loop();
+    }
+
+    #[cfg_attr(target_env = "ohos", expect(dead_code))]
+    pub fn toggle_bookmark(&self) {
+        if let Some(url) = self
+            .window()
+            .active_webview()
+            .and_then(|webview| webview.url())
+            .filter(can_bookmark)
+        {
+            self.state.toggle_bookmark(&url);
+            self.spin_event_loop();
+        }
     }
 
     /// Let Servo know that the platform window has been resized.
