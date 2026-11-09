@@ -30,14 +30,13 @@ impl PlacesStore {
     fn delete_visits(&mut self, statement: &str, date: SystemTime) -> rusqlite::Result<()> {
         let transaction = self.connection.transaction()?;
         let deleted = transaction.execute(statement, [microseconds_since_epoch(date)])?;
-        if deleted == 0 {
-            return Ok(());
+        if deleted > 0 {
+            delete_unused_places(&transaction)?;
+            transaction.execute(
+                &format!("UPDATE places SET title = NULL WHERE title IS NOT NULL AND {NO_VISIT}"),
+                [],
+            )?;
         }
-        delete_unused_places(&transaction)?;
-        transaction.execute(
-            &format!("UPDATE places SET title = NULL WHERE title IS NOT NULL AND {NO_VISIT}"),
-            [],
-        )?;
         transaction.commit()?;
         self.erase_deleted_rows()
     }
@@ -582,6 +581,45 @@ mod tests {
         store.delete_visits_since(UNIX_EPOCH).unwrap();
 
         assert!(!files_contain(directory.path(), "example.com/test"));
+        assert!(!files_contain(directory.path(), "Very secret title"));
+    }
+
+    #[test]
+    fn deleting_the_history_erases_the_files_even_without_visits_left() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store = PlacesStore::open(&directory.path().join("places.sqlite")).unwrap();
+        let url = Url::parse("https://example.com/test").unwrap();
+        store
+            .record_visit(&url, UNIX_EPOCH, Some("Very secret title"))
+            .unwrap();
+        store.replace_visit(&url, UNIX_EPOCH, None, None).unwrap();
+        assert!(files_contain(directory.path(), "Very secret title"));
+
+        store.delete_visits_since(UNIX_EPOCH).unwrap();
+
+        assert!(!files_contain(directory.path(), "Very secret title"));
+    }
+
+    #[test]
+    fn a_blocked_erasure_is_reported_until_it_succeeds() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let mut store = PlacesStore::open(&path).unwrap();
+        store.connection.busy_timeout(Duration::ZERO).unwrap();
+        let url = Url::parse("https://example.com/test").unwrap();
+        store
+            .record_visit(&url, UNIX_EPOCH, Some("Very secret title"))
+            .unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT count(*) FROM places;")
+            .unwrap();
+
+        assert!(store.delete_visits_since(UNIX_EPOCH).is_err());
+        assert!(store.delete_visits_since(UNIX_EPOCH).is_err());
+
+        reader.execute_batch("COMMIT").unwrap();
+        assert!(store.delete_visits_since(UNIX_EPOCH).is_ok());
         assert!(!files_contain(directory.path(), "Very secret title"));
     }
 

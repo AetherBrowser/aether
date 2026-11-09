@@ -118,14 +118,13 @@ impl PlacesService {
             .name("Places".to_owned())
             .spawn(move || match open_store() {
                 Ok(store) => {
-                    publisher.publish(read_bookmarks(&store).unwrap_or_default());
+                    if let Some(urls) = read_bookmarks(&store) {
+                        publisher.publish(urls);
+                    }
                     run(store, receiver, retention, cleaner_receiver, publisher)
                 },
                 // Nothing is saved for this session, but browsing keeps working.
-                Err(error) => {
-                    error!("Could not open the places database: {error}");
-                    publisher.publish(Vec::new());
-                },
+                Err(error) => error!("Could not open the places database: {error}"),
             })
             .expect("Thread spawning failed");
         Self {
@@ -503,12 +502,29 @@ mod tests {
     }
 
     #[test]
-    fn a_database_that_cannot_be_opened_sends_no_bookmarks_but_still_notifies() {
+    fn a_database_that_cannot_be_opened_sends_no_bookmarks() {
         let directory = tempfile::tempdir().unwrap();
 
         let (service, notifications) = open_notified(directory.path().to_owned(), Duration::MAX);
+        drop(service);
 
-        assert!(next_bookmarks(&service, &notifications).is_empty());
+        assert!(notifications.try_recv().is_err());
+    }
+
+    #[test]
+    fn bookmarks_that_cannot_be_read_at_startup_are_not_sent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        drop(PlacesService::open(path.clone(), Duration::MAX, || {}));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("ALTER TABLE bookmarks RENAME TO unreadable")
+            .unwrap();
+
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        drop(service);
+
+        assert!(notifications.try_recv().is_err());
     }
 
     #[test]
