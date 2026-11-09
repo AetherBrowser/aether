@@ -78,12 +78,12 @@ impl Future for CleanerReply {
 }
 
 impl PlacesService {
-    /// Starts a service writing to the history database at `path`.
+    /// Starts a service writing to the places database at `path`.
     pub fn open(path: PathBuf, retention: Duration) -> Self {
         Self::start(move || PlacesStore::open(&path), retention)
     }
 
-    /// Starts a service whose history is never written to disk.
+    /// Starts a service whose database is never written to disk.
     pub fn open_in_memory(retention: Duration) -> Self {
         Self::start(PlacesStore::open_in_memory, retention)
     }
@@ -102,7 +102,7 @@ impl PlacesService {
                     let _ = bookmarks_sender.send(load_bookmarks(&store));
                     run(store, receiver, retention, cleaner_receiver)
                 },
-                // The history is disabled for this session, but browsing keeps working.
+                // Nothing is saved for this session, but browsing keeps working.
                 Err(error) => error!("Could not open the places database: {error}"),
             })
             .expect("Thread spawning failed");
@@ -114,29 +114,6 @@ impl PlacesService {
         }
     }
 
-    /// The URLs that were bookmarked when the service started.
-    pub fn initial_bookmarks(&self) -> &[Url] {
-        &self.initial_bookmarks
-    }
-
-    /// Bookmarks `url`, unless it already is.
-    pub fn add_bookmark(&self, url: Url, title: Option<String>, date_added: SystemTime) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(PlacesCommand::AddBookmark {
-                url,
-                title,
-                date_added,
-            });
-        }
-    }
-
-    /// Removes the bookmark of `url`.
-    pub fn remove_bookmark(&self, url: Url) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(PlacesCommand::RemoveBookmark { url });
-        }
-    }
-
     /// Returns a handle to delete visits.
     pub fn cleaner(&self) -> HistoryCleaner {
         self.cleaner.clone()
@@ -144,20 +121,16 @@ impl PlacesService {
 
     /// Records a visit of `url` at `visit_date`.
     pub fn record_visit(&self, url: Url, visit_date: SystemTime, title: Option<String>) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(PlacesCommand::RecordVisit {
-                url,
-                visit_date,
-                title,
-            });
-        }
+        self.send(PlacesCommand::RecordVisit {
+            url,
+            visit_date,
+            title,
+        });
     }
 
     /// Stores `title` as the last title of `url`.
     pub fn set_title(&self, url: Url, title: String) {
-        if let Some(sender) = &self.sender {
-            let _ = sender.send(PlacesCommand::SetTitle { url, title });
-        }
+        self.send(PlacesCommand::SetTitle { url, title });
     }
 
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
@@ -169,13 +142,36 @@ impl PlacesService {
         new_url: Option<Url>,
         title: Option<String>,
     ) {
+        self.send(PlacesCommand::ReplaceVisit {
+            old_url,
+            visit_date,
+            new_url,
+            title,
+        });
+    }
+
+    /// The URLs that were bookmarked when the service started.
+    pub fn initial_bookmarks(&self) -> &[Url] {
+        &self.initial_bookmarks
+    }
+
+    /// Bookmarks `url`, unless it already is.
+    pub fn add_bookmark(&self, url: Url, title: Option<String>, date_added: SystemTime) {
+        self.send(PlacesCommand::AddBookmark {
+            url,
+            title,
+            date_added,
+        });
+    }
+
+    /// Removes the bookmark of `url`.
+    pub fn remove_bookmark(&self, url: Url) {
+        self.send(PlacesCommand::RemoveBookmark { url });
+    }
+
+    fn send(&self, command: PlacesCommand) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(PlacesCommand::ReplaceVisit {
-                old_url,
-                visit_date,
-                new_url,
-                title,
-            });
+            let _ = sender.send(command);
         }
     }
 }
@@ -187,7 +183,7 @@ impl Drop for PlacesService {
         if let Some(thread) = self.thread.take() &&
             thread.join().is_err()
         {
-            error!("The history thread panicked");
+            error!("The places thread panicked");
         }
     }
 }
@@ -251,7 +247,7 @@ fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>) {
     }
     if let Err(error) = store.apply(&commands) {
         warn!(
-            "Could not write {} changes to the history: {error}",
+            "Could not write {} changes to the places database: {error}",
             commands.len()
         );
     }

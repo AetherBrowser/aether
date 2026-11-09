@@ -6,10 +6,10 @@
 
 use std::collections::HashSet;
 
+use aether_places::without_credentials;
 use url::Url;
 
-/// The bookmarked pages, read every frame by the interface, and saved in the places database.
-#[derive(Default)]
+/// In-memory copy of the bookmarks of the places database, which the interface reads every frame.
 pub(crate) struct Bookmarks {
     urls: HashSet<Url>,
 }
@@ -40,13 +40,6 @@ pub(crate) fn can_bookmark(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
 }
 
-fn without_credentials(url: &Url) -> Url {
-    let mut url = url.clone();
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url
-}
-
 #[cfg(test)]
 mod tests {
     use url::Url;
@@ -59,7 +52,7 @@ mod tests {
 
     #[test]
     fn toggling_a_page_adds_it_then_removes_it() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
         let page = url("https://servo.org/");
         assert!(!bookmarks.contains(&page));
 
@@ -82,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_bookmark_only_marks_its_exact_url() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
         bookmarks.toggle(&url("https://servo.org/blog"));
 
         for other in [
@@ -97,7 +90,7 @@ mod tests {
 
     #[test]
     fn credentials_do_not_change_the_bookmarked_page() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
 
         bookmarks.toggle(&url("https://user:secret@example.com/page"));
 

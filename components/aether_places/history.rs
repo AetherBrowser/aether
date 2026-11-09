@@ -13,12 +13,12 @@ use crate::database::{
 };
 
 impl PlacesStore {
-    /// Deletes the visits before `date`, and the places left without visits.
+    /// Deletes the visits before `date`, and the places that nothing refers to anymore.
     pub(crate) fn delete_visits_before(&mut self, date: SystemTime) -> rusqlite::Result<()> {
         self.delete_visits("DELETE FROM visits WHERE visit_date < ?1", date)
     }
 
-    /// Deletes the visits at or after `date`, and the places left without visits.
+    /// Deletes the visits at or after `date`, and the places that nothing refers to anymore.
     pub(crate) fn delete_visits_since(&mut self, date: SystemTime) -> rusqlite::Result<()> {
         self.delete_visits("DELETE FROM visits WHERE visit_date >= ?1", date)
     }

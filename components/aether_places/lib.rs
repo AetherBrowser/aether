@@ -18,5 +18,5 @@ mod database;
 mod history;
 mod service;
 
-pub use database::PlacesStore;
+pub use database::{PlacesStore, without_credentials};
 pub use service::{CleanerReply, HistoryCleaner, PlacesService};

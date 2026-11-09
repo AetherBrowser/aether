@@ -444,7 +444,7 @@ impl Gui {
         location_rect: egui::Rect,
         bookmarked: bool,
     ) -> egui::Response {
-        let (icon, tooltip) = if bookmarked {
+        let (icon, label) = if bookmarked {
             (ToolbarIcon::Bookmark, "Remove bookmark")
         } else {
             (ToolbarIcon::BookmarkHollow, "Bookmark this page")
@@ -453,14 +453,12 @@ impl Gui {
         star_rect.max.x -= BOOKMARK_STAR_INSET;
         let star = ui
             .scope_builder(egui::UiBuilder::new().max_rect(star_rect), |ui| {
-                toolbar_icons
-                    .location_button(ui, icon)
-                    .on_hover_text(tooltip)
+                toolbar_icons.location_button(ui, icon).on_hover_text(label)
             })
             .inner;
         star.widget_info(|| {
             let mut info = WidgetInfo::new(WidgetType::Button);
-            info.label = Some(tooltip.into());
+            info.label = Some(label.into());
             info.selected = Some(bookmarked);
             info
         });

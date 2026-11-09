@@ -431,11 +431,11 @@ mod tests {
     #[test]
     fn a_new_retention_period_is_saved() {
         let directory = tempfile::tempdir().unwrap();
-        let history = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
-            cleaner: history.cleaner(),
+            cleaner: places.cleaner(),
         };
 
         assert_eq!(
@@ -449,11 +449,11 @@ mod tests {
     #[test]
     fn an_invalid_retention_period_is_rejected() {
         let directory = tempfile::tempdir().unwrap();
-        let history = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: Some(directory.path().to_owned()),
             retention_days: 90,
-            cleaner: history.cleaner(),
+            cleaner: places.cleaner(),
         };
 
         for days in ["0", "-7", "seven", ""] {
@@ -484,11 +484,11 @@ mod tests {
 
     #[test]
     fn an_invalid_deletion_is_rejected() {
-        let history = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,
-            cleaner: history.cleaner(),
+            cleaner: places.cleaner(),
         };
 
         assert!(response(&mut page, Some("delete=hour"))["error"].is_string());
@@ -500,13 +500,13 @@ mod tests {
 
     #[test]
     fn a_failed_deletion_is_reported() {
-        let history = PlacesService::open_in_memory(Duration::MAX);
+        let places = PlacesService::open_in_memory(Duration::MAX);
         let mut page = HistoryPage {
             config_dir: None,
             retention_days: 90,
-            cleaner: history.cleaner(),
+            cleaner: places.cleaner(),
         };
-        drop(history);
+        drop(places);
 
         assert!(response(&mut page, Some("delete=60"))["error"].is_string());
         assert!(response(&mut page, Some("retentionDays=7"))["error"].is_string());

@@ -48,7 +48,7 @@ pub(crate) enum PlacesCommand {
         visit_date: SystemTime,
         title: Option<String>,
     },
-    /// Stores `title` as the last title of `url`, if `url` was visited.
+    /// Stores `title` as the last title of `url`, if `url` has a place.
     SetTitle { url: Url, title: String },
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
     /// is `None`.
@@ -68,16 +68,12 @@ pub(crate) enum PlacesCommand {
     RemoveBookmark { url: Url },
 }
 
-/// The condition on `places` of a row that nothing refers to.
-const UNUSED_PLACE: &str = "NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)
-    AND NOT EXISTS (SELECT 1 FROM bookmarks WHERE bookmarks.place_id = places.id)";
-
 pub struct PlacesStore {
     pub(crate) connection: Connection,
 }
 
 impl PlacesStore {
-    /// Opens the history database at `path`, creating it if needed.
+    /// Opens the places database at `path`, creating it if needed.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
@@ -85,7 +81,7 @@ impl PlacesStore {
         Self::new(connection)
     }
 
-    /// Opens a history that is never written to disk.
+    /// Opens a places database that is never written to disk.
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         Self::new(Connection::open_in_memory()?)
     }
@@ -170,12 +166,22 @@ pub(crate) fn insert_place(
     Ok(())
 }
 
-pub(crate) fn stored_url(url: &Url) -> String {
+/// Returns `url` without the username and password, which are never stored.
+pub fn without_credentials(url: &Url) -> Url {
     let mut url = url.clone();
     let _ = url.set_username("");
     let _ = url.set_password(None);
-    url.into()
+    url
 }
+
+pub(crate) fn stored_url(url: &Url) -> String {
+    without_credentials(url).into()
+}
+
+/// The condition on `places` of a row that nothing refers to. A table that references `places`
+/// must add its condition here.
+const UNUSED_PLACE: &str = "NOT EXISTS (SELECT 1 FROM visits WHERE visits.place_id = places.id)
+    AND NOT EXISTS (SELECT 1 FROM bookmarks WHERE bookmarks.place_id = places.id)";
 
 /// Deletes the places that nothing refers to.
 pub(crate) fn delete_unused_places(connection: &Connection) -> rusqlite::Result<()> {
@@ -190,17 +196,6 @@ pub(crate) fn delete_place_if_unused(connection: &Connection, url: &str) -> rusq
         [url],
     )?;
     Ok(())
-}
-
-/// Whether the files of the database in `directory` contain `text`.
-#[cfg(test)]
-pub(crate) fn files_contain(directory: &Path, text: &str) -> bool {
-    ["places.sqlite", "places.sqlite-wal"].iter().any(|file| {
-        std::fs::read(directory.join(file))
-            .unwrap_or_default()
-            .windows(text.len())
-            .any(|bytes| bytes == text.as_bytes())
-    })
 }
 
 fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
@@ -226,6 +221,17 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
 pub(crate) fn microseconds_since_epoch(time: SystemTime) -> i64 {
     time.duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_micros() as i64)
+}
+
+/// Whether the files of the database in `directory` contain `text`.
+#[cfg(test)]
+pub(crate) fn files_contain(directory: &Path, text: &str) -> bool {
+    ["places.sqlite", "places.sqlite-wal"].iter().any(|file| {
+        std::fs::read(directory.join(file))
+            .unwrap_or_default()
+            .windows(text.len())
+            .any(|bytes| bytes == text.as_bytes())
+    })
 }
 
 #[cfg(test)]
