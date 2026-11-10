@@ -18,6 +18,7 @@ use embedder_traits::{RefreshDriver, UrlRequest};
 use euclid::default::Size2D as UntypedSize2D;
 use euclid::{Point2D, Size2D};
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use http_body_util::BodyExt;
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::{Request as HyperRequest, Response as HyperResponse};
