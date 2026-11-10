@@ -747,6 +747,8 @@ pub(crate) struct Document {
     /// The cached favicon for that document.
     #[no_trace]
     favicon: RefCell<Option<Image>>,
+    /// Whether an explicit `<link rel="icon">` was ever found in this [`Document`].
+    ever_had_favicon_link: Cell<bool>,
 
     /// All websockets created that are associated with this document.
     websockets: DOMTracker<WebSocket>,
@@ -1609,6 +1611,7 @@ impl Document {
                 self.webview_id(),
                 LoadStatus::Complete,
             ));
+            self.maybe_fetch_fallback_favicon();
         }
     }
 
@@ -1636,6 +1639,7 @@ impl Document {
                 LoadStatus::Started,
             ));
             self.send_to_embedder(EmbedderMsg::Status(webview_id, None));
+            self.send_to_embedder(EmbedderMsg::SetFavicon(webview_id, None));
         }
 
         self.ready_state.set(DocumentReadyState::Loading);
@@ -2152,6 +2156,23 @@ impl Document {
         self.window()
             .as_global_scope()
             .fetch(request_builder, listener, networking_task_source);
+    }
+
+    pub(crate) fn fetch_favicon<Listener: FetchResponseListener>(
+        &self,
+        request_builder: RequestBuilder,
+        listener: Listener,
+    ) {
+        let networking_task_source = self
+            .owner_global()
+            .task_manager()
+            .networking_task_source()
+            .to_sendable();
+        self.window().as_global_scope().fetch_favicon(
+            request_builder,
+            listener,
+            networking_task_source,
+        );
     }
 
     /// <https://fetch.spec.whatwg.org/#deferred-fetch-control-document>
@@ -4377,6 +4398,7 @@ impl Document {
             active_sandboxing_flag_set: Cell::new(creation_sandboxing_flag_set),
             creation_sandboxing_flag_set: Cell::new(creation_sandboxing_flag_set),
             favicon: RefCell::new(None),
+            ever_had_favicon_link: Cell::new(false),
             websockets: DOMTracker::new(),
             active_media_elements: Default::default(),
             details_name_groups: Default::default(),
@@ -5695,9 +5717,13 @@ impl Document {
     }
 
     pub(crate) fn notify_embedder_favicon(&self) {
-        if let Some(ref image) = *self.favicon.borrow() {
-            self.send_to_embedder(EmbedderMsg::NewFavicon(self.webview_id(), image.clone()));
+        if !self.window.is_top_level() {
+            return;
         }
+        self.send_to_embedder(EmbedderMsg::SetFavicon(
+            self.webview_id(),
+            self.favicon.borrow().clone(),
+        ));
     }
 
     pub(crate) fn set_favicon(&self, favicon: Image) {
@@ -5707,6 +5733,14 @@ impl Document {
 
     pub(crate) fn favicon(&self) -> Option<Image> {
         self.favicon.borrow().clone()
+    }
+
+    pub(crate) fn ever_had_favicon_link(&self) -> bool {
+        self.ever_had_favicon_link.get()
+    }
+
+    pub(crate) fn set_ever_had_favicon_link(&self, value: bool) {
+        self.ever_had_favicon_link.set(value);
     }
 
     pub(crate) fn fullscreen_element(&self) -> Option<DomRoot<Element>> {
@@ -6152,7 +6186,10 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
     /// <https://dom.spec.whatwg.org/#dom-document-content_type>
     fn ContentType(&self) -> DOMString {
-        DOMString::from(self.content_type.to_string())
+        DOMString::from(format!(
+            "{}/{}",
+            self.content_type.type_, self.content_type.subtype
+        ))
     }
 
     /// <https://dom.spec.whatwg.org/#dom-document-doctype>
@@ -6466,21 +6503,21 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                 // Step 5.1. Set subtree to the negation of options["selfOnly"].
                 let subtree = (!options.selfOnly).into();
                 // Step 5.2. If options["customElementRegistry"] exists, then set registry to it.
-                let registry = if let Some(registry) = options.customElementRegistry {
-                    // Step 5.3. If registry's is scoped is false and registry
-                    // is not this's custom element registry, then throw a "NotSupportedError" DOMException.
+                let registry = options.customElementRegistry.as_ref().map(Dom::as_rooted);
+
+                // Step 5.3. If registry's is scoped is false and registry is not
+                // this's custom element registry, then throw a "NotSupportedError" DOMException.
+                if registry.as_ref().is_some_and(|registry| {
                     let this_registry = self
                         .custom_element_registry()
                         .expect("Document must have a custom element registry");
-                    if !registry.is_scoped() && registry != this_registry {
-                        return Err(Error::NotSupported(Some(
+
+                    !registry.is_scoped() && *registry != this_registry
+                }) {
+                    return Err(Error::NotSupported(Some(
                             "Imported customElementRegistry is not scoped and does not match existing registry.".into()
                         )));
-                    }
-                    Some(registry)
-                } else {
-                    None
-                };
+                }
                 (subtree, registry)
             },
         };

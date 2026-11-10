@@ -65,6 +65,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{LazyLock, Mutex, Once, OnceLock, mpsc};
+use std::time::Duration;
 use std::{fs, thread};
 
 use euclid::{Point2D, Rect, Scale, Size2D};
@@ -392,6 +393,10 @@ pub(super) enum ServoAction {
     FocusWindow(ServoShellWindowId),
     CreatePlatformWindow(ServoShellWindowId, XComponentWrapper, WindowWrapper),
     CloseWindow(ServoShellWindowId),
+    /// The Surface backing the window `ServoShellWindowId` is about to be destroyed.
+    /// Servo must stop rendering to that surface, and reply to the sender once that
+    /// is finished.
+    SurfaceDestroyed(ServoShellWindowId, Sender<()>),
 }
 
 impl std::fmt::Debug for ServoAction {
@@ -438,6 +443,9 @@ impl std::fmt::Debug for ServoAction {
                 .field(window_id)
                 .finish(),
             Self::CloseWindow(window) => f.debug_tuple("CloseWindow").field(window).finish(),
+            Self::SurfaceDestroyed(window_id, _done_sender) => {
+                f.debug_tuple("SurfaceDestroyed").field(window_id).finish()
+            },
         }
     }
 }
@@ -541,7 +549,7 @@ impl ServoAction {
                     window_handle,
                     viewport_rect,
                     hidpi_factor,
-                    Some(*window_id),
+                    *window_id,
                 );
             },
             CloseWindow(window_id) => {
@@ -551,6 +559,12 @@ impl ServoAction {
                     warn!("Window is already closed.");
                 }
                 servo.spin_event_loop();
+            },
+            SurfaceDestroyed(window_id, done_sender) => {
+                if let Some(window) = servo.state.window(*window_id) {
+                    servo.pause_painting_in_window(&window);
+                }
+                let _ = done_sender.send(());
             },
         };
     }
@@ -754,8 +768,30 @@ extern "C" fn on_surface_changed_cb(
     }
 }
 
-extern "C" fn on_surface_destroyed_cb(_component: *mut OH_NativeXComponent, _window: *mut c_void) {
-    error!("on_surface_destroyed_cb is currently not implemented");
+extern "C" fn on_surface_destroyed_cb(xcomponent: *mut OH_NativeXComponent, _window: *mut c_void) {
+    // SAFETY: The xcomponent / window is valid until this callback returns.
+    let Some(window_id) = (unsafe { get_xcomponent_window_id(xcomponent) }) else {
+        return;
+    };
+
+    let (sender, receiver) = mpsc::channel();
+    if call(ServoAction::SurfaceDestroyed(window_id, sender)).is_err() {
+        return;
+    }
+    // We shouldn't block the UI-thread, but we do need to wait until servo doesn't use the surface
+    // anymore. The call itself should be fast, so if we exceed this timeout, then probably
+    // something is blocked and we return anyway.
+    match receiver.recv_timeout(Duration::from_millis(500)) {
+        Ok(()) => {},
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("on_surface_destroyed_cb main thread callback disconnected");
+        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            error!(
+                "Timeout waiting for confirmation that Servo stopped using window {window_id:?}"
+            );
+        },
+    }
 }
 
 extern "C" fn on_dispatch_touch_event_cb(component: *mut OH_NativeXComponent, window: *mut c_void) {
@@ -1276,6 +1312,8 @@ impl HostTrait for HostCallbacks {
     }
 
     fn on_history_changed(&self, can_go_back: bool, can_go_forward: bool) {}
+
+    fn on_bookmark_state_changed(&self, _can_bookmark: bool, _bookmarked: bool) {}
 
     fn on_shutdown_complete(&self) {
         if let Some(terminate_fn) = TERMINATE_CALLBACK.get() {

@@ -25,7 +25,7 @@ use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
 use crate::desktop::tracing::trace_winit_event;
-use crate::history::open_history;
+use crate::history::open_places;
 use crate::parser::get_default_url;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
@@ -91,7 +91,7 @@ impl App {
         );
         crate::content_filter::install_content_filter(self.opts.config_dir.clone());
 
-        let (history, history_page) = open_history(&self.opts);
+        let (places, history_page) = open_places(&self.opts, self.waker.clone());
 
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
@@ -148,7 +148,7 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
-            history,
+            places,
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()

@@ -22,7 +22,7 @@ use url::Url;
 
 use super::protocols;
 use crate::egl::host_trait::HostTrait;
-use crate::history::open_history;
+use crate::history::open_places;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
@@ -32,6 +32,8 @@ use crate::window::{
 pub(crate) struct EmbeddedPlatformWindow {
     host: Rc<dyn HostTrait>,
     rendering_context: Rc<WindowRenderingContext>,
+    /// If the underlying surface was unbound, we can't paint.
+    painting_paused: Cell<bool>,
     refresh_driver: Rc<VsyncRefreshDriver>,
     viewport_rect: RefCell<Rect<i32, DevicePixel>>,
     /// The HiDPI scaling factor to use for the display of [`WebView`]s.
@@ -46,6 +48,8 @@ pub(crate) struct EmbeddedPlatformWindow {
     current_can_go_back: Cell<bool>,
     /// Whether or not the active WebView is currently able to go forward.
     current_can_go_forward: Cell<bool>,
+    /// Whether the active page is bookmarked, or `None` when it has no bookmark star.
+    current_bookmark_state: Cell<Option<bool>>,
     /// The current load status of the active WebView.
     current_load_status: Cell<Option<LoadStatus>>,
 
@@ -124,6 +128,20 @@ impl PlatformWindow for EmbeddedPlatformWindow {
                 .on_history_changed(new_back_forward.0, new_back_forward.1);
         }
 
+        let new_bookmark_state = self
+            .current_url
+            .borrow()
+            .as_ref()
+            .and_then(|url| state.bookmark_state(url));
+        let bookmark_state_changed = new_bookmark_state != self.current_bookmark_state.get();
+        if bookmark_state_changed {
+            self.current_bookmark_state.set(new_bookmark_state);
+            self.host.on_bookmark_state_changed(
+                new_bookmark_state.is_some(),
+                new_bookmark_state == Some(true),
+            );
+        }
+
         let new_load_status = active_webview.load_status();
         let load_status_changed = Some(new_load_status) != self.current_load_status.get();
         if load_status_changed {
@@ -159,11 +177,17 @@ impl PlatformWindow for EmbeddedPlatformWindow {
             }
         }
 
-        title_changed || url_changed || back_forward_changed || load_status_changed
+        title_changed ||
+            url_changed ||
+            back_forward_changed ||
+            bookmark_state_changed ||
+            load_status_changed
     }
 
     fn request_repaint(&self, window: &ServoShellWindow) {
-        window.repaint_webviews();
+        if !self.painting_paused.get() {
+            window.repaint_webviews();
+        }
     }
 
     fn request_resize(&self, _: &WebView, _: DeviceIntSize) -> Option<DeviceIntSize> {
@@ -302,7 +326,7 @@ impl App {
             init.servoshell_preferences.search_engines.clone(),
         );
         crate::content_filter::install_content_filter(init.opts.config_dir.clone());
-        let (history, _) = open_history(&init.opts);
+        let (places, _) = open_places(&init.opts, init.event_loop_waker.clone());
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
@@ -328,7 +352,7 @@ impl App {
             init.event_loop_waker,
             user_content_manager,
             init.preferences,
-            history,
+            places,
         ));
 
         Rc::new(Self {
@@ -338,17 +362,25 @@ impl App {
         })
     }
 
+    /// Add a platform window backing the window `window_id`.
+    ///
+    /// `window_id` may be an existing window, in which case the platform window will be
+    /// re-attached to the existing window and painting resumed.
     pub(crate) fn add_platform_window(
         &self,
         display_handle: DisplayHandle,
         window_handle: WindowHandle,
         viewport_rect: Rect<i32, DevicePixel>,
         hidpi_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
-        window_id: Option<ServoShellWindowId>,
+        window_id: ServoShellWindowId,
     ) {
+        // The surface of an existing window might have been destroyed and created again.
+        if let Some(window) = self.state.window(window_id) {
+            self.resume_painting_in_window(&window, window_handle, viewport_rect);
+            return;
+        }
         let viewport_size = viewport_rect.size;
-        let id = window_id.unwrap_or_else(ServoShellWindowId::next);
-        let refresh_driver = Rc::new(VsyncRefreshDriver::new(id));
+        let refresh_driver = Rc::new(VsyncRefreshDriver::new(window_id));
         let rendering_context = Rc::new(
             WindowRenderingContext::new_with_refresh_driver(
                 display_handle,
@@ -359,9 +391,10 @@ impl App {
             .expect("Could not create RenderingContext"),
         );
         let platform_window = Rc::new(EmbeddedPlatformWindow {
-            id,
+            id: window_id,
             host: self.host.clone(),
             rendering_context,
+            painting_paused: Cell::new(false),
             refresh_driver,
             viewport_rect: RefCell::new(viewport_rect),
             hidpi_scale_factor,
@@ -370,6 +403,7 @@ impl App {
             current_url: Default::default(),
             current_can_go_back: Default::default(),
             current_can_go_forward: Default::default(),
+            current_bookmark_state: Default::default(),
             current_load_status: Default::default(),
         });
         self.state.open_window(
@@ -458,6 +492,14 @@ impl App {
         self.window()
             .queue_user_interface_command(UserInterfaceCommand::Forward);
         self.spin_event_loop();
+    }
+
+    #[cfg_attr(target_env = "ohos", expect(dead_code))]
+    pub fn toggle_bookmark(&self) {
+        if let Some(webview) = self.window().active_webview() {
+            self.state.toggle_bookmark(&webview);
+            self.spin_event_loop();
+        }
     }
 
     /// Let Servo know that the platform window has been resized.
@@ -702,14 +744,26 @@ impl App {
     }
 
     pub fn pause_painting(&self) {
-        let platform_window = self.window().platform_window();
+        let window = self.window();
+        self.pause_painting_in_window(&window);
+        self.spin_event_loop();
+    }
+
+    pub fn pause_painting_in_window(&self, window: &ServoShellWindow) {
+        let platform_window = window.platform_window();
         let embedded_platform_window = platform_window
             .as_headed_window()
             .expect("No headed window");
+        if embedded_platform_window.painting_paused.replace(true) {
+            return;
+        }
         if let Err(error) = embedded_platform_window.rendering_context.take_window() {
             warn!("Unbinding native surface from context failed ({error:?})");
         }
-        self.spin_event_loop();
+        // We need to explicitly make the context current again, to avoid the old surface still being current.
+        if let Err(error) = embedded_platform_window.rendering_context.make_current() {
+            warn!("Making the context current without a surface failed ({error:?})");
+        }
     }
 
     pub fn resume_painting(
@@ -718,19 +772,30 @@ impl App {
         viewport_rect: Rect<i32, DevicePixel>,
     ) {
         let window_handle = unsafe { WindowHandle::borrow_raw(window_handle) };
+        let platform_window = self.window();
+        self.resume_painting_in_window(&platform_window, window_handle, viewport_rect);
+    }
+
+    pub fn resume_painting_in_window(
+        &self,
+        window: &ServoShellWindow,
+        window_handle: WindowHandle,
+        viewport_rect: Rect<i32, DevicePixel>,
+    ) {
         let size = viewport_rect.size.to_u32();
-        let platform_window = self.window().platform_window();
+        let platform_window = window.platform_window();
         let embedded_platform_window = platform_window
             .as_headed_window()
             .expect("No headed window");
-        if let Err(error) = embedded_platform_window
+        match embedded_platform_window
             .rendering_context
             .set_window(window_handle, PhysicalSize::new(size.width, size.height))
         {
-            warn!("Binding native surface to context failed ({error:?})");
+            Ok(()) => embedded_platform_window.painting_paused.set(false),
+            Err(error) => warn!("Binding native surface to context failed ({error:?})"),
         }
-        embedded_platform_window.request_repaint(&self.window());
-        self.spin_event_loop();
+        self.resize_window(window, viewport_rect);
+        embedded_platform_window.request_repaint(window);
     }
 }
 

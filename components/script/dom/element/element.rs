@@ -124,6 +124,7 @@ use crate::dom::customelementregistry::{
     CustomElementState, is_valid_custom_element_name,
 };
 use crate::dom::document::Document;
+use crate::dom::document::focus::FocusableArea;
 use crate::dom::documentfragment::DocumentFragment;
 use crate::dom::domrect::DOMRect;
 use crate::dom::domrectlist::DOMRectList;
@@ -174,8 +175,8 @@ use crate::dom::mutationobserver::{Mutation, MutationObserver};
 use crate::dom::namednodemap::NamedNodeMap;
 use crate::dom::node::virtualmethods::{VirtualMethods, vtable_for};
 use crate::dom::node::{
-    BindContext, ChildrenMutation, CloneChildrenFlag, IsShadowTree, Node, NodeDamage, NodeFlags,
-    NodeTraits, UnbindContext,
+    BindContext, ChildrenMutation, CloneChildrenFlag, IsShadowTree, MoveContext, Node, NodeDamage,
+    NodeFlags, NodeTraits, UnbindContext,
 };
 use crate::dom::nodelist::NodeList;
 use crate::dom::range::Range;
@@ -3872,13 +3873,14 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-element-gethtml>
     fn GetHTML(&self, cx: &mut JSContext, options: &GetHTMLOptions) -> DOMString {
+        let shadow_roots = options.shadowRoots.iter().map(Dom::as_rooted).collect();
         // > Element's getHTML(options) method steps are to return the result of HTML fragment serialization
         // > algorithm with this, options["serializableShadowRoots"], and options["shadowRoots"].
         self.upcast::<Node>().html_serialize(
             cx,
             TraversalScope::ChildrenOnly(None),
             options.serializableShadowRoots,
-            options.shadowRoots.clone(),
+            shadow_roots,
         )
     }
 
@@ -4810,14 +4812,13 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
         // Step 3. If options is a KeyframeAnimationOptions object, let timeline be the timeline member of
         // options or, if timeline member of options is missing, the default document timeline of the node document
         // of the element on which this method was called.
-        let timeline =
-            if let UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(options) =
-                &options
-            {
-                options.timeline.clone().flatten()
-            } else {
-                None
-            };
+        let timeline = match &options {
+            UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(opts) => opts
+                .timeline
+                .as_ref()
+                .and_then(|inner| inner.as_ref().map(Dom::as_rooted)),
+            _ => None,
+        };
         let timeline = timeline.unwrap_or_else(|| {
             let document = self.owner_document();
             DomRoot::upcast(document.Timeline())
@@ -4835,7 +4836,9 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
                 UnrestrictedDoubleOrKeyframeEffectOptions::UnrestrictedDouble(value)
             },
             UnrestrictedDoubleOrKeyframeAnimationOptions::KeyframeAnimationOptions(options) => {
-                UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(options.parent)
+                UnrestrictedDoubleOrKeyframeEffectOptions::KeyframeEffectOptions(
+                    options.into_inner().parent,
+                )
             },
         };
         let effect =
@@ -5100,11 +5103,50 @@ impl VirtualMethods for Element {
     fn unbind_from_tree(&self, cx: &mut JSContext, context: &UnbindContext) {
         self.super_type().unwrap().unbind_from_tree(cx, context);
 
-        if let Some(f) = self.as_maybe_form_control() {
+        // These are the node removal steps from:
+        // <https://html.spec.whatwg.org/multipage/#dom-trees:concept-node-remove-ext>.
+        // In practice, they only apply to elements. Putting the steps here avoids work
+        // that doesn't need to happen when non-Element nodes are moved from the tree.
+        //
+        // 1. Let document be removedNode's node document.
+        let document = self.owner_document_unrooted(cx.no_gc());
+
+        // 2. If document's focused area is removedNode, then set document's focused area to
+        // document's viewport, and set document's relevant global object's navigation API's focus
+        // changed during ongoing navigation to false.
+        //
+        // We are not calling the focusing steps on purpose here. There is a note about this in
+        // the specification that reads:
+        //
+        // > This does not perform the unfocusing steps, focusing steps, or focus update steps, and
+        // > thus no blur or change events are fired.
+        let element_had_focus_within = self.focus_within_state();
+        if document
+            .focus_handler()
+            .focused_area()
+            .element()
+            .is_some_and(|focused_element| focused_element == self)
+        {
+            document
+                .focus_handler()
+                .set_focused_area(cx.no_gc(), FocusableArea::Viewport);
+        }
+
+        // 3. If removedNode is an element whose namespace is the HTML namespace, and this standard
+        // defines HTML element removing steps for removedNode's local name, then run the
+        // corresponding HTML element removing steps given removedNode, isSubtreeRoot, and
+        // oldAncestor.
+        //
+        // Note: These steps live in each subclass, which has already called into this code.
+
+        // 4. If removedNode is a form-associated element with a non-null form owner and removedNode
+        // and its form owner are no longer in the same tree, then reset the form owner of
+        // removedNode.
+        if let Some(form_control) = self.as_maybe_form_control() {
             // TODO: The valid state of ancestors might be wrong if the form control element
             // has a fieldset ancestor, for instance: `<form><fieldset><input>`,
             // if `<input>` is unbound, `<form><fieldset>` should trigger a call to `update_validity()`.
-            f.unbind_form_control_from_tree(cx);
+            form_control.unbind_form_control_from_tree(cx);
         }
 
         self.dirty_presentational_hints();
@@ -5120,6 +5162,23 @@ impl VirtualMethods for Element {
         }
 
         self.unregister_current_id_and_name_attribute(cx);
+
+        if element_had_focus_within &&
+            let Some(parent_element) = context.parent.downcast::<Element>()
+        {
+            parent_element.set_focus_within_state_for_inclusive_ancestors(cx.no_gc(), None, false);
+        }
+    }
+
+    fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
+        if let Some(super_type) = self.super_type() {
+            super_type.moving_steps(cx, context);
+        }
+
+        self.maybe_reset_focus_within_state(cx.no_gc(), context.old_ancestor.downcast::<Element>());
+        if self.focus_state() {
+            self.set_focus_within_state_for_inclusive_ancestors(cx.no_gc(), None, true);
+        }
     }
 
     fn children_changed(&self, cx: &mut JSContext, mutation: &ChildrenMutation) {
@@ -5410,6 +5469,14 @@ impl Element {
 
     pub(crate) fn set_focusring_state(&self, no_gc: &NoGC, value: bool) {
         self.set_state(no_gc, ElementState::FOCUSRING, value);
+    }
+
+    pub(crate) fn focus_within_state(&self) -> bool {
+        self.state.get().contains(ElementState::FOCUS_WITHIN)
+    }
+
+    pub(crate) fn set_focus_within_state(&self, no_gc: &NoGC, value: bool) {
+        self.set_state(no_gc, ElementState::FOCUS_WITHIN, value);
     }
 
     pub(crate) fn set_hover_state(&self, no_gc: &NoGC, value: bool) {
