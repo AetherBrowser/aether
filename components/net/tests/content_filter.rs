@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use http_body_util::combinators::BoxBody;
 use hyper::body::{Bytes, Incoming};
@@ -262,12 +262,26 @@ fn profile_files_enable_whitelist_and_extra_lists() {
     assert!(!filter.blocks("https://allowed.example/", None, Destination::Document));
     assert!(!filter.blocks("https://www.allowed.example/", None, Destination::Document));
 
+    // Same modification time as the loaded file, and a different size. This is
+    // what a rewrite looks like on a filesystem that stores mtime in seconds.
+    let stamp = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    fs::File::open(dir.join(CONFIG_FILE))
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    let mut filter = filter;
+    filter.reload();
+    assert!(filter.blocks("https://blocked.example/", None, Destination::Document));
+
     fs::write(
         dir.join(CONFIG_FILE),
         r#"{ "privacy.trackingprotection.enabled": false, "urlclassifier.trackingWhitelistTable": [], "urlclassifier.trackingTable": ["extra.txt"] }"#,
     )
     .unwrap();
-    let mut filter = filter;
+    fs::File::open(dir.join(CONFIG_FILE))
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
     filter.reload_if_stale();
     assert!(!filter.blocks("https://blocked.example/", None, Destination::Document));
     assert!(!filter.blocks("https://extra.example/", None, Destination::Document));

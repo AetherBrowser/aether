@@ -523,10 +523,10 @@ pub async fn main_fetch(
     // Keep the page that started the request even when the referrer policy
     // is `no-referrer`. The filter uses this for `$third-party` and `$domain=`.
     // The referrer sent on the wire is still decided below.
-    let internal_document = match &request.referrer {
-        Referrer::Client(url) | Referrer::ReferrerUrl(url) if is_internal_page(url) => true,
-        _ => false,
-    };
+    let internal_document = matches!(
+        &request.referrer,
+        Referrer::Client(url) | Referrer::ReferrerUrl(url) if is_internal_page(url)
+    );
     if request.source_document_url.is_none() &&
         let Referrer::Client(url) | Referrer::ReferrerUrl(url) = &request.referrer
     {

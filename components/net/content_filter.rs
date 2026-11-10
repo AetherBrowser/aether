@@ -133,6 +133,7 @@ struct Rule {
 struct WatchedFile {
     path: PathBuf,
     modified: Option<SystemTime>,
+    len: u64,
 }
 
 struct ParsedRequest {
@@ -209,7 +210,9 @@ impl ContentFilter {
                 );
                 if !self.watched.is_empty() {
                     for file in &mut self.watched {
-                        file.modified = mtime(&file.path);
+                        let stat = file_stat(&file.path);
+                        file.modified = stat.modified;
+                        file.len = stat.len;
                     }
                     return;
                 }
@@ -264,9 +267,13 @@ impl ContentFilter {
     }
 
     pub(crate) fn is_stale(&self) -> bool {
-        self.watched
-            .iter()
-            .any(|file| file.modified != mtime(&file.path))
+        self.watched.iter().any(|file| {
+            let stat = file_stat(&file.path);
+            // Size is checked as well as mtime. Some filesystems only store
+            // modification times to the second, so a rewrite in that same
+            // second would otherwise keep the previous rules.
+            stat.modified != file.modified || stat.len != file.len
+        })
     }
 
     /// `true` when this request must not be sent.
@@ -1028,15 +1035,29 @@ fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+struct FileStat {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
 fn watch(path: &Path) -> WatchedFile {
+    let stat = file_stat(path);
     WatchedFile {
         path: path.to_path_buf(),
-        modified: mtime(path),
+        modified: stat.modified,
+        len: stat.len,
     }
 }
 
-fn mtime(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
+fn file_stat(path: &Path) -> FileStat {
+    match fs::metadata(path) {
+        Ok(metadata) => FileStat {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        },
+        Err(_) => FileStat {
+            modified: None,
+            len: 0,
+        },
+    }
 }
