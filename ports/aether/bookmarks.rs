@@ -6,37 +6,74 @@
 
 use std::collections::HashSet;
 
+use aether_places::without_credentials;
 use url::Url;
 
-/// The bookmarked pages, kept in memory for the session.
-#[derive(Default)]
+/// A bookmark change sent to the database and not yet covered by a saved read.
+struct PendingToggle {
+    revision: u64,
+    url: Url,
+    added: bool,
+}
+
+/// In-memory copy of the bookmarks of the places database, which the interface reads every frame.
 pub(crate) struct Bookmarks {
     urls: HashSet<Url>,
+    pending: Vec<PendingToggle>,
+    next_revision: u64,
 }
 
 impl Bookmarks {
+    pub(crate) fn new(urls: &[Url]) -> Self {
+        Self {
+            urls: urls.iter().cloned().collect(),
+            pending: Vec::new(),
+            next_revision: 1,
+        }
+    }
+
     pub(crate) fn contains(&self, url: &Url) -> bool {
         self.urls.contains(&without_credentials(url))
     }
 
+    /// Adds `url` when it is absent and removes it otherwise.
+    ///
+    /// Returns whether it was added, and the revision of this change.
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
-    pub(crate) fn toggle(&mut self, url: &Url) {
+    pub(crate) fn toggle(&mut self, url: &Url) -> (bool, u64) {
         let url = without_credentials(url);
-        if !self.urls.remove(&url) {
-            self.urls.insert(url);
+        let added = !self.urls.remove(&url);
+        if added {
+            self.urls.insert(url.clone());
+        }
+        let revision = self.next_revision;
+        self.next_revision += 1;
+        self.pending.push(PendingToggle {
+            revision,
+            url,
+            added,
+        });
+        (added, revision)
+    }
+
+    /// Replaces these bookmarks with the saved `urls`, then reapplies every local change newer
+    /// than `revision`.
+    #[cfg_attr(target_env = "ohos", expect(dead_code))]
+    pub(crate) fn reconcile(&mut self, urls: &[Url], revision: u64) {
+        self.pending.retain(|toggle| toggle.revision > revision);
+        self.urls = urls.iter().cloned().collect();
+        for toggle in &self.pending {
+            if toggle.added {
+                self.urls.insert(toggle.url.clone());
+            } else {
+                self.urls.remove(&toggle.url);
+            }
         }
     }
 }
 
 pub(crate) fn can_bookmark(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
-}
-
-fn without_credentials(url: &Url) -> Url {
-    let mut url = url.clone();
-    let _ = url.set_username("");
-    let _ = url.set_password(None);
-    url
 }
 
 #[cfg(test)]
@@ -51,20 +88,30 @@ mod tests {
 
     #[test]
     fn toggling_a_page_adds_it_then_removes_it() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
         let page = url("https://servo.org/");
         assert!(!bookmarks.contains(&page));
 
-        bookmarks.toggle(&page);
+        assert!(bookmarks.toggle(&page).0);
         assert!(bookmarks.contains(&page));
 
-        bookmarks.toggle(&page);
+        assert!(!bookmarks.toggle(&page).0);
         assert!(!bookmarks.contains(&page));
     }
 
     #[test]
+    fn saved_bookmarks_are_restored() {
+        let page = url("https://servo.org/");
+
+        let mut bookmarks = Bookmarks::new(std::slice::from_ref(&page));
+
+        assert!(bookmarks.contains(&page));
+        assert!(!bookmarks.toggle(&page).0);
+    }
+
+    #[test]
     fn a_bookmark_only_marks_its_exact_url() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
         bookmarks.toggle(&url("https://servo.org/blog"));
 
         for other in [
@@ -79,7 +126,7 @@ mod tests {
 
     #[test]
     fn credentials_do_not_change_the_bookmarked_page() {
-        let mut bookmarks = Bookmarks::default();
+        let mut bookmarks = Bookmarks::new(&[]);
 
         bookmarks.toggle(&url("https://user:secret@example.com/page"));
 
@@ -101,5 +148,34 @@ mod tests {
         ] {
             assert_eq!(can_bookmark(&url(page)), allowed, "{page}");
         }
+    }
+
+    #[test]
+    fn a_saved_read_keeps_a_bookmark_changed_after_it() {
+        let mut bookmarks = Bookmarks::new(&[]);
+        let rolled_back = url("https://servo.org/");
+        let added_later = url("https://example.com/");
+        let (added, failed_revision) = bookmarks.toggle(&rolled_back);
+        assert!(added);
+        let (added, _) = bookmarks.toggle(&added_later);
+        assert!(added);
+
+        // The failed attempt included only the first change, so the database does not have it.
+        bookmarks.reconcile(&[], failed_revision);
+
+        assert!(!bookmarks.contains(&rolled_back));
+        assert!(bookmarks.contains(&added_later));
+    }
+
+    #[test]
+    fn a_failed_removal_comes_back_when_nothing_changed_afterwards() {
+        let page = url("https://servo.org/");
+        let mut bookmarks = Bookmarks::new(std::slice::from_ref(&page));
+        let (added, revision) = bookmarks.toggle(&page);
+        assert!(!added);
+
+        bookmarks.reconcile(std::slice::from_ref(&page), revision);
+
+        assert!(bookmarks.contains(&page));
     }
 }

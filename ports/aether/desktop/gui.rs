@@ -55,7 +55,6 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::Window;
 
-use crate::bookmarks::can_bookmark;
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{
@@ -444,7 +443,7 @@ impl Gui {
         location_rect: egui::Rect,
         bookmarked: bool,
     ) -> egui::Response {
-        let (icon, tooltip) = if bookmarked {
+        let (icon, label) = if bookmarked {
             (ToolbarIcon::Bookmark, "Remove bookmark")
         } else {
             (ToolbarIcon::BookmarkHollow, "Bookmark this page")
@@ -453,14 +452,12 @@ impl Gui {
         star_rect.max.x -= BOOKMARK_STAR_INSET;
         let star = ui
             .scope_builder(egui::UiBuilder::new().max_rect(star_rect), |ui| {
-                toolbar_icons
-                    .location_button(ui, icon)
-                    .on_hover_text(tooltip)
+                toolbar_icons.location_button(ui, icon).on_hover_text(label)
             })
             .inner;
         star.widget_info(|| {
             let mut info = WidgetInfo::new(WidgetType::Button);
-            info.label = Some(tooltip.into());
+            info.label = Some(label.into());
             info.selected = Some(bookmarked);
             info
         });
@@ -856,19 +853,18 @@ impl Gui {
                                     }
 
                                     if !*location_dirty &&
-                                        let Some(url) = window
-                                            .active_webview()
-                                            .and_then(|webview| webview.url())
-                                            .filter(can_bookmark)
+                                        let Some(webview) = window.active_webview() &&
+                                        let Some(url) = webview.url() &&
+                                        let Some(bookmarked) = state.bookmark_state(&url)
                                     {
                                         let bookmark_star = Self::bookmark_star(
                                             ui,
                                             toolbar_icons,
                                             location_field.rect,
-                                            state.is_bookmarked(&url),
+                                            bookmarked,
                                         );
                                         if bookmark_star.clicked() {
-                                            state.toggle_bookmark(&url);
+                                            state.toggle_bookmark(&webview);
                                         }
                                     }
                                 },

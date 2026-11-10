@@ -8,8 +8,9 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
+use std::time::SystemTime;
 
-use aether_history::HistoryService;
+use aether_places::PlacesService;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use euclid::Rect;
 #[cfg(all(
@@ -40,7 +41,7 @@ use servo::{
 };
 use url::Url;
 
-use crate::bookmarks::Bookmarks;
+use crate::bookmarks::{Bookmarks, can_bookmark};
 #[cfg(all(
     feature = "gamepad",
     not(any(target_os = "android", target_env = "ohos"))
@@ -250,11 +251,11 @@ pub(crate) struct RunningAppState {
     /// The [`UserContentManager`] for all `WebView`s created.
     pub(crate) user_content_manager: Rc<UserContentManager>,
 
-    /// The browsing history of the profile.
-    history: HistoryService,
+    /// The places database of the profile.
+    places: PlacesService,
 
-    /// The bookmarks of the profile.
-    bookmarks: RefCell<Bookmarks>,
+    /// The bookmarks of the profile, once the places database has sent them.
+    bookmarks: RefCell<Option<Bookmarks>>,
 
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
@@ -289,7 +290,7 @@ impl RunningAppState {
         event_loop_waker: Box<dyn EventLoopWaker>,
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
-        history: HistoryService,
+        places: PlacesService,
         #[cfg(all(
             feature = "gamepad",
             not(any(target_os = "android", target_env = "ohos"))
@@ -329,7 +330,7 @@ impl RunningAppState {
             achieved_stable_image: Default::default(),
             exit_scheduled: Default::default(),
             user_content_manager,
-            history,
+            places,
             bookmarks: Default::default(),
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
@@ -470,13 +471,48 @@ impl RunningAppState {
         }
     }
 
-    pub(crate) fn is_bookmarked(&self, url: &Url) -> bool {
-        self.bookmarks.borrow().contains(url)
+    /// Whether `url` is bookmarked, or `None` when its bookmark star should not be shown.
+    pub(crate) fn bookmark_state(&self, url: &Url) -> Option<bool> {
+        self.bookmarks
+            .borrow()
+            .as_ref()
+            .filter(|_| can_bookmark(url))
+            .map(|bookmarks| bookmarks.contains(url))
     }
 
     #[cfg_attr(target_env = "ohos", expect(dead_code))]
-    pub(crate) fn toggle_bookmark(&self, url: &Url) {
-        self.bookmarks.borrow_mut().toggle(url);
+    pub(crate) fn toggle_bookmark(&self, webview: &WebView) {
+        let Some(url) = webview.url().filter(can_bookmark) else {
+            return;
+        };
+        let mut bookmarks = self.bookmarks.borrow_mut();
+        let Some(bookmarks) = bookmarks.as_mut() else {
+            return;
+        };
+        let (added, revision) = bookmarks.toggle(&url);
+        if added {
+            self.places
+                .add_bookmark(url, webview.page_title(), SystemTime::now(), revision);
+        } else {
+            self.places.remove_bookmark(url, revision);
+        }
+        self.refresh_bookmark_stars();
+    }
+
+    fn update_bookmarks(&self) {
+        if let Some(saved) = self.places.take_bookmarks() {
+            {
+                let mut bookmarks = self.bookmarks.borrow_mut();
+                match bookmarks.as_mut() {
+                    Some(bookmarks) => bookmarks.reconcile(&saved.urls, saved.revision),
+                    None => *bookmarks = Some(Bookmarks::new(&saved.urls)),
+                }
+            }
+            self.refresh_bookmark_stars();
+        }
+    }
+
+    fn refresh_bookmark_stars(&self) {
         for window in self.windows().iter() {
             window.set_needs_update();
             window.set_needs_repaint();
@@ -536,6 +572,7 @@ impl RunningAppState {
         } */
 
         self.servo.spin_event_loop();
+        self.update_bookmarks();
 
         for window in self.windows.borrow().iter() {
             window.update_and_request_repaint_if_necessary(self);
@@ -832,7 +869,7 @@ impl WebViewDelegate for RunningAppState {
             navigation_type,
         ) {
             Some(HistoryUpdate::RecordVisit { url, visit_date }) => {
-                self.history
+                self.places
                     .record_visit(url, visit_date, webview.page_title())
             },
             Some(HistoryUpdate::ReplaceVisit {
@@ -840,7 +877,7 @@ impl WebViewDelegate for RunningAppState {
                 visit_date,
                 new_url,
             }) => self
-                .history
+                .places
                 .replace_visit(old_url, visit_date, new_url, webview.page_title()),
             None => {},
         }
@@ -852,7 +889,7 @@ impl WebViewDelegate for RunningAppState {
             let Some(url) = webview.url() &&
             should_record(&url)
         {
-            self.history.set_title(url, title);
+            self.places.set_title(url, title);
         }
     }
 

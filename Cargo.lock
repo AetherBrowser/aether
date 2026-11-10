@@ -181,7 +181,7 @@ name = "aether"
 version = "0.2.0"
 dependencies = [
  "accesskit",
- "aether-history",
+ "aether-places",
  "android_logger",
  "backtrace",
  "bpaf",
@@ -250,19 +250,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aether-history"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "futures",
- "log",
- "rusqlite",
- "tempfile",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "aether-media-mpv"
 version = "0.8.0"
 dependencies = [
@@ -277,6 +264,19 @@ dependencies = [
  "servo-media-streams",
  "servo-media-traits",
  "servo-media-webrtc",
+]
+
+[[package]]
+name = "aether-places"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "futures",
+ "log",
+ "rusqlite",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
