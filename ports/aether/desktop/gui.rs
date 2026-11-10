@@ -1234,6 +1234,7 @@ fn load_pending_favicons(
             continue;
         };
         let Some(favicon) = webview.favicon() else {
+            texture_cache.remove(&id);
             continue;
         };
 

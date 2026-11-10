@@ -43,7 +43,7 @@ use {
 };
 
 use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
-use super::keyutils::keyboard_event_from_winit;
+use super::keyutils::{keyboard_event_from_winit, keyboard_modifiers_from_winit_modifiers};
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::{AppEvent, RepaintEventLoopWaker};
@@ -798,6 +798,7 @@ impl HeadedWindow {
                     webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
                         delta,
                         point.into(),
+                        keyboard_modifiers_from_winit_modifiers(self.modifiers_state.get()),
                     )));
                 },
                 WindowEvent::Touch(touch) => {

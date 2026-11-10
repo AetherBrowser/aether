@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+#[cfg(target_os = "android")]
 use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 
@@ -103,6 +104,7 @@ pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 
 /// How many closed tabs a window remembers for Reopen Closed Tab.
 const MAX_CLOSED_WEBVIEWS: usize = 25;
 
+#[cfg(target_os = "android")]
 static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
@@ -121,7 +123,7 @@ impl From<u32> for ServoShellWindowId {
 }
 
 impl ServoShellWindowId {
-    #[cfg_attr(not(any(target_os = "android", target_env = "ohos")), expect(unused))]
+    #[cfg(target_os = "android")]
     pub(crate) fn next() -> ServoShellWindowId {
         ServoShellWindowId(SERVOSHELL_WINDOW_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
     }
