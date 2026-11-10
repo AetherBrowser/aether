@@ -489,18 +489,25 @@ impl RunningAppState {
         let Some(bookmarks) = bookmarks.as_mut() else {
             return;
         };
-        if bookmarks.toggle(&url) {
+        let (added, revision) = bookmarks.toggle(&url);
+        if added {
             self.places
-                .add_bookmark(url, webview.page_title(), SystemTime::now());
+                .add_bookmark(url, webview.page_title(), SystemTime::now(), revision);
         } else {
-            self.places.remove_bookmark(url);
+            self.places.remove_bookmark(url, revision);
         }
         self.refresh_bookmark_stars();
     }
 
     fn update_bookmarks(&self) {
-        if let Some(urls) = self.places.take_bookmarks() {
-            *self.bookmarks.borrow_mut() = Some(Bookmarks::new(&urls));
+        if let Some(saved) = self.places.take_bookmarks() {
+            {
+                let mut bookmarks = self.bookmarks.borrow_mut();
+                match bookmarks.as_mut() {
+                    Some(bookmarks) => bookmarks.reconcile(&saved.urls, saved.revision),
+                    None => *bookmarks = Some(Bookmarks::new(&saved.urls)),
+                }
+            }
             self.refresh_bookmark_stars();
         }
     }

@@ -26,10 +26,10 @@ const EXPIRATION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// pending ones are written.
 pub struct PlacesService {
     /// Only `None` while the service is dropped, to close the channel before joining.
-    sender: Option<Sender<PlacesCommand>>,
+    sender: Option<Sender<PlacesRequest>>,
     cleaner: HistoryCleaner,
     thread: Option<JoinHandle<()>>,
-    bookmarks: Receiver<Vec<Url>>,
+    bookmarks: Receiver<SavedBookmarks>,
 }
 
 const HISTORY_UNAVAILABLE: &str = "The history is not available";
@@ -43,15 +43,29 @@ enum CleanerRequest {
 
 /// Sends the saved bookmarks to the owner of a [`PlacesService`], and tells it to take them.
 struct BookmarksPublisher {
-    sender: Sender<Vec<Url>>,
+    sender: Sender<SavedBookmarks>,
     notify: Box<dyn Fn() + Send>,
 }
 
 impl BookmarksPublisher {
-    fn publish(&self, urls: Vec<Url>) {
-        let _ = self.sender.send(urls);
+    fn publish(&self, urls: Vec<Url>, revision: u64) {
+        let _ = self.sender.send(SavedBookmarks { urls, revision });
         (self.notify)();
     }
+}
+
+/// The bookmarks stored in the database, and the newest bookmark change included in that read.
+///
+/// `revision` is zero when no bookmark change has been attempted yet.
+pub struct SavedBookmarks {
+    pub urls: Vec<Url>,
+    pub revision: u64,
+}
+
+struct PlacesRequest {
+    command: PlacesCommand,
+    /// The interface's revision of `command` when it changes bookmarks.
+    bookmark_revision: Option<u64>,
 }
 
 /// Deletes visits of a [`PlacesService`], after the changes already sent to it.
@@ -119,7 +133,7 @@ impl PlacesService {
             .spawn(move || match open_store() {
                 Ok(store) => {
                     if let Some(urls) = read_bookmarks(&store) {
-                        publisher.publish(urls);
+                        publisher.publish(urls, 0);
                     }
                     run(store, receiver, retention, cleaner_receiver, publisher)
                 },
@@ -173,27 +187,50 @@ impl PlacesService {
 
     /// The saved bookmarks, if they were sent since the last call: at startup and after a
     /// failed write.
-    pub fn take_bookmarks(&self) -> Option<Vec<Url>> {
+    pub fn take_bookmarks(&self) -> Option<SavedBookmarks> {
         self.bookmarks.try_iter().last()
     }
 
     /// Bookmarks `url`, unless it already is.
-    pub fn add_bookmark(&self, url: Url, title: Option<String>, date_added: SystemTime) {
-        self.send(PlacesCommand::AddBookmark {
-            url,
-            title,
-            date_added,
+    ///
+    /// `revision` identifies this change. A later read reports the newest revision it includes.
+    pub fn add_bookmark(
+        &self,
+        url: Url,
+        title: Option<String>,
+        date_added: SystemTime,
+        revision: u64,
+    ) {
+        self.send_request(PlacesRequest {
+            command: PlacesCommand::AddBookmark {
+                url,
+                title,
+                date_added,
+            },
+            bookmark_revision: Some(revision),
         });
     }
 
     /// Removes the bookmark of `url`.
-    pub fn remove_bookmark(&self, url: Url) {
-        self.send(PlacesCommand::RemoveBookmark { url });
+    ///
+    /// `revision` identifies this change. A later read reports the newest revision it includes.
+    pub fn remove_bookmark(&self, url: Url, revision: u64) {
+        self.send_request(PlacesRequest {
+            command: PlacesCommand::RemoveBookmark { url },
+            bookmark_revision: Some(revision),
+        });
     }
 
     fn send(&self, command: PlacesCommand) {
+        self.send_request(PlacesRequest {
+            command,
+            bookmark_revision: None,
+        });
+    }
+
+    fn send_request(&self, request: PlacesRequest) {
         if let Some(sender) = &self.sender {
-            let _ = sender.send(command);
+            let _ = sender.send(request);
         }
     }
 }
@@ -219,7 +256,7 @@ fn read_bookmarks(store: &PlacesStore) -> Option<Vec<Url>> {
 
 fn run(
     mut store: PlacesStore,
-    receiver: Receiver<PlacesCommand>,
+    receiver: Receiver<PlacesRequest>,
     mut retention: Duration,
     cleaner_receiver: Receiver<CleanerRequest>,
     publisher: BookmarksPublisher,
@@ -228,15 +265,15 @@ fn run(
     expire_or_warn(&mut store, retention);
     loop {
         select! {
-            recv(receiver) -> command => {
-                let Ok(command) = command else {
-                    for request in cleaner_receiver.try_iter() {
-                        clean(&mut store, request, &mut retention);
+            recv(receiver) -> request => {
+                let Ok(request) = request else {
+                    for cleaner_request in cleaner_receiver.try_iter() {
+                        clean(&mut store, cleaner_request, &mut retention);
                     }
                     return;
                 };
-                let commands = iter::once(command).chain(receiver.try_iter()).collect();
-                write(&mut store, commands, &publisher);
+                let requests = iter::once(request).chain(receiver.try_iter()).collect();
+                write(&mut store, requests, &publisher);
             },
             recv(cleaner_receiver) -> request => {
                 let Ok(request) = request else {
@@ -265,23 +302,29 @@ fn clean(store: &mut PlacesStore, request: CleanerRequest, retention: &mut Durat
     let _ = reply.send(result);
 }
 
-fn write(store: &mut PlacesStore, commands: Vec<PlacesCommand>, publisher: &BookmarksPublisher) {
-    if commands.is_empty() {
+fn write(store: &mut PlacesStore, requests: Vec<PlacesRequest>, publisher: &BookmarksPublisher) {
+    if requests.is_empty() {
         return;
     }
+    let revision = requests
+        .iter()
+        .filter_map(|request| request.bookmark_revision)
+        .max();
+    let commands: Vec<_> = requests
+        .into_iter()
+        .map(|request| request.command)
+        .collect();
     if let Err(error) = store.apply(&commands) {
         warn!(
             "Could not write {} changes to the places database: {error}",
             commands.len()
         );
-        let changes_bookmarks = commands.iter().any(|command| {
-            matches!(
-                command,
-                PlacesCommand::AddBookmark { .. } | PlacesCommand::RemoveBookmark { .. }
-            )
-        });
-        if changes_bookmarks && let Some(urls) = read_bookmarks(store) {
-            publisher.publish(urls);
+        // The revision is the newest bookmark change of this attempt. The read is the database
+        // without that attempt, so the interface can keep the changes it sent afterwards.
+        if let Some(revision) = revision &&
+            let Some(urls) = read_bookmarks(store)
+        {
+            publisher.publish(urls, revision);
         }
     }
 }
@@ -309,7 +352,7 @@ mod tests {
     use rusqlite::Connection;
     use url::Url;
 
-    use super::{HISTORY_UNAVAILABLE, PlacesService};
+    use super::{HISTORY_UNAVAILABLE, PlacesService, SavedBookmarks};
 
     fn days(days: u64) -> Duration {
         Duration::from_secs(days * 24 * 60 * 60)
@@ -434,7 +477,7 @@ mod tests {
         (service, notifications)
     }
 
-    fn next_bookmarks(service: &PlacesService, notifications: &Receiver<()>) -> Vec<Url> {
+    fn next_bookmarks(service: &PlacesService, notifications: &Receiver<()>) -> SavedBookmarks {
         notifications.recv_timeout(Duration::from_secs(10)).unwrap();
         service.take_bookmarks().unwrap()
     }
@@ -460,13 +503,15 @@ mod tests {
         let path = directory.path().join("places.sqlite");
         let page = Url::parse("https://servo.org/").unwrap();
         let (service, notifications) = open_notified(path.clone(), Duration::MAX);
-        assert!(next_bookmarks(&service, &notifications).is_empty());
+        let saved = next_bookmarks(&service, &notifications);
+        assert!(saved.urls.is_empty());
+        assert_eq!(saved.revision, 0);
 
-        service.add_bookmark(page.clone(), Some("Servo".to_owned()), UNIX_EPOCH);
+        service.add_bookmark(page.clone(), Some("Servo".to_owned()), UNIX_EPOCH, 1);
         drop(service);
 
         let (service, notifications) = open_notified(path, Duration::MAX);
-        assert_eq!(next_bookmarks(&service, &notifications), [page]);
+        assert_eq!(next_bookmarks(&service, &notifications).urls, [page]);
     }
 
     #[test]
@@ -476,12 +521,12 @@ mod tests {
         let page = Url::parse("https://servo.org/").unwrap();
         let service = PlacesService::open(path.clone(), Duration::MAX, || {});
 
-        service.add_bookmark(page.clone(), None, UNIX_EPOCH);
-        service.remove_bookmark(page);
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 1);
+        service.remove_bookmark(page, 2);
         drop(service);
 
         let (service, notifications) = open_notified(path, Duration::MAX);
-        assert!(next_bookmarks(&service, &notifications).is_empty());
+        assert!(next_bookmarks(&service, &notifications).urls.is_empty());
     }
 
     #[test]
@@ -491,14 +536,14 @@ mod tests {
         let page = Url::parse("https://servo.org/").unwrap();
         let service = PlacesService::open(path.clone(), Duration::MAX, || {});
         service.record_visit(page.clone(), SystemTime::now() - days(100), None);
-        service.add_bookmark(page.clone(), None, SystemTime::now() - days(100));
+        service.add_bookmark(page.clone(), None, SystemTime::now() - days(100), 1);
         drop(service);
 
         drop(PlacesService::open(path.clone(), days(90), || {}));
 
         assert!(urls(&path).is_empty());
         let (service, notifications) = open_notified(path, days(90));
-        assert_eq!(next_bookmarks(&service, &notifications), [page]);
+        assert_eq!(next_bookmarks(&service, &notifications).urls, [page]);
     }
 
     #[test]
@@ -534,7 +579,7 @@ mod tests {
         let saved = Url::parse("https://servo.org/").unwrap();
         let (service, notifications) = open_notified(path.clone(), Duration::MAX);
         next_bookmarks(&service, &notifications);
-        service.add_bookmark(saved.clone(), None, UNIX_EPOCH);
+        service.add_bookmark(saved.clone(), None, UNIX_EPOCH, 1);
         flush(&service);
         reject_inserts_into(&path, "bookmarks");
 
@@ -542,9 +587,12 @@ mod tests {
             Url::parse("https://example.com/").unwrap(),
             None,
             UNIX_EPOCH,
+            4,
         );
 
-        assert_eq!(next_bookmarks(&service, &notifications), [saved]);
+        let read = next_bookmarks(&service, &notifications);
+        assert_eq!(read.urls, [saved]);
+        assert_eq!(read.revision, 4);
     }
 
     #[test]
@@ -558,7 +606,7 @@ mod tests {
 
         service.record_visit(page.clone(), SystemTime::now(), None);
         flush(&service);
-        service.add_bookmark(page, None, UNIX_EPOCH);
+        service.add_bookmark(page, None, UNIX_EPOCH, 1);
         drop(service);
 
         assert!(notifications.try_recv().is_err());

@@ -19,4 +19,4 @@ mod history;
 mod service;
 
 pub use database::{PlacesStore, without_credentials};
-pub use service::{CleanerReply, HistoryCleaner, PlacesService};
+pub use service::{CleanerReply, HistoryCleaner, PlacesService, SavedBookmarks};
