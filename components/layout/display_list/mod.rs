@@ -56,6 +56,7 @@ use wr::units::LayoutVector2D;
 
 use crate::context::{ImageResolver, ResolvedImage};
 use crate::display_list::background::BackgroundPainter;
+use crate::display_list::mask::MaskImage;
 use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler, TraversalState};
@@ -71,6 +72,7 @@ use crate::replaced::NaturalSizes;
 use crate::style_ext::{BorderStyleColor, ComputedValuesExt};
 
 mod background;
+mod mask;
 mod clip;
 mod conversions;
 mod gradient;
@@ -1834,9 +1836,28 @@ impl<'a> BuilderForBoxFragment<'a> {
             let layer_index = b.background_image.0.len() - 1;
             let bounds = painter.painting_area(self, builder, layer_index);
             let common = painter.common_properties(self, builder, state, layer_index, bounds);
-            builder
-                .wr()
-                .push_rect(&common, bounds, rgba(background_color));
+            match builder.mask_image(
+                self.fragment.base.tag.map(|tag| tag.node),
+                painter.style,
+                self.border_rect,
+            ) {
+                MaskImage::None => {
+                    builder
+                        .wr()
+                        .push_rect(&common, bounds, rgba(background_color));
+                },
+                MaskImage::Pending => {},
+                MaskImage::Ready { image_key, rect } => {
+                    builder.wr().push_image(
+                        &common,
+                        rect,
+                        wr::ImageRendering::Auto,
+                        wr::AlphaType::PremultipliedAlpha,
+                        image_key,
+                        rgba(background_color),
+                    );
+                },
+            }
 
             // From <https://www.w3.org/TR/paint-timing/#sec-terminology>:
             // First paint ... includes non-default background paint and the enclosing box of an iframe.

@@ -276,6 +276,15 @@ pub trait ImageCache: Sync + Send {
     /// allocate space for this icon and upload it to WebRender.
     fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>>;
 
+    /// Upload a copy of a premultiplied RGBA image whose RGB is replaced by its
+    /// alpha, so a display item color can tint it. Used for `mask-image`.
+    fn alpha_mask_image_key(
+        &self,
+        bytes: &Arc<Vec<u8>>,
+        width: i32,
+        height: i32,
+    ) -> Option<webrender_api::ImageKey>;
+
     /// Add a new listener for the given pending image id. If the image is already present,
     /// the responder will still receive the expected response.
     fn add_listener(&self, listener: ImageLoadListener);

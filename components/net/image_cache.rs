@@ -35,8 +35,10 @@ use servo_base::id::{PipelineId, WebViewId};
 use servo_base::threadpool::ThreadPool;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
+use servo_base::generic_channel::GenericSharedMemory;
 use webrender_api::ImageKey as WebRenderImageKey;
 use webrender_api::units::DeviceIntSize;
+use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat as WebRenderImageFormat};
 
 use crate::image_cache::KeyCacheState::PipelineClosed;
 
@@ -871,6 +873,7 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
             thread_pool: self.thread_pool.clone(),
             usvg_options: Arc::new(opt),
             usvg_font_resolver: font_resolver.clone(),
+            alpha_mask_images: Mutex::new(FxHashMap::default()),
         })
     }
 }
@@ -891,6 +894,8 @@ pub struct ImageCacheImpl {
     ///
     /// This is only used inside `usvg::Options` but is here so we can measure it.
     usvg_font_resolver: Arc<dyn FontResolver>,
+    /// White-alpha copies of raster images, keyed by the source allocation and size.
+    alpha_mask_images: Mutex<FxHashMap<(usize, i32, i32), WebRenderImageKey>>,
 }
 
 impl ImageCache for ImageCacheImpl {
@@ -1371,6 +1376,50 @@ impl ImageCache for ImageCacheImpl {
     fn clear(&self) {
         self.store.lock().clear();
         *self.svg_id_image_id_map.lock() = Default::default();
+    }
+
+    fn alpha_mask_image_key(
+        &self,
+        bytes: &Arc<Vec<u8>>,
+        width: i32,
+        height: i32,
+    ) -> Option<WebRenderImageKey> {
+        if width <= 0 ||
+            height <= 0 ||
+            bytes.len() != width as usize * height as usize * 4
+        {
+            return None;
+        }
+        let cache_key = (Arc::as_ptr(bytes) as usize, width, height);
+        if let Some(image_key) = self.alpha_mask_images.lock().get(&cache_key).copied() {
+            return Some(image_key);
+        }
+
+        let mut white = Vec::with_capacity(bytes.len());
+        for pixel in bytes.chunks_exact(4) {
+            let alpha = pixel[3];
+            white.extend_from_slice(&[alpha, alpha, alpha, alpha]);
+        }
+        if white.len() != bytes.len() {
+            return None;
+        }
+
+        let image_key = self.get_image_key()?;
+        let descriptor = ImageDescriptor {
+            size: DeviceIntSize::new(width, height),
+            stride: None,
+            format: WebRenderImageFormat::RGBA8,
+            offset: 0,
+            flags: ImageDescriptorFlags::empty(),
+        };
+        self.store.lock().paint_api.add_image(
+            image_key,
+            descriptor,
+            SerializableImageData::Raw(GenericSharedMemory::from_vec(white)),
+            false,
+        );
+        self.alpha_mask_images.lock().insert(cache_key, image_key);
+        Some(image_key)
     }
 
     fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>> {
