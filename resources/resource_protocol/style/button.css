@@ -1,0 +1,40 @@
+button.primary,
+button.secondary,
+button.square {
+  box-sizing: border-box;
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+button.primary,
+button.secondary {
+  padding: 6px 12px;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button.square {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 8px;
+}
+
+button.primary:disabled,
+button.secondary:disabled,
+button.square:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

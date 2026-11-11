@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
     <link rel="stylesheet" href="resource:///style/page.css" />
+    <link rel="stylesheet" href="resource:///style/button.css" />
     <link rel="stylesheet" href="resource:///style/menu.css" />
     <link rel="stylesheet" href="resource:///style/checkboxe.css" />
     <link rel="stylesheet" href="resource:///style/enum_list.css" />
@@ -53,17 +54,14 @@
       }
 
       input,
-      button {
+      textarea,
+      select {
         font: inherit;
         color: inherit;
         background: var(--bg);
         border: 1px solid var(--border);
-        border-radius: 4px;
+        border-radius: 8px;
         padding: 6px 8px;
-      }
-
-      button {
-        cursor: pointer;
       }
 
       #default-engine,
@@ -128,12 +126,6 @@
         align-self: center;
       }
 
-      #add-engine button,
-      #add-builtin {
-        background: var(--accent);
-        color: #fff;
-        border: 0;
-      }
 
       .hint {
         color: var(--muted);
@@ -261,7 +253,7 @@
                 required
                 placeholder="https://example.com/search?q=%s"
               />
-              <button type="submit">Add</button>
+              <button type="submit" class="primary">Add</button>
             </form>
           </div>
 
@@ -269,7 +261,7 @@
             <h3>Built-in engines</h3>
             <label for="builtin-engine">Add a built-in engine</label>
             <select id="builtin-engine"></select>
-            <button type="button" id="add-builtin">Add</button>
+            <button type="button" class="primary" id="add-builtin">Add</button>
           </div>
         </section>
         <section class="card" id="network" hidden>
@@ -287,7 +279,7 @@
           </label>
           <label for="blocklist">Sites and URLs</label>
           <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
-          <button type="button" id="save-blocklist" disabled>Save</button>
+          <button type="button" class="primary" id="save-blocklist" disabled>Save</button>
         </section>
         <section class="card" id="download" hidden>
           <h2>Downloads</h2>
@@ -340,7 +332,9 @@
           url.textContent = engine.url;
           const remove = document.createElement("button");
           remove.type = "button";
-          remove.textContent = "Remove";
+          remove.className = "square";
+          remove.setAttribute("aria-label", "Remove");
+          remove.textContent = "×";
           remove.disabled = onlyOne;
           remove.addEventListener("click", () => {
             apply("remove=" + encodeURIComponent(engine.id));

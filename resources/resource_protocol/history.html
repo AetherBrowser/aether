@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>History</title>
     <link rel="stylesheet" href="resource:///style/page.css" />
+    <link rel="stylesheet" href="resource:///style/button.css" />
     <style>
       :root {
         --error: #b42318;
@@ -41,24 +42,13 @@
         margin-left: auto;
       }
 
-      select,
-      button {
+      select {
         font: inherit;
         color: inherit;
         background: var(--surface);
         border: 1px solid var(--border);
-        border-radius: 4px;
+        border-radius: 8px;
         padding: 6px 8px;
-      }
-
-      button {
-        cursor: pointer;
-      }
-
-      button.primary {
-        background: var(--accent);
-        color: #fff;
-        border-color: var(--accent);
       }
 
       #message {
@@ -195,7 +185,7 @@
             <option value="180">6 months</option>
             <option value="365">1 year</option>
           </select>
-          <button type="button" id="open-delete">Delete browsing data…</button>
+          <button type="button" class="secondary" id="open-delete">Delete browsing data…</button>
         </div>
         <p id="message" role="status"></p>
       </header>
@@ -221,7 +211,7 @@
       </fieldset>
       <p class="hint">Visits in this time range are deleted from your history.</p>
       <div class="actions">
-        <button type="button" id="cancel-delete">Cancel</button>
+        <button type="button" class="secondary" id="cancel-delete">Cancel</button>
         <button type="button" id="confirm-delete" class="primary">Delete</button>
       </div>
     </dialog>
