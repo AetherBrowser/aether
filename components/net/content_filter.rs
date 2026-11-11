@@ -19,13 +19,16 @@
 //! `@@||tracker.com/ok^`, `$script`, `$third-party`, `$domain=`). Cosmetic
 //! rules (`##`) are skipped: this filter only refuses network requests.
 
-use std::fs;
+use std::fs::{self, File};
+use std::hash::Hasher;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use log::{debug, warn};
 use net_traits::pub_domains::reg_suffix;
 use net_traits::request::Destination;
+use rustc_hash::FxHasher;
 use url::Url;
 
 /// User block list, next to `prefs.json` in the profile directory.
@@ -129,11 +132,20 @@ struct Rule {
     domains: Vec<DomainCond>,
 }
 
+/// Files at or below this size are hashed on every request. Larger lists are
+/// hashed at most once a second, so a same-size rewrite is still noticed
+/// without reading a multi-megabyte list for every request.
+const FULL_HASH_LIMIT: u64 = 256 * 1024;
+
 #[derive(Clone, Debug)]
 struct WatchedFile {
     path: PathBuf,
     modified: Option<SystemTime>,
     len: u64,
+    /// `None` when the file could not be read. Distinct from the hash of an empty file.
+    hash: Option<u64>,
+    /// Unix second of the last content probe. Gates hashes of files above [`FULL_HASH_LIMIT`].
+    content_checked: u64,
 }
 
 struct ParsedRequest {
@@ -209,10 +221,15 @@ impl ContentFilter {
                     config_path.display()
                 );
                 if !self.watched.is_empty() {
+                    // Remember this snapshot so a still-broken file is not read again on
+                    // every request. A later successful read has a different hash, so the
+                    // filter retries without waiting for another timestamp change.
                     for file in &mut self.watched {
                         let stat = file_stat(&file.path);
                         file.modified = stat.modified;
                         file.len = stat.len;
+                        file.hash = content_hash(&file.path);
+                        file.content_checked = unix_secs();
                     }
                     return;
                 }
@@ -261,19 +278,24 @@ impl ContentFilter {
 
     /// Reload when a watched file was created, removed, or written.
     pub fn reload_if_stale(&mut self) {
-        if self.is_stale() {
-            self.reload();
+        match self.freshness() {
+            Freshness::Current => {},
+            Freshness::Probe => {
+                if self.probed_content_changed() {
+                    self.reload();
+                } else {
+                    let now = unix_secs();
+                    for file in &mut self.watched {
+                        file.content_checked = now;
+                    }
+                }
+            },
+            Freshness::Changed => self.reload(),
         }
     }
 
     pub(crate) fn is_stale(&self) -> bool {
-        self.watched.iter().any(|file| {
-            let stat = file_stat(&file.path);
-            // Size is checked as well as mtime. Some filesystems only store
-            // modification times to the second, so a rewrite in that same
-            // second would otherwise keep the previous rules.
-            stat.modified != file.modified || stat.len != file.len
-        })
+        !matches!(self.freshness(), Freshness::Current)
     }
 
     /// `true` when this request must not be sent.
@@ -1055,6 +1077,49 @@ fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+enum Freshness {
+    Current,
+    /// A large file still needs its content compared this second.
+    Probe,
+    Changed,
+}
+
+impl ContentFilter {
+    fn freshness(&self) -> Freshness {
+        let now = unix_secs();
+        let mut probe = false;
+        for file in &self.watched {
+            let stat = file_stat(&file.path);
+            // Size is checked as well as mtime. Some filesystems only store
+            // modification times to the second, so a rewrite in that same
+            // second would otherwise keep the previous rules. A rewrite that
+            // also keeps the same size is caught by the content hash.
+            if stat.modified != file.modified || stat.len != file.len {
+                return Freshness::Changed;
+            }
+            if stat.len <= FULL_HASH_LIMIT {
+                if content_hash(&file.path) != file.hash {
+                    return Freshness::Changed;
+                }
+            } else if file.content_checked != now {
+                probe = true;
+            }
+        }
+        if probe {
+            Freshness::Probe
+        } else {
+            Freshness::Current
+        }
+    }
+
+    fn probed_content_changed(&self) -> bool {
+        let now = unix_secs();
+        self.watched
+            .iter()
+            .any(|file| file.content_checked != now && content_hash(&file.path) != file.hash)
+    }
+}
+
 struct FileStat {
     modified: Option<SystemTime>,
     len: u64,
@@ -1066,6 +1131,30 @@ fn watch(path: &Path) -> WatchedFile {
         path: path.to_path_buf(),
         modified: stat.modified,
         len: stat.len,
+        hash: content_hash(path),
+        content_checked: unix_secs(),
+    }
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+/// Hash the file contents. `None` means the file could not be read, which is
+/// different from the hash of an empty file.
+fn content_hash(path: &Path) -> Option<u64> {
+    let mut file = File::open(path).ok()?;
+    let mut hasher = FxHasher::default();
+    let mut buffer = [0; 8192];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => return Some(hasher.finish()),
+            Ok(count) => hasher.write(&buffer[..count]),
+            Err(_) => return None,
+        }
     }
 }
 

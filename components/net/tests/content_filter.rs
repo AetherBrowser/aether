@@ -362,6 +362,33 @@ fn profile_files_enable_whitelist_and_extra_lists() {
 }
 
 #[test]
+fn same_size_rewrite_in_the_same_second_is_reloaded() {
+    let dir = temp_dir("same-size");
+    let blocklist = dir.join(BLOCKLIST_FILE);
+    fs::write(&blocklist, "ads.example\n").unwrap();
+    let stamp = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    fs::File::open(&blocklist)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+
+    let mut filter = ContentFilter::load(Some(&dir));
+    assert!(filter.blocks("https://ads.example/", None, Destination::Document));
+
+    // Same length and the same modification time. Only the bytes differ.
+    fs::write(&blocklist, "bad.example\n").unwrap();
+    fs::File::open(&blocklist)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+    filter.reload_if_stale();
+    assert!(filter.blocks("https://bad.example/", None, Destination::Document));
+    assert!(!filter.blocks("https://ads.example/", None, Destination::Document));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_new_blocklist_is_picked_up_without_restarting() {
     let dir = temp_dir("reload");
     let mut filter = ContentFilter::load(Some(&dir));
