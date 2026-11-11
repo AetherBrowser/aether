@@ -31,14 +31,16 @@ use resvg::tiny_skia;
 use resvg::usvg::{self, fontdb};
 use rustc_hash::{FxHashMap, FxHashSet};
 use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::generic_channel::GenericSharedMemory;
 use servo_base::id::{PipelineId, WebViewId};
 use servo_base::threadpool::ThreadPool;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
-use servo_base::generic_channel::GenericSharedMemory;
-use webrender_api::ImageKey as WebRenderImageKey;
 use webrender_api::units::DeviceIntSize;
-use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat as WebRenderImageFormat};
+use webrender_api::{
+    ImageDescriptor, ImageDescriptorFlags, ImageFormat as WebRenderImageFormat,
+    ImageKey as WebRenderImageKey,
+};
 
 use crate::image_cache::KeyCacheState::PipelineClosed;
 
@@ -1384,10 +1386,7 @@ impl ImageCache for ImageCacheImpl {
         width: i32,
         height: i32,
     ) -> Option<WebRenderImageKey> {
-        if width <= 0 ||
-            height <= 0 ||
-            bytes.len() != width as usize * height as usize * 4
-        {
+        if width <= 0 || height <= 0 || bytes.len() != width as usize * height as usize * 4 {
             return None;
         }
         let cache_key = (Arc::as_ptr(bytes) as usize, width, height);
@@ -1396,7 +1395,7 @@ impl ImageCache for ImageCacheImpl {
         }
 
         let mut white = Vec::with_capacity(bytes.len());
-        for pixel in bytes.chunks_exact(4) {
+        for pixel in bytes.as_chunks::<4>().0 {
             let alpha = pixel[3];
             white.extend_from_slice(&[alpha, alpha, alpha, alpha]);
         }

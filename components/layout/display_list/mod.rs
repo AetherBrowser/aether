@@ -56,9 +56,9 @@ use wr::units::LayoutVector2D;
 
 use crate::context::{ImageResolver, ResolvedImage};
 use crate::display_list::background::BackgroundPainter;
-use crate::display_list::mask::MaskImage;
 use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
+use crate::display_list::mask::MaskImage;
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler, TraversalState};
 use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
@@ -72,11 +72,11 @@ use crate::replaced::NaturalSizes;
 use crate::style_ext::{BorderStyleColor, ComputedValuesExt};
 
 mod background;
-mod mask;
 mod clip;
 mod conversions;
 mod gradient;
 mod hit_test;
+mod mask;
 mod paint_timing_handler;
 mod paint_traversal;
 mod painted_region;

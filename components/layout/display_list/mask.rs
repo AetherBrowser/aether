@@ -19,14 +19,17 @@ use webrender_api::ImageKey;
 use webrender_api::units::{DeviceIntSize, LayoutRect, LayoutSize};
 
 use crate::context::ResolvedImage;
-use crate::display_list::background::get_cyclic;
 use crate::display_list::DisplayListBuilder;
+use crate::display_list::background::get_cyclic;
 use crate::replaced::NaturalSizes;
 
 pub(super) enum MaskImage {
     None,
     Pending,
-    Ready { image_key: ImageKey, rect: LayoutRect },
+    Ready {
+        image_key: ImageKey,
+        rect: LayoutRect,
+    },
 }
 
 impl DisplayListBuilder<'_> {
@@ -116,7 +119,10 @@ impl DisplayListBuilder<'_> {
         ) else {
             return MaskImage::Pending;
         };
-        MaskImage::Ready { image_key, rect: mask_rect }
+        MaskImage::Ready {
+            image_key,
+            rect: mask_rect,
+        }
     }
 }
 
