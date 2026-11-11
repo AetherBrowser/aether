@@ -38,7 +38,19 @@ nav a:not(.logo):not(.box):not([aria-current="page"]):hover {
 
 nav a:not(.logo):not(.box)[aria-current="page"] {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
+}
+
+@media (max-width: 40rem) {
+  .layout {
+    flex-direction: column;
+  }
+
+  nav {
+    flex: 0 0 auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
 }
 
 nav hr {

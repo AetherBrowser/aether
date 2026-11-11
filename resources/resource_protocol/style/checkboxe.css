@@ -11,20 +11,29 @@ input[type="checkbox"] {
   padding: 0;
   vertical-align: -0.15em;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--checkbox-border);
   border-radius: 4px;
-  color: var(--text);
+  accent-color: var(--on-accent);
+  color: var(--on-accent);
   cursor: pointer;
 }
 
 input[type="checkbox"]:checked {
   background: var(--accent);
   border-color: var(--accent);
-  accent-color: #fff;
-  color: #fff;
 }
 
 input[type="checkbox"]:disabled {
   cursor: default;
   opacity: 0.45;
+}
+
+@media (forced-colors: active) {
+  input[type="checkbox"] {
+    appearance: auto;
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+    accent-color: ButtonText;
+    forced-color-adjust: auto;
+  }
 }

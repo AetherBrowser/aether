@@ -31,5 +31,5 @@ select[multiple] option {
 
 select[multiple] option:checked {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
