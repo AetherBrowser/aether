@@ -20,8 +20,10 @@ a.box:hover {
   background: var(--bg);
 }
 
-a.box svg {
+a.box .icon {
   width: 1rem;
   height: 1rem;
   flex: none;
+  background: currentColor;
+  mask: var(--icon) center / contain no-repeat;
 }
