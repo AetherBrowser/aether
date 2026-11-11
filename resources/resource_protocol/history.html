@@ -6,40 +6,15 @@
     <title>History</title>
     <link rel="stylesheet" href="resource:///style/page.css" />
     <link rel="stylesheet" href="resource:///style/button.css" />
+    <link rel="stylesheet" href="resource:///style/menu.css" />
+    <link rel="stylesheet" href="resource:///style/link.css" />
+    <link rel="stylesheet" href="resource:///style/card.css" />
     <style>
-      :root {
-        --error: #b42318;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --error: #ff6b6b;
-        }
-      }
-
-      main {
-        max-width: 40rem;
-        margin: 0 auto;
-      }
-
-      header {
-        border-bottom: 1px solid var(--border);
-        padding-bottom: 16px;
-      }
-
-      h1 {
-        margin-bottom: 16px;
-      }
-
       .toolbar {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 8px 12px;
-      }
-
-      #open-delete {
-        margin-left: auto;
       }
 
       select {
@@ -159,8 +134,6 @@
       }
 
       .hint {
-        color: var(--muted);
-        font-size: 0.9rem;
         margin: 16px 0 20px;
       }
 
@@ -172,24 +145,44 @@
     </style>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>History</h1>
-        <div class="toolbar">
-          <label for="retention">Keep history for</label>
-          <select id="retention" disabled>
-            <option value="1">1 day</option>
-            <option value="7">1 week</option>
-            <option value="30">1 month</option>
-            <option value="90">3 months</option>
-            <option value="180">6 months</option>
-            <option value="365">1 year</option>
-          </select>
-          <button type="button" class="secondary" id="open-delete">Delete browsing data…</button>
-        </div>
+    <div class="layout">
+      <nav aria-label="History sections">
+        <a class="logo" href="about:home">
+          <img class="light" src="resource:///aether-color-positive-no-container.svg" alt="" draggable="false" />
+          <img class="dark" src="resource:///aether-color-negative-no-container.svg" alt="" draggable="false" />
+        </a>
+        <a href="#history">History</a>
+        <a href="#configuration">Configuration</a>
+        <a class="box" href="#" id="open-delete">
+          Delete browsing data
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+          </svg>
+        </a>
+      </nav>
+      <main>
         <p id="message" role="status"></p>
-      </header>
-    </main>
+        <section id="history">
+          <h2>History</h2>
+        </section>
+        <section id="configuration" hidden>
+          <h2>Configuration</h2>
+          <div class="card">
+            <div class="toolbar">
+              <label for="retention">Keep history for</label>
+              <select id="retention" disabled>
+                <option value="1">1 day</option>
+                <option value="7">1 week</option>
+                <option value="30">1 month</option>
+                <option value="90">3 months</option>
+                <option value="180">6 months</option>
+                <option value="365">1 year</option>
+              </select>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
 
     <div id="backdrop" hidden></div>
     <dialog id="delete-dialog" aria-labelledby="delete-title">
@@ -318,7 +311,27 @@
         backdrop.hidden = true;
       });
 
-      document.getElementById("open-delete").addEventListener("click", () => {
+      const sectionIds = ["history", "configuration"];
+
+      function showCurrentPane() {
+        const requested = location.hash.slice(1);
+        const current = sectionIds.includes(requested) ? requested : "history";
+        for (const id of sectionIds) {
+          document.getElementById(id).hidden = id !== current;
+          const link = document.querySelector('nav a[href="#' + id + '"]');
+          if (id === current) {
+            link.setAttribute("aria-current", "page");
+          } else {
+            link.removeAttribute("aria-current");
+          }
+        }
+      }
+
+      window.addEventListener("hashchange", showCurrentPane);
+      showCurrentPane();
+
+      document.getElementById("open-delete").addEventListener("click", (event) => {
+        event.preventDefault();
         rangeInputs.find((input) => input.value === "60").checked = true;
         showCheckedRange();
         backdrop.hidden = false;

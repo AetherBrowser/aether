@@ -3,26 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>about:processes</title>
+    <title>Processes manager</title>
     <link rel="stylesheet" href="resource:///style/page.css" />
     <link rel="stylesheet" href="resource:///style/table.css" />
     <style>
-      :root {
-        --warn: #b45309;
-        --hot: #b42318;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --warn: #f0b429;
-          --hot: #ff6b6b;
-        }
-      }
-
-      h1 {
-        margin-bottom: 20px;
-      }
-
       table {
         table-layout: fixed;
       }
@@ -32,14 +16,6 @@
       }
 
       col.col-cpu {
-        width: 6.5rem;
-      }
-
-      #sort-memory {
-        width: 8.5rem;
-      }
-
-      #sort-cpu {
         width: 6.5rem;
       }
 
@@ -77,18 +53,16 @@
         color: var(--accent);
       }
 
-      th[aria-sort] button::after {
-        content: "";
+      th[aria-sort="ascending"] button::after {
+        content: "▲";
         margin-left: 0.4em;
         font-size: 0.8em;
       }
 
-      th[aria-sort="ascending"] button::after {
-        content: "▲";
-      }
-
       th[aria-sort="descending"] button::after {
         content: "▼";
+        margin-left: 0.4em;
+        font-size: 0.8em;
       }
 
       .thread .name,
@@ -127,18 +101,18 @@
       }
 
       .cpu-hot {
-        color: var(--hot);
+        color: var(--error);
         font-weight: 600;
       }
 
       .error {
-        color: var(--hot);
+        color: var(--error);
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Processes</h1>
+      <h2>Processes</h2>
       <table>
         <colgroup>
           <col class="col-name" />

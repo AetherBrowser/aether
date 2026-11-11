@@ -1,5 +1,9 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
 nav {
-  flex: 0 0 14rem;
+  flex: 0 0 16rem;
   box-sizing: border-box;
   background: var(--surface);
   color: var(--text);
@@ -19,7 +23,7 @@ nav .logo img {
   height: auto;
 }
 
-nav a:not(.logo) {
+nav a:not(.logo):not(.box) {
   display: block;
   margin: 2px 0;
   padding: 8px 12px;
@@ -28,11 +32,11 @@ nav a:not(.logo) {
   text-decoration: none;
 }
 
-nav a:not(.logo):not([aria-current="page"]):hover {
+nav a:not(.logo):not(.box):not([aria-current="page"]):hover {
   background: var(--bg);
 }
 
-nav a[aria-current="page"] {
+nav a:not(.logo):not(.box)[aria-current="page"] {
   background: var(--accent);
   color: #fff;
 }

@@ -8,44 +8,15 @@
     <link rel="stylesheet" href="resource:///style/button.css" />
     <link rel="stylesheet" href="resource:///style/menu.css" />
     <link rel="stylesheet" href="resource:///style/checkboxe.css" />
+    <link rel="stylesheet" href="resource:///style/input.css" />
     <link rel="stylesheet" href="resource:///style/enum_list.css" />
     <link rel="stylesheet" href="resource:///style/card.css" />
     <style>
-      html,
-      body {
-        height: 100%;
-      }
-
-      .layout {
-        display: flex;
-        height: 100%;
-        min-height: 100%;
-      }
-
-      main {
-        flex: 1;
-        min-width: 0;
-        overflow: auto;
-      }
-
-      main section {
-        max-width: 40rem;
-        margin: 0 auto;
-      }
-
       #home .card,
       #search .card,
+      #network .card,
       #about .card {
         margin-top: 16px;
-      }
-
-      h1 {
-        margin-bottom: 24px;
-      }
-
-      h3 {
-        font-size: 1rem;
-        margin: 24px 0 8px;
       }
 
       label {
@@ -53,23 +24,8 @@
         margin-bottom: 6px;
       }
 
-      input,
-      textarea,
-      select {
-        font: inherit;
-        color: inherit;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 6px 8px;
-      }
-
-      #default-engine,
       #add-name,
       #add-url,
-      #builtin-engine,
-      #new-windows,
-      #new-tabs,
       #homepage-url,
       #blocklist {
         width: 100%;
@@ -84,11 +40,10 @@
 
       #search-error,
       #home-error,
-      #search-error,
       #homepage-url-error,
       #network-error {
         margin: 0;
-        color: #b42318;
+        color: var(--error);
       }
 
       #home-error:empty,
@@ -127,23 +82,11 @@
       }
 
 
-      .hint {
-        color: var(--muted);
-        font-size: 0.9rem;
-        margin: 0 0 8px;
-      }
-
       .check {
         display: flex;
         align-items: center;
         gap: 8px;
         margin: 8px 0;
-      }
-
-      #save-blocklist {
-        background: var(--accent);
-        color: #fff;
-        border: 0;
       }
 
       #about dl {
@@ -165,7 +108,7 @@
       }
 
       #about-error {
-        color: #b42318;
+        color: var(--error);
       }
 
       #about-error:empty {
@@ -264,22 +207,24 @@
             <button type="button" class="primary" id="add-builtin">Add</button>
           </div>
         </section>
-        <section class="card" id="network" hidden>
+        <section id="network" hidden>
           <h2>Network</h2>
           <p id="network-error" role="alert"></p>
-          <p class="hint">
-            Requests to a listed site or URL are refused before they are sent.
-            <code>example.com</code> blocks that site and its subdomains. A full URL
-            blocks that address. Start a line with <code>@@</code> to allow it again.
-            Lines starting with <code>!</code> are comments.
-          </p>
-          <label class="check" for="filter-enabled">
-            <input id="filter-enabled" type="checkbox" disabled />
-            Block sites from this list
-          </label>
-          <label for="blocklist">Sites and URLs</label>
-          <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
-          <button type="button" class="primary" id="save-blocklist" disabled>Save</button>
+          <div class="card">
+            <p class="hint">
+              Requests to a listed site or URL are refused before they are sent.
+              <code>example.com</code> blocks that site and its subdomains. A full URL
+              blocks that address. Start a line with <code>@@</code> to allow it again.
+              Lines starting with <code>!</code> are comments.
+            </p>
+            <label class="check" for="filter-enabled">
+              <input id="filter-enabled" type="checkbox" disabled />
+              Block sites from this list
+            </label>
+            <label for="blocklist">Sites and URLs</label>
+            <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
+            <button type="button" class="primary" id="save-blocklist" disabled>Save</button>
+          </div>
         </section>
         <section class="card" id="download" hidden>
           <h2>Downloads</h2>

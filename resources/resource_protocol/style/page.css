@@ -1,3 +1,7 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
 :root {
   --bg: #f6f7f8;
   --surface: #ffffff;
@@ -5,6 +9,8 @@
   --muted: #5c5c5c;
   --border: #d7d7d7;
   --accent: #1191e8;
+  --error: #b42318;
+  --warn: #b45309;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -15,19 +21,42 @@
     --muted: #b0b8c0;
     --border: #2f3942;
     --accent: #5cb6f0;
+    --error: #ff6b6b;
+    --warn: #f0b429;
   }
 }
 
 html,
 body {
+  height: 100%;
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font-family: sans-serif;
 }
 
+.layout {
+  display: flex;
+  height: 100%;
+  min-height: 100%;
+}
+
 main {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
   padding: 24px 16px 48px;
+}
+
+main section {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0 0 8px;
 }
 
 h1 {
@@ -39,4 +68,9 @@ h1 {
 h2 {
   font-size: 1.2rem;
   margin: 0 0 16px;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 0px 0 8px;
 }
