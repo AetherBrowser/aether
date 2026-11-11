@@ -46,7 +46,7 @@ nav a:not(.logo) {
   text-decoration: none;
 }
 
-nav a:not(.logo):hover {
+nav a:not(.logo):not([aria-current="page"]):hover {
   background: var(--bg);
 }
 

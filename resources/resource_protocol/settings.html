@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Settings</title>
     <link rel="stylesheet" href="resource:///style/menu.css" />
+    <link rel="stylesheet" href="resource:///style/checkboxe.css" />
+    <link rel="stylesheet" href="resource:///style/enum_list.css" />
+    <link rel="stylesheet" href="resource:///style/card.css" />
     <style>
       :root {
         --bg: #f6f7f8;
@@ -53,6 +56,12 @@
         margin: 0 auto;
       }
 
+      #home .card,
+      #search .card,
+      #about .card {
+        margin-top: 16px;
+      }
+
       h1 {
         font-size: 1.6rem;
         font-weight: 600;
@@ -69,19 +78,11 @@
         margin: 24px 0 8px;
       }
 
-      section {
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        padding: 16px;
-      }
-
       label {
         display: block;
         margin-bottom: 6px;
       }
 
-      select,
       input,
       button {
         font: inherit;
@@ -114,9 +115,18 @@
         resize: vertical;
       }
 
-      #search-error {
+      #search-error,
+      #home-error,
+      #search-error,
+      #homepage-url-error,
+      #network-error {
+        margin: 0;
         color: #b42318;
-        min-height: 1.2em;
+      }
+
+      #home-error:empty,
+      #search-error:empty {
+        display: none;
       }
 
       #engine-list {
@@ -167,13 +177,6 @@
         align-items: center;
         gap: 8px;
         margin: 8px 0;
-      }
-
-      #home-error,
-      #homepage-url-error,
-      #network-error {
-        color: #b42318;
-        min-height: 1.2em;
       }
 
       #save-blocklist {
@@ -230,68 +233,77 @@
           <h2>Home and startup</h2>
           <p id="home-error" role="alert"></p>
 
-          <h3>Homepage</h3>
-          <label for="new-windows">New windows</label>
-          <select id="new-windows">
-            <option value="home">Aether home page</option>
-            <option value="url">URL</option>
-            <option value="blank">Blank page</option>
-          </select>
-          <div id="homepage-url-row" hidden>
-            <label for="homepage-url">URL</label>
-            <input id="homepage-url" type="text" placeholder="https://example.com" />
-            <p id="homepage-url-error" role="alert"></p>
+          <div class="card">
+            <h3>Homepage</h3>
+            <label for="new-windows">New windows</label>
+            <select id="new-windows">
+              <option value="home">Aether home page</option>
+              <option value="url">URL</option>
+              <option value="blank">Blank page</option>
+            </select>
+            <div id="homepage-url-row" hidden>
+              <label for="homepage-url">URL</label>
+              <input id="homepage-url" type="text" placeholder="https://example.com" />
+              <p id="homepage-url-error" role="alert"></p>
+            </div>
+            <label for="new-tabs">New tabs</label>
+            <select id="new-tabs">
+              <option value="home">Aether home page</option>
+              <option value="blank">Blank page</option>
+            </select>
           </div>
 
-          <h3>New tabs</h3>
-          <label for="new-tabs">New tabs</label>
-          <select id="new-tabs">
-            <option value="home">Aether home page</option>
-            <option value="blank">Blank page</option>
-          </select>
-
-          <h3>Aether home page</h3>
-          <label class="check" for="show-search">
-            <input id="show-search" type="checkbox" />
-            Search
-          </label>
-          <label class="check" for="show-logo">
-            <input id="show-logo" type="checkbox" />
-            Aether logo
-          </label>
+          <div class="card">
+            <h3>Aether home page</h3>
+            <label class="check" for="show-search">
+              <input id="show-search" type="checkbox" />
+              Search
+            </label>
+            <label class="check" for="show-logo">
+              <input id="show-logo" type="checkbox" />
+              Aether logo
+            </label>
+          </div>
         </section>
         <section id="search" hidden>
-        <h2>Search</h2>
-        <p id="search-error" role="alert"></p>
-        <label for="default-engine">Default search engine</label>
-        <select id="default-engine"></select>
+          <h2>Search</h2>
+          <p id="search-error" role="alert"></p>
 
-        <h3>Configured search engines</h3>
-        <ul id="engine-list"></ul>
+          <div class="card">
+            <label for="default-engine">Default search engine</label>
+            <select id="default-engine"></select>
+          </div>
 
-        <h3>Add a search engine</h3>
-        <p class="hint">Use <code>%s</code> where the search terms should go.</p>
-        <form id="add-engine">
-          <label for="add-name">Name</label>
-          <input id="add-name" name="name" required />
-          <label for="add-url">Search URL</label>
-          <input
-            id="add-url"
-            name="url"
-            required
-            placeholder="https://example.com/search?q=%s"
-          />
-          <button type="submit">Add</button>
-        </form>
+          <div class="card">
+            <h3>Configured search engines</h3>
+            <ul id="engine-list"></ul>
+          </div>
 
-        <div id="available-builtins" hidden>
-          <h3>Built-in engines</h3>
-          <label for="builtin-engine">Add a built-in engine</label>
-          <select id="builtin-engine"></select>
-          <button type="button" id="add-builtin">Add</button>
-        </div>
-      </section>
-        <section id="network" hidden>
+          <div class="card">
+            <h3>Add a search engine</h3>
+            <p class="hint">Use <code>%s</code> where the search terms should go.</p>
+            <form id="add-engine">
+              <label for="add-name">Name</label>
+              <input id="add-name" name="name" required />
+              <label for="add-url">Search URL</label>
+              <input
+                id="add-url"
+                name="url"
+                required
+                placeholder="https://example.com/search?q=%s"
+              />
+              <button type="submit">Add</button>
+            </form>
+          </div>
+
+          <div id="available-builtins" hidden>
+            <h3>Built-in engines</h3>
+            <label for="builtin-engine">Add a built-in engine</label>
+            <select id="builtin-engine"></select>
+            <button type="button" id="add-builtin">Add</button>
+          </div>
+        </section>
+        <section class="card" id="network" hidden>
           <h2>Network</h2>
           <p id="network-error" role="alert"></p>
           <p class="hint">
@@ -308,23 +320,25 @@
           <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
           <button type="button" id="save-blocklist" disabled>Save</button>
         </section>
-        <section id="download" hidden>
+        <section class="card" id="download" hidden>
           <h2>Downloads</h2>
         </section>
-        <section id="appearance" hidden>
+        <section class="card" id="appearance" hidden>
           <h2>Appearance</h2>
         </section>
         <section id="about" hidden>
           <h2>About</h2>
           <p id="about-error" role="alert"></p>
-          <dl>
-            <dt>Version</dt>
-            <dd id="about-version"></dd>
-            <dt>Channel</dt>
-            <dd id="about-channel"></dd>
-            <dt>Architecture</dt>
-            <dd id="about-architecture"></dd>
-          </dl>
+          <div class="card">
+            <dl>
+              <dt>Version</dt>
+              <dd id="about-version"></dd>
+              <dt>Channel</dt>
+              <dd id="about-channel"></dd>
+              <dt>Architecture</dt>
+              <dd id="about-architecture"></dd>
+            </dl>
+          </div>
         </section>
       </main>
     </div>
