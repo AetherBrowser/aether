@@ -1,0 +1,35 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+select {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+select[multiple] {
+  min-height: 8rem;
+  margin: 0;
+  padding: 4px;
+  background: var(--surface);
+  overflow: auto;
+}
+
+select[multiple] option {
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: inherit;
+}
+
+select[multiple] option:checked {
+  background: var(--accent);
+  color: var(--on-accent);
+}
