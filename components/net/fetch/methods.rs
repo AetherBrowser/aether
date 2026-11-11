@@ -520,21 +520,24 @@ pub async fn main_fetch(
             .get_referrer_policy();
     }
 
+    // Keep the page that started the request even when the referrer policy
+    // is `no-referrer`. The filter uses this for `$third-party` and `$domain=`.
+    // The referrer sent on the wire is still decided below.
+    let internal_document = matches!(
+        &request.referrer,
+        Referrer::Client(url) | Referrer::ReferrerUrl(url) if is_internal_page(url)
+    );
+    if request.source_document_url.is_none() &&
+        let Referrer::Client(url) | Referrer::ReferrerUrl(url) = &request.referrer
+    {
+        request.source_document_url = Some(url.clone());
+    }
+
     // Internal pages (`servo:` and `about:` other than `about:blank` /
-    // `about:srcdoc`) have an opaque origin. Script passes their document URL
-    // as the referrer so protocol handlers can recognize `about:settings`.
-    // Record it, then drop the referrer so no `Referer` header is sent.
-    if request.source_document_url.is_none() {
-        let servo_document = match &request.referrer {
-            Referrer::Client(url) | Referrer::ReferrerUrl(url) if is_internal_page(url) => {
-                Some(url.clone())
-            },
-            _ => None,
-        };
-        if let Some(url) = servo_document {
-            request.source_document_url = Some(url);
-            request.referrer = Referrer::NoReferrer;
-        }
+    // `about:srcdoc`) have an opaque origin. Their URL stays on the request
+    // for protocol checks, and no `Referer` header is sent.
+    if internal_document {
+        request.referrer = Referrer::NoReferrer;
     }
 
     // Step 9, If request’s referrer is not "no-referrer", then set request’s referrer to the result

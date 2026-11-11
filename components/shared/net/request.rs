@@ -53,6 +53,8 @@ pub enum Initiator {
     XSLT,
     Prefetch,
     Link,
+    /// `navigator.sendBeacon`. Its fetch destination is empty, like `fetch()`.
+    Beacon,
 }
 
 /// A request [destination](https://fetch.spec.whatwg.org/#concept-request-destination)

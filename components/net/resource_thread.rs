@@ -51,6 +51,7 @@ use crate::async_runtime::{init_async_runtime, spawn_task};
 use crate::connector::{
     CACertificates, CertificateErrorOverrideManager, create_http_client, create_tls_config,
 };
+use crate::content_filter::ContentFilter;
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::embedder::NetToEmbedderMsg;
@@ -211,6 +212,7 @@ fn create_http_states(
         .unwrap_or_else(|| CookieStorage::new(150));
 
     let override_manager = CertificateErrorOverrideManager::new();
+    let content_filter = Arc::new(RwLock::new(ContentFilter::load(config_dir)));
     let http_state = HttpState {
         hsts_list: RwLock::new(hsts_list),
         cookie_jar: RwLock::new(cookie_jar),
@@ -225,6 +227,7 @@ fn create_http_states(
         )),
         override_manager,
         embedder_proxy: embedder_proxy.clone(),
+        content_filter: content_filter.clone(),
     };
 
     let override_manager = CertificateErrorOverrideManager::new();
@@ -242,6 +245,7 @@ fn create_http_states(
         )),
         override_manager,
         embedder_proxy,
+        content_filter,
     };
 
     (Arc::new(http_state), Arc::new(private_http_state))

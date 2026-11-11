@@ -429,7 +429,10 @@ impl FetchResponseListener for EventSourceContext {
                 // Step 15.2 if res is a network error, then reestablish the connection, unless
                 // the user agent knows that to be futile, in which case the user agent may
                 // fail the connection.
-                if error.is_permanent_failure() {
+                // A filter block is not futile: disabling the filter or adding an exception
+                // should resume the stream without the page creating a new EventSource.
+                // The retry uses the usual reconnection delay (five seconds by default).
+                if error.is_permanent_failure() && !matches!(error, NetworkError::ContentBlocked) {
                     self.fail_the_connection()
                 } else {
                     self.reestablish_the_connection()

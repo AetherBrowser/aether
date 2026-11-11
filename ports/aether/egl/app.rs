@@ -325,6 +325,7 @@ impl App {
             init.opts.config_dir.clone(),
             init.servoshell_preferences.search_engines.clone(),
         );
+        crate::content_filter::install_content_filter(init.opts.config_dir.clone());
         let (places, _) = open_places(&init.opts, init.event_loop_waker.clone());
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
