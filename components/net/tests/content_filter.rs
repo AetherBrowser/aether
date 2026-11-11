@@ -208,6 +208,78 @@ fn wildcard_separator_scheme_case_and_anchors() {
             Some("https://news.example/"),
         )
     );
+    assert!(blocks("||ads.example^*.js\n", "https://ads.example/x/a.js"));
+    assert!(!blocks(
+        "||ads.example^*.js\n",
+        "https://ads.example/x/a.css",
+    ));
+    assert!(blocks(
+        "||ads.example^*banner\n",
+        "https://ads.example/x?banner=1",
+    ));
+    assert!(blocks("||tracker.example^*\n", "https://tracker.example/"));
+    let ping = ContentFilter::from_list("||collect.example^$ping\n");
+    assert!(ping.blocks_ping(
+        "https://collect.example/beacon",
+        Some("https://news.example/"),
+    ));
+    assert!(!ping.blocks(
+        "https://collect.example/beacon",
+        Some("https://news.example/"),
+        Destination::None,
+    ));
+    let except_ping = ContentFilter::from_list("||collect.example^$~ping\n");
+    assert!(!except_ping.blocks_ping(
+        "https://collect.example/beacon",
+        Some("https://news.example/"),
+    ));
+    assert!(except_ping.blocks(
+        "https://collect.example/beacon",
+        Some("https://news.example/"),
+        Destination::Script,
+    ));
+}
+
+#[test]
+fn unicode_allow_list_and_domain_option_use_punycode() {
+    assert!(blocks_as(
+        "||ads.example^$domain=bücher.example\n",
+        "https://ads.example/a.js",
+        "https://xn--bcher-kva.example/",
+        Destination::Script,
+    ));
+    assert!(blocks_as(
+        "||ads.example^$domain=bücher.example\n",
+        "https://ads.example/a.js",
+        "https://bücher.example/",
+        Destination::Script,
+    ));
+    assert!(!blocks_as(
+        "||ads.example^$domain=bücher.example\n",
+        "https://ads.example/a.js",
+        "https://news.example/",
+        Destination::Script,
+    ));
+
+    let dir = temp_dir("unicode");
+    fs::write(dir.join(BLOCKLIST_FILE), "||xn--bcher-kva.example^\n").unwrap();
+    fs::write(
+        dir.join(CONFIG_FILE),
+        concat!(
+            r#"{ "privacy.trackingprotection.enabled": true, "#,
+            r#""urlclassifier.trackingWhitelistTable": ["bücher.example"], "#,
+            r#""urlclassifier.trackingTable": [] }"#,
+        ),
+    )
+    .unwrap();
+    let filter = ContentFilter::load(Some(&dir));
+    assert!(!filter.blocks(
+        "https://xn--bcher-kva.example/",
+        None,
+        Destination::Document
+    ));
+    assert!(!filter.blocks("https://bücher.example/", None, Destination::Document));
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -14,7 +14,7 @@
 //! `servo:settings#network` writes those files. The resource thread reads them
 //! when a request is about to be sent, and again when either file changes.
 //!
-//! Accepted lines are hosts (`example.com`), URLs (`https://example.com/ads`),
+//! Accepted lines are hosts (`example.com`), URLs (`example.com/ads`),
 //! and the network rules used by the earlier adblock prototype (`||tracker.com^`,
 //! `@@||tracker.com/ok^`, `$script`, `$third-party`, `$domain=`). Cosmetic
 //! rules (`##`) are skipped: this filter only refuses network requests.
@@ -87,7 +87,7 @@ struct DomainCond {
 #[derive(Clone, Debug)]
 enum Pattern {
     /// A host, and its subdomains unless `host_exact`. `scheme` limits the rule
-    /// when the list entry included one (`https://ads.example`).
+    /// when the list entry included a scheme (`ads.example` visited as https).
     Site {
         host: String,
         port: Option<u16>,
@@ -284,6 +284,11 @@ impl ContentFilter {
     /// `$websocket` rules. WebSocket requests do not use a fetch destination.
     pub fn blocks_websocket(&self, url: &str, source: Option<&str>) -> bool {
         self.decide(url, source, ResourceKind::Websocket)
+    }
+
+    /// `$ping` rules. `sendBeacon` uses an empty fetch destination, same as `fetch`.
+    pub fn blocks_ping(&self, url: &str, source: Option<&str>) -> bool {
+        self.decide(url, source, ResourceKind::Ping)
     }
 
     fn decide(&self, url: &str, source: Option<&str>, kind: ResourceKind) -> bool {
@@ -496,9 +501,13 @@ fn option_is_shaped(token: &str) -> bool {
     {
         return false;
     }
-    value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '~' | '-' | '.' | '|'))
+    // Domain values may be Unicode (`$domain=bücher.example`). Names stay ASCII,
+    // so a URL like `file$bücher` is not mistaken for an option.
+    value.chars().all(|c| {
+        (!c.is_ascii() && c.is_alphanumeric()) ||
+            c.is_ascii_alphanumeric() ||
+            matches!(c, '_' | '~' | '-' | '.' | '|')
+    })
 }
 
 fn parse_options(options: &str) -> Option<(TypeFilter, Party, Vec<DomainCond>, bool, bool)> {
@@ -809,10 +818,10 @@ fn glob_target(request: &ParsedRequest, pattern: &str, domain: bool) -> String {
     };
     if pattern.contains("://") || !domain {
         format!("{}://{address}", request.scheme)
-    } else if pattern.contains('/') {
-        address
     } else {
-        request.host.clone()
+        // `||host^*.js` has no slash but still describes the path. `^` matches
+        // the slash after the host, so a host-only rule keeps working.
+        address
     }
 }
 
@@ -981,7 +990,18 @@ fn host_of(url: &str) -> Option<String> {
 }
 
 fn normalize_host(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
+    let host = host.trim().trim_end_matches('.');
+    if host.is_ascii() {
+        return host.to_ascii_lowercase();
+    }
+    // Allow-list and `$domain=` entries are stored as typed. Request hosts are
+    // already punycode, so a Unicode entry would never match without this.
+    Url::parse(&format!("https://{host}/"))
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .unwrap_or_else(|| host.to_owned())
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
 }
 
 fn read_config(path: &Path) -> Result<(bool, Vec<String>, Vec<PathBuf>), ()> {

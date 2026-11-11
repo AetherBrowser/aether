@@ -217,6 +217,9 @@ fn blocked_by(
         // against the WebSocket URL that started the handshake.
         return filter.blocks_websocket(original_url.as_str(), source);
     }
+    if request.initiator == Initiator::Beacon {
+        return filter.blocks_ping(url, source);
+    }
     filter.blocks(url, source, request.destination)
 }
 

@@ -115,16 +115,23 @@ fn save_settings(config_dir: &Path, enabled: bool, blocklist: &str) -> Result<()
         ),
     });
     let config_text = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
-    write_atomic(
-        &config_dir.join(CONFIG_FILE),
-        format!("{config_text}\n").as_bytes(),
-    )?;
-
+    let config_bytes = format!("{config_text}\n");
     let mut list = blocklist.replace("\r\n", "\n");
     if !list.is_empty() && !list.ends_with('\n') {
         list.push('\n');
     }
-    write_atomic(&config_dir.join(BLOCKLIST_FILE), list.as_bytes())
+    let list_path = config_dir.join(BLOCKLIST_FILE);
+    let config_path = config_dir.join(CONFIG_FILE);
+    // Enabling must not become visible before the list it belongs with. A
+    // failed second write then leaves the filter off, or already off, instead
+    // of matching the previous list under the new flag.
+    if enabled {
+        write_atomic(&list_path, list.as_bytes())?;
+        write_atomic(&config_path, config_bytes.as_bytes())
+    } else {
+        write_atomic(&config_path, config_bytes.as_bytes())?;
+        write_atomic(&list_path, list.as_bytes())
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
