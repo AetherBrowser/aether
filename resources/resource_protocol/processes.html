@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>about:processes</title>
+    <link rel="stylesheet" href="resource:///style/tables.css" />
     <style>
       :root {
         --bg: #f6f7f8;
@@ -51,13 +52,7 @@
       }
 
       table {
-        width: 100%;
         table-layout: fixed;
-        border-collapse: collapse;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        overflow: hidden;
       }
 
       col.col-memory {
@@ -66,25 +61,6 @@
 
       col.col-cpu {
         width: 6.5rem;
-      }
-
-      th,
-      td {
-        padding: 10px 14px;
-        text-align: left;
-        vertical-align: middle;
-        border-right: 1px solid var(--border);
-      }
-
-      th:last-child,
-      td:last-child {
-        border-right: 0;
-      }
-
-      th {
-        font-weight: 600;
-        background: var(--row-alt);
-        border-bottom: 1px solid var(--border);
       }
 
       #sort-memory {
@@ -141,17 +117,6 @@
 
       th[aria-sort="descending"] button::after {
         content: "▼";
-      }
-
-      tbody tr:nth-child(even) {
-        background: var(--row-alt);
-      }
-
-      .numeric {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        white-space: nowrap;
       }
 
       .thread .name,
