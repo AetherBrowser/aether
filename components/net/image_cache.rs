@@ -1417,9 +1417,7 @@ impl ImageCache for ImageCacheImpl {
         height: i32,
         luminance: bool,
     ) -> Option<WebRenderImageKey> {
-        let Some(pixels) = bytes.get(byte_range.clone()) else {
-            return None;
-        };
+        let pixels = bytes.get(byte_range.clone())?;
         if width <= 0 || height <= 0 || pixels.len() != width as usize * height as usize * 4 {
             return None;
         }
