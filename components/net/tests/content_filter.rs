@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -337,10 +337,7 @@ fn profile_files_enable_whitelist_and_extra_lists() {
     // Same modification time as the loaded file, and a different size. This is
     // what a rewrite looks like on a filesystem that stores mtime in seconds.
     let stamp = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    fs::File::open(dir.join(CONFIG_FILE))
-        .unwrap()
-        .set_modified(stamp)
-        .unwrap();
+    set_modified(&dir.join(CONFIG_FILE), stamp);
     let mut filter = filter;
     filter.reload();
     assert!(filter.blocks("https://blocked.example/", None, Destination::Document));
@@ -350,10 +347,7 @@ fn profile_files_enable_whitelist_and_extra_lists() {
         r#"{ "privacy.trackingprotection.enabled": false, "urlclassifier.trackingWhitelistTable": [], "urlclassifier.trackingTable": ["extra.txt"] }"#,
     )
     .unwrap();
-    fs::File::open(dir.join(CONFIG_FILE))
-        .unwrap()
-        .set_modified(stamp)
-        .unwrap();
+    set_modified(&dir.join(CONFIG_FILE), stamp);
     filter.reload_if_stale();
     assert!(!filter.blocks("https://blocked.example/", None, Destination::Document));
     assert!(!filter.blocks("https://extra.example/", None, Destination::Document));
@@ -367,20 +361,14 @@ fn same_size_rewrite_in_the_same_second_is_reloaded() {
     let blocklist = dir.join(BLOCKLIST_FILE);
     fs::write(&blocklist, "ads.example\n").unwrap();
     let stamp = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    fs::File::open(&blocklist)
-        .unwrap()
-        .set_modified(stamp)
-        .unwrap();
+    set_modified(&blocklist, stamp);
 
     let mut filter = ContentFilter::load(Some(&dir));
     assert!(filter.blocks("https://ads.example/", None, Destination::Document));
 
     // Same length and the same modification time. Only the bytes differ.
     fs::write(&blocklist, "bad.example\n").unwrap();
-    fs::File::open(&blocklist)
-        .unwrap()
-        .set_modified(stamp)
-        .unwrap();
+    set_modified(&blocklist, stamp);
     filter.reload_if_stale();
     assert!(filter.blocks("https://bad.example/", None, Destination::Document));
     assert!(!filter.blocks("https://ads.example/", None, Destination::Document));
@@ -426,6 +414,15 @@ fn fetch_does_not_send_a_blocked_request() {
         Some(&NetworkError::ContentBlocked)
     );
     assert_eq!(HITS.load(Ordering::SeqCst), 0);
+}
+
+fn set_modified(path: &Path, stamp: SystemTime) {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
 }
 
 fn temp_dir(name: &str) -> PathBuf {
