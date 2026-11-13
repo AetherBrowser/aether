@@ -72,6 +72,11 @@ const FALLBACK_RIPPY: &[u8] = include_bytes!("resources/rippy.png");
 /// width/height of the pixmap allocated for rasterization.
 const MAX_SVG_PIXMAP_DIMENSION: u32 = 5000;
 
+/// Backstop for mask images uploaded to WebRender. Entries are also deleted
+/// when the cache is cleared. The cap only drops the oldest keys so a page
+/// that keeps generating new mask sizes cannot grow without bound.
+const MAX_ALPHA_MASK_IMAGES: usize = 256;
+
 //
 // TODO(gw): Remaining work on image cache:
 //     * Make use of the prefetch support in various parts of the code.
@@ -532,6 +537,31 @@ struct ImageCacheStore {
     /// Main struct to handle the cache of `WebRenderImageKey` and
     /// images that do not have a key yet.
     key_cache: KeyCache,
+
+    /// Mask images uploaded for `mask-image`. The source [`Arc`] stays in the
+    /// entry so its address cannot be recycled while the key is cached.
+    alpha_mask_images: FxHashMap<AlphaMaskCacheKey, AlphaMaskEntry>,
+    /// Insertion order of [`Self::alpha_mask_images`], oldest first.
+    alpha_mask_order: VecDeque<AlphaMaskCacheKey>,
+}
+
+/// Identity of a cached mask image: source allocation, frame start, size, and
+/// whether coverage came from luminance rather than alpha.
+#[derive(Clone, Copy, Eq, Hash, MallocSizeOf, PartialEq)]
+struct AlphaMaskCacheKey {
+    ptr: usize,
+    start: usize,
+    width: i32,
+    height: i32,
+    luminance: u8,
+}
+
+#[derive(MallocSizeOf)]
+struct AlphaMaskEntry {
+    /// Pins the source allocation for as long as this entry exists.
+    #[conditional_malloc_size_of]
+    bytes: Arc<Vec<u8>>,
+    image_key: WebRenderImageKey,
 }
 
 impl ImageCacheStore {
@@ -869,13 +899,14 @@ impl ImageCacheFactory for ImageCacheFactoryImpl {
                 webview_id,
                 key_cache: KeyCache::new(),
                 svg_rasterization_task_store: SvgRasterizationTaskStore::default(),
+                alpha_mask_images: FxHashMap::default(),
+                alpha_mask_order: VecDeque::new(),
             })),
             svg_id_image_id_map: Arc::new(Mutex::new(FxHashMap::default())),
             broken_image_icon_data: self.broken_image_icon_data.clone(),
             thread_pool: self.thread_pool.clone(),
             usvg_options: Arc::new(opt),
             usvg_font_resolver: font_resolver.clone(),
-            alpha_mask_images: Mutex::new(FxHashMap::default()),
         })
     }
 }
@@ -896,8 +927,6 @@ pub struct ImageCacheImpl {
     ///
     /// This is only used inside `usvg::Options` but is here so we can measure it.
     usvg_font_resolver: Arc<dyn FontResolver>,
-    /// White-alpha copies of raster images, keyed by the source allocation and size.
-    alpha_mask_images: Mutex<FxHashMap<(usize, i32, i32), WebRenderImageKey>>,
 }
 
 impl ImageCache for ImageCacheImpl {
@@ -1383,23 +1412,40 @@ impl ImageCache for ImageCacheImpl {
     fn alpha_mask_image_key(
         &self,
         bytes: &Arc<Vec<u8>>,
+        byte_range: std::ops::Range<usize>,
         width: i32,
         height: i32,
+        luminance: bool,
     ) -> Option<WebRenderImageKey> {
-        if width <= 0 || height <= 0 || bytes.len() != width as usize * height as usize * 4 {
+        let Some(pixels) = bytes.get(byte_range.clone()) else {
+            return None;
+        };
+        if width <= 0 || height <= 0 || pixels.len() != width as usize * height as usize * 4 {
             return None;
         }
-        let cache_key = (Arc::as_ptr(bytes) as usize, width, height);
-        if let Some(image_key) = self.alpha_mask_images.lock().get(&cache_key).copied() {
+        let cache_key = AlphaMaskCacheKey {
+            ptr: Arc::as_ptr(bytes) as usize,
+            start: byte_range.start,
+            width,
+            height,
+            luminance: u8::from(luminance),
+        };
+        if let Some(image_key) = self
+            .store
+            .lock()
+            .alpha_mask_images
+            .get(&cache_key)
+            .map(|entry| entry.image_key)
+        {
             return Some(image_key);
         }
 
-        let mut white = Vec::with_capacity(bytes.len());
-        for pixel in bytes.as_chunks::<4>().0 {
-            let alpha = pixel[3];
-            white.extend_from_slice(&[alpha, alpha, alpha, alpha]);
+        let mut coverage = Vec::with_capacity(pixels.len());
+        for pixel in pixels.as_chunks::<4>().0 {
+            let value = mask_coverage(*pixel, luminance);
+            coverage.extend_from_slice(&[value, value, value, value]);
         }
-        if white.len() != bytes.len() {
+        if coverage.len() != pixels.len() {
             return None;
         }
 
@@ -1411,14 +1457,23 @@ impl ImageCache for ImageCacheImpl {
             offset: 0,
             flags: ImageDescriptorFlags::empty(),
         };
-        self.store.lock().paint_api.add_image(
+        let mut store = self.store.lock();
+        if let Some(entry) = store.alpha_mask_images.get(&cache_key) {
+            return Some(entry.image_key);
+        }
+        store.paint_api.add_image(
             image_key,
             descriptor,
-            SerializableImageData::Raw(GenericSharedMemory::from_vec(white)),
+            SerializableImageData::Raw(GenericSharedMemory::from_vec(coverage)),
             false,
         );
-        self.alpha_mask_images.lock().insert(cache_key, image_key);
-        Some(image_key)
+        Some(store.insert_alpha_mask(
+            cache_key,
+            AlphaMaskEntry {
+                bytes: bytes.clone(),
+                image_key,
+            },
+        ))
     }
 
     fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>> {
@@ -1464,6 +1519,11 @@ impl ImageCacheStore {
                     .and_then(|icon| icon.id)
                     .map(ImageUpdate::DeleteImage),
             )
+            .chain(
+                self.alpha_mask_images
+                    .values()
+                    .map(|entry| ImageUpdate::DeleteImage(entry.image_key)),
+            )
             .collect();
         if !deletions.is_empty() {
             self.paint_api
@@ -1478,8 +1538,72 @@ impl ImageCacheStore {
         self.svg_rasterization_task_store = Default::default();
         self.pending_loads = Default::default();
         self.key_cache = Default::default();
+        self.alpha_mask_images = Default::default();
+        self.alpha_mask_order = Default::default();
 
         let _ = self.broken_image_icon_image.take();
+    }
+
+    fn insert_alpha_mask(
+        &mut self,
+        key: AlphaMaskCacheKey,
+        entry: AlphaMaskEntry,
+    ) -> WebRenderImageKey {
+        if let Some(existing) = self.alpha_mask_images.get(&key) {
+            let existing_key = existing.image_key;
+            self.paint_api.update_images(
+                self.webview_id.into(),
+                vec![ImageUpdate::DeleteImage(entry.image_key)].into(),
+            );
+            return existing_key;
+        }
+        while self.alpha_mask_order.len() >= MAX_ALPHA_MASK_IMAGES {
+            let Some(old) = self.alpha_mask_order.pop_front() else {
+                break;
+            };
+            let Some(old_entry) = self.alpha_mask_images.remove(&old) else {
+                continue;
+            };
+            self.paint_api.update_images(
+                self.webview_id.into(),
+                vec![ImageUpdate::DeleteImage(old_entry.image_key)].into(),
+            );
+        }
+        let image_key = entry.image_key;
+        self.alpha_mask_order.push_back(key);
+        self.alpha_mask_images.insert(key, entry);
+        image_key
+    }
+}
+
+/// Coverage of one premultiplied RGBA8 pixel. Luminance uses the CSS masking
+/// coefficients on the premultiplied channels, so opaque black is zero.
+fn mask_coverage(pixel: [u8; 4], luminance: bool) -> u8 {
+    if !luminance {
+        return pixel[3];
+    }
+    let r = pixel[0] as f32;
+    let g = pixel[1] as f32;
+    let b = pixel[2] as f32;
+    (0.2126 * r + 0.7152 * g + 0.0722 * b)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+#[cfg(test)]
+mod alpha_mask_tests {
+    use super::mask_coverage;
+
+    #[test]
+    fn alpha_mode_uses_source_alpha() {
+        assert_eq!(mask_coverage([0, 0, 0, 255], false), 255);
+        assert_eq!(mask_coverage([255, 255, 255, 0], false), 0);
+    }
+
+    #[test]
+    fn luminance_mode_hides_opaque_black() {
+        assert_eq!(mask_coverage([0, 0, 0, 255], true), 0);
+        assert_eq!(mask_coverage([255, 255, 255, 255], true), 255);
     }
 }
 

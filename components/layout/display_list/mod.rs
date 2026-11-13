@@ -1846,16 +1846,36 @@ impl<'a> BuilderForBoxFragment<'a> {
                         .wr()
                         .push_rect(&common, bounds, rgba(background_color));
                 },
-                MaskImage::Pending => {},
-                MaskImage::Ready { image_key, rect } => {
-                    builder.wr().push_image(
-                        &common,
-                        rect,
-                        wr::ImageRendering::Auto,
-                        wr::AlphaType::PremultipliedAlpha,
-                        image_key,
-                        rgba(background_color),
-                    );
+                MaskImage::Pending | MaskImage::Transparent => {},
+                MaskImage::Ready {
+                    image_key,
+                    bounds: mask_bounds,
+                    tile_size,
+                    tile_spacing,
+                    repeat,
+                } => {
+                    let color = rgba(background_color);
+                    if repeat {
+                        builder.wr().push_repeating_image(
+                            &common,
+                            mask_bounds,
+                            tile_size,
+                            tile_spacing,
+                            wr::ImageRendering::Auto,
+                            wr::AlphaType::PremultipliedAlpha,
+                            image_key,
+                            color,
+                        );
+                    } else {
+                        builder.wr().push_image(
+                            &common,
+                            mask_bounds,
+                            wr::ImageRendering::Auto,
+                            wr::AlphaType::PremultipliedAlpha,
+                            image_key,
+                            color,
+                        );
+                    }
                 },
             }
 

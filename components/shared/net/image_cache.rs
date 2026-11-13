@@ -276,13 +276,17 @@ pub trait ImageCache: Sync + Send {
     /// allocate space for this icon and upload it to WebRender.
     fn get_broken_image_icon(&self) -> Option<Arc<RasterImage>>;
 
-    /// Upload a copy of a premultiplied RGBA image whose RGB is replaced by its
-    /// alpha, so a display item color can tint it. Used for `mask-image`.
+    /// Upload a copy of one premultiplied RGBA frame whose coverage is either
+    /// its alpha or its luminance, so a display item color can tint it.
+    /// Used for `mask-image`. `byte_range` selects a single frame inside
+    /// `bytes` (animated images concatenate their frames).
     fn alpha_mask_image_key(
         &self,
         bytes: &Arc<Vec<u8>>,
+        byte_range: std::ops::Range<usize>,
         width: i32,
         height: i32,
+        luminance: bool,
     ) -> Option<webrender_api::ImageKey>;
 
     /// Add a new listener for the given pending image id. If the image is already present,

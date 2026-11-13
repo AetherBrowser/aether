@@ -8,27 +8,35 @@
 //! rasterized to an alpha image and drawn with the background color instead.
 
 use app_units::Au;
-use euclid::Size2D;
+use euclid::{Size2D, Vector2D};
 use net_traits::image_cache::Image as CachedImage;
 use pixels::PixelFormat;
-use style::values::computed::LengthPercentage;
+use style::values::computed::MaskMode;
 use style::values::computed::background::BackgroundSize;
 use style::values::computed::image::Image;
-use style::values::specified::background::BackgroundRepeatKeyword;
+use style::values::specified::background::BackgroundRepeat as RepeatXY;
 use webrender_api::ImageKey;
 use webrender_api::units::{DeviceIntSize, LayoutRect, LayoutSize};
 
-use crate::context::ResolvedImage;
+use crate::context::{ResolveImageError, ResolvedImage};
 use crate::display_list::DisplayListBuilder;
-use crate::display_list::background::get_cyclic;
+use crate::display_list::background::{get_cyclic, layout_1d};
 use crate::replaced::NaturalSizes;
 
 pub(super) enum MaskImage {
+    /// No mask layer. The background color is painted as a solid rectangle.
     None,
+    /// A mask image is specified but not decoded yet. Skip the color so it
+    /// does not flash unmasked.
     Pending,
+    /// The mask covers nothing (for example `mask-size: 0 0`). Skip the color.
+    Transparent,
     Ready {
         image_key: ImageKey,
-        rect: LayoutRect,
+        bounds: LayoutRect,
+        tile_size: LayoutSize,
+        tile_spacing: LayoutSize,
+        repeat: bool,
     },
 }
 
@@ -49,14 +57,18 @@ impl DisplayListBuilder<'_> {
             return MaskImage::None;
         };
         let image = &svg.mask_image.0[layer_index];
-        let Ok(ResolvedImage::Image { image, size, .. }) =
-            self.image_resolver.resolve_image(node, image)
-        else {
-            return MaskImage::Pending;
+        let (image, size) = match self.image_resolver.resolve_image(node, image) {
+            Ok(ResolvedImage::Image { image, size, .. }) => (image, size),
+            Err(ResolveImageError::ImagePending | ResolveImageError::OnlyMetadata) => {
+                return MaskImage::Pending;
+            },
+            // Gradients, solid colors, and failed loads are not rasterized.
+            // Leave the background color unmasked instead of dropping it.
+            _ => return MaskImage::None,
         };
 
         let natural = NaturalSizes::from_width_and_height(size.width, size.height);
-        let Some(tile_size) = mask_tile_size(
+        let Some(mut tile_size) = mask_tile_size(
             get_cyclic(&svg.mask_size.0, layer_index),
             border_rect.size(),
             natural,
@@ -64,32 +76,37 @@ impl DisplayListBuilder<'_> {
             return MaskImage::Pending;
         };
         if tile_size.width <= 0.0 || tile_size.height <= 0.0 {
-            return MaskImage::None;
+            return MaskImage::Transparent;
         }
 
-        let repeat = get_cyclic(&svg.mask_repeat.0, layer_index);
-        let mask_rect = if repeat.0 == BackgroundRepeatKeyword::NoRepeat &&
-            repeat.1 == BackgroundRepeatKeyword::NoRepeat
-        {
-            let origin_x = mask_position(
-                get_cyclic(&svg.mask_position_x.0, layer_index),
-                border_rect.min.x,
-                border_rect.width(),
-                tile_size.width,
-            );
-            let origin_y = mask_position(
-                get_cyclic(&svg.mask_position_y.0, layer_index),
-                border_rect.min.y,
-                border_rect.height(),
-                tile_size.height,
-            );
-            LayoutRect::from_origin_and_size(euclid::point2(origin_x, origin_y), tile_size)
-        } else {
-            border_rect
-        };
+        let RepeatXY(repeat_x, repeat_y) = *get_cyclic(&svg.mask_repeat.0, layer_index);
+        let result_x = layout_1d(
+            &mut tile_size.width,
+            repeat_x,
+            get_cyclic(&svg.mask_position_x.0, layer_index),
+            0.0,
+            border_rect.width(),
+            border_rect.width(),
+        );
+        let result_y = layout_1d(
+            &mut tile_size.height,
+            repeat_y,
+            get_cyclic(&svg.mask_position_y.0, layer_index),
+            0.0,
+            border_rect.height(),
+            border_rect.height(),
+        );
+        if tile_size.width <= 0.0 || tile_size.height <= 0.0 {
+            return MaskImage::Transparent;
+        }
+        let bounds = LayoutRect::from_origin_and_size(
+            border_rect.min + Vector2D::new(result_x.bounds_origin, result_y.bounds_origin),
+            Size2D::new(result_x.bounds_size, result_y.bounds_size),
+        );
+        let tile_spacing = LayoutSize::new(result_x.tile_spacing, result_y.tile_spacing);
 
         let scale = self.device_pixel_ratio.get();
-        let raster_size = Size2D::new(mask_rect.width() * scale, mask_rect.height() * scale)
+        let raster_size = Size2D::new(tile_size.width * scale, tile_size.height * scale)
             .to_i32()
             .max(DeviceIntSize::new(1, 1));
         let raster = match &image {
@@ -112,16 +129,37 @@ impl DisplayListBuilder<'_> {
         if raster.format != PixelFormat::RGBA8 {
             return MaskImage::Pending;
         }
+        let (byte_range, width, height) = match raster.frames.first() {
+            Some(frame) => (
+                frame.byte_range.clone(),
+                frame.width as i32,
+                frame.height as i32,
+            ),
+            None => (
+                0..raster.bytes.len(),
+                raster.metadata.width as i32,
+                raster.metadata.height as i32,
+            ),
+        };
+        let luminance = matches!(
+            get_cyclic(&svg.mask_mode.0, layer_index),
+            MaskMode::Luminance
+        );
         let Some(image_key) = self.image_resolver.image_cache.alpha_mask_image_key(
             &raster.bytes,
-            raster.metadata.width as i32,
-            raster.metadata.height as i32,
+            byte_range,
+            width,
+            height,
+            luminance,
         ) else {
             return MaskImage::Pending;
         };
         MaskImage::Ready {
             image_key,
-            rect: mask_rect,
+            bounds,
+            tile_size,
+            tile_spacing,
+            repeat: result_x.repeat || result_y.repeat,
         }
     }
 }
@@ -191,11 +229,4 @@ fn mask_tile_size(
         },
     };
     Some(tile)
-}
-
-fn mask_position(position: &LengthPercentage, area_origin: f32, area_size: f32, tile: f32) -> f32 {
-    area_origin +
-        position
-            .to_used_value(Au::from_f32_px(area_size - tile))
-            .to_f32_px()
 }
