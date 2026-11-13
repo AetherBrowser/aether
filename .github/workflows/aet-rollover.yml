@@ -1,7 +1,8 @@
 name: Move unfinished items to next iteration
 on:
   schedule:
-    - cron: '0 0 * * 1' # Each monday at 0 utc
+    # Run this job every Monday at 00:01.
+    - cron: '0 1 * * 1'
   workflow_dispatch:
 
 jobs:
