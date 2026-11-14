@@ -927,7 +927,7 @@ impl UnbreakableSegmentUnderConstruction {
 }
 
 bitflags! {
-    struct InlineContainerStateFlags: u8 {
+    pub(super) struct InlineContainerStateFlags: u8 {
         const CREATE_STRUT = 0b0001;
         const IS_SINGLE_LINE_TEXT_INPUT = 0b0010;
     }
@@ -1401,7 +1401,7 @@ impl InlineFormattingContextLayout<'_> {
         let physical_line_rect = LogicalRect {
             start_corner,
             size: LogicalVec2 {
-                inline: containing_block.size.inline,
+                inline: containing_block.inline_size(),
                 block: effective_block_advance.resolve(),
             },
         }
@@ -1418,7 +1418,7 @@ impl InlineFormattingContextLayout<'_> {
     fn available_line_space(&self) -> Au {
         match self.current_line.placement_among_floats.get() {
             Some(placement_among_floats) => placement_among_floats.size.inline,
-            None => self.containing_block().size.inline,
+            None => self.containing_block().inline_size(),
         }
     }
 
@@ -1571,7 +1571,7 @@ impl InlineFormattingContextLayout<'_> {
 
         let available_inline_size = match self.current_line.placement_among_floats.get() {
             Some(placement_among_floats) => placement_among_floats.size.inline,
-            None => containing_block.size.inline,
+            None => containing_block.inline_size(),
         } - potential_line_length;
 
         // If this float doesn't fit on the current line or a previous float didn't fit on
@@ -1655,7 +1655,7 @@ impl InlineFormattingContextLayout<'_> {
                 .size
         } else {
             LogicalVec2 {
-                inline: containing_block.size.inline,
+                inline: containing_block.inline_size(),
                 block: MAX_AU,
             }
         };
@@ -1688,7 +1688,7 @@ impl InlineFormattingContextLayout<'_> {
 
         // If the potential line is larger than the containing block we do not even need to consider
         // floats. We definitely have to do a linebreak.
-        if potential_line_size.inline > containing_block.size.inline {
+        if potential_line_size.inline > containing_block.inline_size() {
             return true;
         }
 
@@ -2275,7 +2275,7 @@ impl InlineFormattingContext {
             .get_inherited_text()
             .text_indent
             .length
-            .to_used_value(containing_block.size.inline.unwrap_or_default())
+            .to_used_value(containing_block.size.inline_size.unwrap_or_default())
     }
 
     pub(super) fn layout(
@@ -2967,7 +2967,7 @@ fn place_pending_floats(ifc: &mut InlineFormattingContextLayout, line_items: &[L
     }
 }
 
-fn line_height(
+pub(super) fn line_height(
     parent_style: &ComputedValues,
     font_metrics: &FontMetrics,
     flags: &InlineContainerStateFlags,
