@@ -19,7 +19,7 @@ isolate_cpu_command = ["true"]
 "default" = []
 
 [sites]
-"servo.org" = "https://servo.org/"
+"aetherbrowser.org" = "https://aetherbrowser.org/"
 
 [engines]
 "servo" = { type = "Servo", path = "@SERVO_BINARY@" }
