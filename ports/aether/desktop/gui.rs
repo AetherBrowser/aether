@@ -56,13 +56,13 @@ use winit::window::Window;
 
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
-use crate::desktop::webview_widget::WebViewWidget;
 use crate::desktop::icons::{
     LOCATION_BUTTON_SIZE, NAVIGATION_CONTROL_SIZE, TOOLBAR_BUTTON_CORNER_RADIUS, ToolbarIcon,
     ToolbarIconCache,
 };
 use crate::desktop::menu::AppMenu;
 use crate::desktop::shortcuts::BrowserAction;
+use crate::desktop::webview_widget::WebViewWidget;
 use crate::home::{AETHER_HOME_URL, BLANK_URL};
 use crate::parser::complete_com_domain;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
