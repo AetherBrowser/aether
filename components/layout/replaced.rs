@@ -787,6 +787,7 @@ impl ComputeInlineContentSizes for ReplacedContents {
         _: &LayoutContext,
         constraint_space: &ConstraintSpace,
     ) -> InlineContentSizesResult {
+        debug_assert!(!constraint_space.has_quirky_block_size.0);
         let inline_content_size = self.content_size(
             LogicalAxis::Inline,
             constraint_space.preferred_aspect_ratio,
