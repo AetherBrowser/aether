@@ -139,7 +139,7 @@ impl HeadedWindow {
 
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            let icon_bytes = include_bytes!("../../../resources/aether_64.png");
+            let icon_bytes = include_bytes!("../../../resources/servo_64.png");
             winit_window.set_window_icon(Some(load_icon(icon_bytes)));
         }
 
@@ -418,8 +418,8 @@ impl HeadedWindow {
                 }
             })
             .shortcut(CMD_OR_CONTROL, 'T', || {
-                let url = Url::parse("about:newtab")
-                    .expect("Should be able to unconditionally parse 'about:newtab' as URL");
+                let url = Url::parse("servo:newtab")
+                    .expect("Should be able to unconditionally parse 'servo:newtab' as URL");
                 window.create_and_activate_toplevel_webview(
                     state.clone(),
                     TopLevelWebViewCreationRequest::WithUrl(url),
