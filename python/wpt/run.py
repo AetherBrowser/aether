@@ -7,8 +7,9 @@ import dataclasses
 import json
 import multiprocessing
 import os
-import subprocess
 import sys
+import urllib.error
+import urllib.request
 import tempfile
 
 from typing import List, cast, Any
@@ -25,15 +26,9 @@ from wptrunner import wptrunner
 
 
 CERTS_PATH = os.path.join(WPT_TOOLS_PATH, "certs")
-INTERMITTENT_ISSUES_GRAPHQL = """
-query($endCursor: String) {
-  search(query: "repo:servo/servo is:issue is:open label:I-intermittent -label:C-disabled",
-         type: ISSUE, first: 100, after: $endCursor) {
-    pageInfo { hasNextPage endCursor }
-    nodes { ... on Issue { number title } }
-  }
-}
-"""
+# Search API results are empty for a workflow GITHUB_TOKEN outside its own
+# repository. Listing issues works for public repositories and for this one.
+INTERMITTENT_ISSUE_REPOS = ("servo/servo", "AetherBrowser/aether")
 
 
 def set_if_none(args: dict, key: str, value: bool | int | str) -> None:
@@ -200,36 +195,78 @@ def run_tests(default_binary_path: str, multiprocess: bool, **kwargs: Any) -> in
     return return_value
 
 
-def get_intermittent_issues_from_github(gh_token: str | None) -> list[dict]:
-    environment = dict(os.environ)
-    if gh_token:
-        environment["GH_TOKEN"] = gh_token
+def _fetch_open_intermittent_issues(repo: str, token: str | None) -> list[dict]:
+    """List open I-intermittent issues, skipping ones also labeled C-disabled.
 
-    try:
-        output = subprocess.check_output(
-            [
-                "gh",
-                "api",
-                "graphql",
-                "--paginate",
-                "--jq",
-                ".data.search.nodes[]",
-                "-f",
-                f"query={INTERMITTENT_ISSUES_GRAPHQL}",
-            ],
-            env=environment,
-            text=True,
+    Uses the issues list API directly. `gh api --jq` is not reliable across the
+    `gh` versions on CI runners: some apply the filter to each issue object and
+    then return an empty list.
+    """
+    url: str | None = (
+        f"https://api.github.com/repos/{repo}/issues?state=open&labels=I-intermittent&per_page=100"
+    )
+    issues: list[dict] = []
+    while url:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "aether-wpt",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
         )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        print("Filtering intermittents requires having `gh` installed and authenticated.")
-        # Raise this exception instead of eating it because this will surface
-        # intermittent filtering failures on the CI more quickly.
-        raise
-    return [json.loads(line) for line in output.splitlines()]
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                page = json.load(response)
+                link = response.headers.get("Link")
+        except urllib.error.HTTPError as error:
+            # A workflow token cannot read another repository. Retry public reads
+            # without it. A failure on our own repository still fails the run.
+            if token and error.code in (401, 403, 404):
+                print(f"Issue list for {repo} rejected the workflow token ({error.code}); retrying anonymously.")
+                return _fetch_open_intermittent_issues(repo, None)
+            raise
+        if not isinstance(page, list):
+            raise RuntimeError(f"Unexpected issue list response for {repo}: {page}")
+        # The query already selects I-intermittent. A workflow token can return
+        # those issues with an empty labels array, so do not require the label
+        # to be present in the payload. Drop C-disabled only when it is visible.
+        for issue in page:
+            label_names = {
+                label.get("name") for label in issue.get("labels", []) if isinstance(label, dict)
+            }
+            if "C-disabled" in label_names:
+                continue
+            issues.append({"number": issue["number"], "title": issue["title"]})
+        url = None
+        if link:
+            for part in link.split(","):
+                section, _, rel = part.partition(";")
+                if 'rel="next"' in rel:
+                    url = section.strip().lstrip("<").rstrip(">")
+    return issues
+
+
+def get_intermittent_issues_from_github(gh_token: str | None) -> list[dict]:
+    issues: list[dict] = []
+    for repo in INTERMITTENT_ISSUE_REPOS:
+        repo_issues = _fetch_open_intermittent_issues(repo, gh_token)
+        # servo/servo is public and always has open intermittent issues. A
+        # workflow token can answer 200 with an empty list; read it anonymously.
+        if repo == "servo/servo" and not repo_issues and gh_token:
+            print(f"Issue list for {repo} was empty with the workflow token; retrying anonymously.", flush=True)
+            repo_issues = _fetch_open_intermittent_issues(repo, None)
+        print(f"Loaded {len(repo_issues)} open intermittent issues from {repo}", flush=True)
+        if repo == "servo/servo" and not repo_issues:
+            raise RuntimeError(f"No open intermittent issues loaded from {repo}")
+        issues.extend(repo_issues)
+    return issues
 
 
 def filter_intermittents(unexpected_results: List[UnexpectedResult], output_path: str, gh_token: str | None) -> bool:
-    print(f"Filtering {len(unexpected_results)} unexpected results for known intermittents")
+    print(f"Filtering {len(unexpected_results)} unexpected results for known intermittents", flush=True)
     known_intermittents = get_intermittent_issues_from_github(gh_token)
     if known_intermittents:
         for result in unexpected_results:
