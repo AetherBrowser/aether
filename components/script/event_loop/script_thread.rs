@@ -81,6 +81,8 @@ use profile_traits::tab_stats::{
 };
 use profile_traits::time::ProfilerCategory;
 use profile_traits::time_profile;
+use rand::TryRng;
+use rand::rngs::SysRng;
 use rustc_hash::{FxHashMap, FxHashSet};
 use script_bindings::cell::DomRefCell;
 use script_traits::{
@@ -1351,7 +1353,7 @@ impl ScriptThread {
             }
 
             // > 23. For each doc of docs, process top layer removals given doc.
-            document.process_top_layer_removals(cx);
+            document.overlay_handler().process_top_layer_removals(cx);
         }
 
         let should_generate_frame = !painters_generating_frames.is_empty();
@@ -2919,7 +2921,7 @@ impl ScriptThread {
         let document = self.documents.borrow().find_document(id);
         if let Some(document) = document {
             let mut realm = enter_auto_realm(cx, &*document);
-            document.exit_fullscreen(&mut realm);
+            document.overlay_handler().exit_fullscreen(&mut realm);
         }
     }
 
@@ -3621,6 +3623,15 @@ impl ScriptThread {
             })
             .unwrap_or_default();
 
+        let mut random_bytes = [0u8; 16];
+        SysRng
+            .try_fill_bytes(&mut random_bytes)
+            .expect("Failed to generate random hasher key");
+        let document_random_hasher_key = (
+            u64::from_ne_bytes(random_bytes[..8].try_into().unwrap()),
+            u64::from_ne_bytes(random_bytes[8..].try_into().unwrap()),
+        );
+
         let layout_config = LayoutConfig {
             id: incomplete.pipeline_id,
             webview_id,
@@ -3635,6 +3646,7 @@ impl ScriptThread {
             user_stylesheets,
             theme: incomplete.webview_state.theme.get(),
             embedder_chan: self.senders.pipeline_to_embedder_sender.clone(),
+            document_random_hasher_key,
         };
 
         // Create the window and document objects.
@@ -3701,6 +3713,9 @@ impl ScriptThread {
                     #[cfg(feature = "webgpu")]
                     self.gpu_id_hub.clone(),
                     incomplete.load_data.inherited_secure_context,
+                    incomplete
+                        .load_data
+                        .inherited_upgrade_insecure_navigations_set,
                     self.this.clone(),
                 )
             },
