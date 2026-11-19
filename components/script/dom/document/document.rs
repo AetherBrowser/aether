@@ -1297,25 +1297,16 @@ impl Document {
 
     /// <https://html.spec.whatwg.org/multipage/#fallback-base-url>
     pub(crate) fn fallback_base_url(&self) -> ServoUrl {
+        // Step 1. If document's URL matches about:blank or matches about:srcdoc,
+        // and document's about base URL is non-null, then return document's about base URL.
         let document_url = self.url();
-        // Step 1: If document is an iframe srcdoc document:
-        if document_url.as_str() == "about:srcdoc" {
-            // Step 1.1: Assert: document's about base URL is non-null.
-            // Step 1.2: Return document's about base URL.
-            return self
-                .about_base_url()
-                .expect("about:srcdoc page should always have an about base URL");
-        }
-
-        // Step 2: If document's URL matches about:blank and document's about base URL is
-        // non-null, then return document's about base URL.
-        if document_url.matches_about_blank() &&
+        if (document_url.matches_about_blank() || document_url.matches_about_srcdoc()) &&
             let Some(about_base_url) = self.about_base_url()
         {
             return about_base_url;
         }
 
-        // Step 3: Return document's URL.
+        // Step 2. Return document's URL.
         document_url
     }
 
@@ -5671,6 +5662,7 @@ impl Document {
         Some(top_level_site)
     }
 
+    #[cfg(feature = "devtools")]
     pub(crate) fn highlight_dom_node(&self, node: Option<&Node>) {
         self.highlighted_dom_node.set(node);
         self.add_restyle_reason(RestyleReason::HighlightedDOMNodeChanged);
@@ -5827,6 +5819,7 @@ impl Document {
         self.theme_override.get()
     }
 
+    #[cfg(feature = "devtools")]
     pub(crate) fn set_theme_override(&self, new_theme: Option<Theme>) {
         self.theme_override.set(new_theme);
         self.window.refresh_theme();
