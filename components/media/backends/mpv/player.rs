@@ -11,6 +11,7 @@ use log::warn;
 use malloc_size_of_derive::MallocSizeOf;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_media::MediaInstanceError;
+use servo_media_player::video::VideoFrameRenderer;
 use servo_media_player::{Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg};
 use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
@@ -18,6 +19,7 @@ use servo_media_traits::{ClientContextId, MediaInstance};
 use crate::Instances;
 use crate::events::EventThread;
 use crate::handle::{MpvError, MpvHandle, Node};
+use crate::render::{RenderThread, VideoSize};
 use crate::stream::{BridgeObserver, SeekReply, StreamBridge};
 
 const DEFAULT_PAUSED: bool = true;
@@ -63,6 +65,8 @@ pub struct MpvPlayer {
     muted: Cell<bool>,
     /// The requested HTML volume, applied to libmpv once its instance exists.
     volume: Cell<f64>,
+    /// Where the frames go: only `<video>` elements have one, and only they decode video.
+    video_renderer: Option<Weak<Mutex<dyn VideoFrameRenderer>>>,
 }
 
 impl MpvPlayer {
@@ -72,6 +76,7 @@ impl MpvPlayer {
         instances: Weak<Mutex<Instances>>,
         options: Arc<[(&'static str, &'static str)]>,
         sender: GenericCallback<PlayerEvent>,
+        video_renderer: Option<Weak<Mutex<dyn VideoFrameRenderer>>>,
     ) -> MpvPlayer {
         // Servo keeps what it fetches until the player asks for it with `NeedData` (its
         // `BufferedDataSource` starts locked), as GStreamer's appsrc does when it starts.
@@ -91,6 +96,7 @@ impl MpvPlayer {
             resume_after_suspend: Cell::new(false),
             muted: Cell::new(DEFAULT_MUTED),
             volume: Cell::new(DEFAULT_VOLUME),
+            video_renderer,
         }
     }
 
@@ -99,7 +105,12 @@ impl MpvPlayer {
         if let Some(handle) = self.handle.get() {
             return Ok(handle);
         }
-        let handle = Arc::new(MpvHandle::new(&self.options).map_err(backend_error)?);
+        let mut options = self.options.to_vec();
+        if self.video_renderer.is_some() {
+            // Overrides `vid=no`: libmpv applies the options in order.
+            options.push(("vid", "auto"));
+        }
+        let handle = Arc::new(MpvHandle::new(&options).map_err(backend_error)?);
         if self.muted.get() != DEFAULT_MUTED {
             handle
                 .set_flag("mute", self.muted.get())
@@ -113,8 +124,23 @@ impl MpvPlayer {
         handle
             .add_stream_protocol(self.bridge.clone())
             .map_err(backend_error)?;
+        // Only `<video>` elements get a renderer. Its render context must exist before the
+        // media is loaded, which happens on the first `push_data`.
+        let render = match &self.video_renderer {
+            Some(renderer) => Some(
+                RenderThread::spawn(
+                    handle.clone(),
+                    Arc::new(VideoSize::default()),
+                    renderer.clone(),
+                    self.sender.clone(),
+                )
+                .map_err(backend_error)?,
+            ),
+            None => None,
+        };
         let events = EventThread::spawn(&handle, self.sender.clone()).map_err(backend_error)?;
         Ok(self.handle.get_or_init(|| Instance {
+            _render: render,
             _events: events,
             handle,
         }))
@@ -203,8 +229,11 @@ impl BridgeObserver for Notifier {
 
 /// A libmpv instance with the thread that forwards its events.
 struct Instance {
-    /// Only kept for its `Drop`. Declared first so the thread is stopped and joined
-    /// before `handle` is released, which destroys the instance.
+    /// Only kept for its `Drop`. Declared first so that rendering stops, and the render
+    /// context is freed, before anything else of the instance goes away.
+    _render: Option<RenderThread>,
+    /// Only kept for its `Drop`. Declared before `handle` so the thread is stopped and
+    /// joined before `handle` is released, which destroys the instance.
     _events: EventThread,
     handle: Arc<MpvHandle>,
 }
@@ -477,6 +506,7 @@ mod tests {
             Weak::new(),
             Arc::from(options),
             GenericCallback::new(|_| {}).unwrap(),
+            None,
         )
     }
 
@@ -495,6 +525,55 @@ mod tests {
     }
 
     /// A player whose events are received by the test.
+    /// Drops every frame.
+    struct NoFrames;
+
+    impl VideoFrameRenderer for NoFrames {
+        fn render(&mut self, _frame: servo_media_player::video::VideoFrame) {}
+    }
+
+    /// A player for a `<video>` element, whose renderer is kept alive by the returned `Arc`.
+    fn video_player() -> (MpvPlayer, Arc<Mutex<dyn VideoFrameRenderer>>) {
+        let renderer: Arc<Mutex<dyn VideoFrameRenderer>> = Arc::new(Mutex::new(NoFrames));
+        let player = MpvPlayer::new(
+            0,
+            ClientContextId::build(1, 1),
+            Weak::new(),
+            Arc::from(options()),
+            GenericCallback::new(|_| {}).unwrap(),
+            Some(Arc::downgrade(&renderer)),
+        );
+        (player, renderer)
+    }
+
+    /// Whether the instance of `player` already has a render context: render.h allows
+    /// only one per instance.
+    fn has_render_context(player: &MpvPlayer) -> bool {
+        player.handle().unwrap();
+        let handle = player.handle.get().unwrap().handle.clone();
+        crate::handle::RenderContext::new(handle, || {}).is_err()
+    }
+
+    #[test]
+    fn audio_players_do_not_decode_video() {
+        let player = player_with(&options());
+        assert!(!has_render_context(&player));
+        assert_eq!(
+            player.handle().unwrap().get_node("options/vid"),
+            Ok(Node::Flag(false))
+        );
+    }
+
+    #[test]
+    fn video_players_render_video() {
+        let (player, _renderer) = video_player();
+        assert!(has_render_context(&player));
+        assert_eq!(
+            player.handle().unwrap().get_node("options/vid"),
+            Ok(Node::String("auto".to_owned()))
+        );
+    }
+
     fn player_with_events() -> (MpvPlayer, GenericReceiver<PlayerEvent>) {
         player_with_events_and_options(&options())
     }
@@ -509,6 +588,7 @@ mod tests {
             Weak::new(),
             Arc::from(options),
             sender,
+            None,
         );
         (player, receiver)
     }

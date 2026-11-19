@@ -276,13 +276,6 @@ pub type mpv_stream_cb_open_ro_fn = Option<
 
 pub use render::*;
 
-#[cfg_attr(
-    not(all(test, has_libmpv)),
-    expect(
-        dead_code,
-        reason = "Used by the video render thread, which is not wired yet"
-    )
-)]
 mod render {
     use std::ffi::{CStr, c_int, c_void};
 
