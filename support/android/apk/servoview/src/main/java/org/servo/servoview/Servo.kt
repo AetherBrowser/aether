@@ -143,7 +143,7 @@ fun Servo(
                     }
 
                     true
-                }
+                },
     ) {
         var paused = false
 
