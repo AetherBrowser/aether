@@ -74,13 +74,13 @@ class SettingsActivity : ComponentActivity() {
                                         SettingsSection.Appearance -> R.string.settings_appearance
                                         SettingsSection.About -> R.string.settings_about
                                         null -> R.string.settings_title
-                                    }
-                                )
+                                    },
+                                ),
                             )
                         },
                         navigationIcon = {
                             IconButton(
-                                onClick = { if (section == null) finish() else section = null }
+                                onClick = { if (section == null) finish() else section = null },
                             ) {
                                 Icon(
                                     painterResource(R.drawable.arrow_back),
@@ -89,13 +89,13 @@ class SettingsActivity : ComponentActivity() {
                             }
                         },
                     )
-                }
+                },
             ) { innerPadding ->
                 Column(
                     modifier =
                         Modifier.padding(innerPadding)
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(rememberScrollState()),
                 ) {
                     when (section) {
                         null ->
@@ -443,7 +443,7 @@ private fun org.json.JSONArray?.toEngines(includeUrl: Boolean): List<SearchEngin
                     id = item.optString("id"),
                     name = item.optString("name"),
                     url = if (includeUrl) item.optString("url") else "",
-                )
+                ),
             )
         }
     }

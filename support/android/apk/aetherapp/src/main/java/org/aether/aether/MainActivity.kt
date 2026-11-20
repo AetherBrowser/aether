@@ -130,7 +130,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                         )
                         if (isRefreshing) {
                             CircularProgressIndicator(
-                                modifier = Modifier.padding(end = 10.dp).size(20.dp)
+                                modifier = Modifier.padding(end = 10.dp).size(20.dp),
                             )
                         }
                         Box {
@@ -138,7 +138,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 onClick = {
                                     menuPage = AppMenuPage.Root
                                     menuExpanded = true
-                                }
+                                },
                             ) {
                                 Icon(
                                     painterResource(R.drawable.menu),
@@ -191,7 +191,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                             )
                         }
                     }
-                }
+                },
             ) { innerPadding ->
                 Servo(
                     experimentalModeEnabled = experimentalModeEnabled,
@@ -256,7 +256,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     private fun onHistoryMenuItemClicked(
-        historyActivityResultLauncher: ActivityResultLauncher<Intent>
+        historyActivityResultLauncher: ActivityResultLauncher<Intent>,
     ) {
         historyActivityResultLauncher.launch(Intent(this, HistoryActivity::class.java))
     }
@@ -356,7 +356,7 @@ private fun AppMenu(
                     leading = {
                         Icon(
                             painterResource(
-                                if (isRefreshing) R.drawable.cancel else R.drawable.refresh
+                                if (isRefreshing) R.drawable.cancel else R.drawable.refresh,
                             ),
                             null,
                         )
