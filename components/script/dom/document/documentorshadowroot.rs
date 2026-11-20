@@ -167,6 +167,7 @@ impl DocumentOrShadowRoot {
     #[expect(unsafe_code)]
     pub(crate) fn element_from_point(
         &self,
+        cx: &mut JSContext,
         this: &Node,
         x: Finite<f64>,
         y: Finite<f64>,
@@ -188,7 +189,7 @@ impl DocumentOrShadowRoot {
         let flags = HitTestFlags::empty();
         let result = self
             .window
-            .elements_from_point_query(flags, LayoutPoint::new(x, y));
+            .elements_from_point_query(cx, flags, LayoutPoint::new(x, y));
         let Some(result) = result.items.first() else {
             return document_element;
         };
@@ -205,6 +206,7 @@ impl DocumentOrShadowRoot {
     #[expect(unsafe_code)]
     pub(crate) fn elements_from_point(
         &self,
+        cx: &mut JSContext,
         this: &Node,
         x: Finite<f64>,
         y: Finite<f64>,
@@ -232,7 +234,7 @@ impl DocumentOrShadowRoot {
         let flags = HitTestFlags::empty();
         let result = self
             .window
-            .elements_from_point_query(flags, LayoutPoint::new(x, y));
+            .elements_from_point_query(cx, flags, LayoutPoint::new(x, y));
 
         let mut elements: Vec<_> = result
             .items
@@ -454,5 +456,37 @@ impl DocumentOrShadowRoot {
         rooted_vec!(let mut incoming_stylesheets <- adopted_stylesheets.iter().cloned());
         incoming_stylesheets.remove(index as usize);
         Self::set_adopted_stylesheets(adopted_stylesheets, &incoming_stylesheets, owner)
+    }
+
+    /// <https://fullscreen.spec.whatwg.org/#dom-document-fullscreenelement>
+    pub(crate) fn get_fullscreen_element(
+        node: &Node,
+        fullscreen_element: Option<DomRoot<Element>>,
+    ) -> Option<DomRoot<Element>> {
+        // Step 1. If this is a shadow root and its host is not connected, then return null.
+        if let Some(shadow_root) = node.downcast::<ShadowRoot>() &&
+            !shadow_root.Host().is_connected()
+        {
+            return None;
+        }
+
+        // Step 2. Let candidate be the result of retargeting fullscreen element against this.
+        let retargeted = fullscreen_element?
+            .upcast::<EventTarget>()
+            .retarget(node.upcast());
+        // It's safe to unwrap downcasting to `Element` because `retarget` either returns `fullscreen_element` or a host of `fullscreen_element` and hosts are always elements.
+        let candidate = DomRoot::downcast::<Element>(retargeted).unwrap();
+
+        // Step 3. If candidate and this are in the same tree, then return candidate.
+        if *candidate
+            .upcast::<Node>()
+            .GetRootNode(&GetRootNodeOptions::empty()) ==
+            *node
+        {
+            return Some(candidate);
+        }
+
+        // Step 4. Return null.
+        None
     }
 }

@@ -18,7 +18,6 @@ use js::context::JSContext;
 use js::offthread::compile_to_stencil_offthread;
 use js::rust::HandleObject;
 use net_traits::blob_url_store::UrlWithBlobClaim;
-use net_traits::http_status::HttpStatus;
 use net_traits::request::{
     CorsSettings, Destination, ParserMetadata, Referrer, RequestBuilder, RequestId,
 };
@@ -349,26 +348,7 @@ impl FetchResponseListener for ClassicContext {
             metadata.into()
         });
 
-        let status = self
-            .metadata
-            .as_ref()
-            .map(|m| m.status.clone())
-            .unwrap_or_else(HttpStatus::new_error);
-
-        self.status = {
-            if status.is_error() {
-                Err(NetworkError::ResourceLoadError(
-                    "No http status code received".to_owned(),
-                ))
-            } else if status.is_success() {
-                Ok(())
-            } else {
-                Err(NetworkError::ResourceLoadError(format!(
-                    "HTTP error code {}",
-                    status.code()
-                )))
-            }
-        };
+        self.status = network_listener::check_response_status(self.metadata.as_ref());
     }
 
     fn process_response_chunk(
@@ -724,9 +704,8 @@ impl HTMLScriptElement {
 
         // Step 19. CSP.
         if !element.has_attribute(&local_name!("src")) &&
-            global
-                .get_csp_list()
-                .should_elements_inline_type_behavior_be_blocked(
+            global.call_on_csp_list(|csp_list| {
+                csp_list.should_elements_inline_type_behavior_be_blocked(
                     cx,
                     global,
                     element,
@@ -734,6 +713,7 @@ impl HTMLScriptElement {
                     &text,
                     self.line_number as u32,
                 )
+            })
         {
             warn!("Blocking inline script due to CSP");
             return;
@@ -793,7 +773,8 @@ impl HTMLScriptElement {
         // Step 26. Let referrer policy be the current state of el's referrerpolicy content attribute.
         let referrer_policy = referrer_policy_for_element(element);
 
-        // TODO: Step 27. Fetch priority.
+        // Step 27. Let fetch priority be the current state of el's fetchpriority content attribute.
+        let fetch_priority = self.FetchPriority().into();
 
         // Step 28. Let parser metadata be "parser-inserted" if el is parser-inserted,
         // and "not-parser-inserted" otherwise.
@@ -803,12 +784,19 @@ impl HTMLScriptElement {
             ParserMetadata::NotParserInserted
         };
 
-        // Step 29. Fetch options.
+        // Step 29. Let options be a script fetch options whose
+        // cryptographic nonce is cryptographic nonce,
+        // integrity metadata is integrity metadata,
+        // parser metadata is parser metadata,
+        // credentials mode is module script credentials mode,
+        // referrer policy is referrer policy,
+        // and fetch priority is fetch priority.
         let mut script_fetch_options = ScriptFetchOptions {
             cryptographic_nonce,
             integrity_metadata,
             parser_metadata,
             referrer_policy,
+            fetch_priority,
             credentials_mode: module_credentials_mode,
             render_blocking: false,
         };
@@ -1360,6 +1348,17 @@ impl HTMLScriptElementMethods<crate::DomTypeHolder> for HTMLScriptElement {
     make_getter!(HtmlFor, "for");
     // https://html.spec.whatwg.org/multipage/#dom-script-htmlfor
     make_setter!(SetHtmlFor, "for");
+
+    // <https://html.spec.whatwg.org/multipage/#attr-script-fetchpriority>
+    make_enumerated_getter!(
+        FetchPriority,
+        "fetchpriority",
+        "high" | "low" | "auto",
+        missing => "auto",
+        invalid => "auto"
+    );
+    // https://html.spec.whatwg.org/multipage/#attr-script-fetchpriority
+    make_setter!(SetFetchPriority, "fetchpriority");
 
     /// <https://html.spec.whatwg.org/multipage/#dom-script-crossorigin>
     fn GetCrossOrigin(&self) -> Option<DOMString> {

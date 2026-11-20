@@ -527,12 +527,11 @@ impl DisplayListBuilder<'_> {
                 }
 
                 // Create the filter pipeline.
-                let current_color = &style.get_inherited_text().color;
                 filters = effects
                     .filter
                     .0
                     .iter()
-                    .map(|filter| FilterToWebRender::to_webrender(filter, current_color))
+                    .map(|filter| FilterToWebRender::to_webrender(filter, &style))
                     .collect();
                 if effects.opacity != 1.0 {
                     filters.push(wr::FilterOp::Opacity(
@@ -889,16 +888,37 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
             return;
         }
 
-        let rect = fragment.base.rect().translate(state.origin.to_vector());
-        let common = self.common_properties(state, rect.to_webrender(), &style);
+        let rect = fragment
+            .base
+            .rect()
+            .translate(state.origin.to_vector())
+            .to_webrender();
+        let pipeline_id = fragment.pipeline_id.into();
+
+        // The scroll tree transforms are calculated for query coordinates (relative
+        // to the document origin), but display list coordinates are relative to the
+        // nearest reference frame. We are accounting for that here.
+        let reference_frame_origin = self
+            .paint_info
+            .scroll_tree
+            .reference_frame_offset(state.spatial_id);
+        self.paint_info.iframes.insert(
+            pipeline_id,
+            (
+                state.spatial_id,
+                rect.translate(reference_frame_origin.to_vector()),
+            ),
+        );
+
+        let common = self.common_properties(state, rect, &style);
         self.wr().push_iframe(
-            rect.to_webrender(),
+            rect,
             common.clip_rect,
             &wr::SpaceAndClipInfo {
                 spatial_id: common.spatial_id,
                 clip_chain_id: common.clip_chain_id,
             },
-            fragment.pipeline_id.into(),
+            pipeline_id,
             true,
         );
         // From <https://www.w3.org/TR/paint-timing/#mark-paint-timing>:
@@ -907,7 +927,7 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         // > contains just iframes will have first paint (due to the enclosing
         // > boxes of the paintable iframes) but no first contentful paint.
         self.paint_timing_handler
-            .check_if_paintable(rect.to_webrender(), state.accumulated_opacity);
+            .check_if_paintable(rect, state.accumulated_opacity);
     }
 
     fn visit_image(
@@ -1187,16 +1207,13 @@ impl Fragment {
         }
 
         let parent_style = fragment.style();
-        let color = parent_style.slow_clone_color();
         // Gecko gets the text bounding box based on the ink overflow bounds. Since
         // we don't need to calculate this yet (as we do not implement `contain:
         // paint`), we just need to make sure these boundaries are big enough to
         // contain the inked portion of the glyphs. We assume that the descent and
         // ascent are big enough and then just expand the advance-based boundaries by
         // twice the size of the biggest advance in the advance dimention.
-        let glyph_bounds = rect
-            .inflate(largest_advance.scale_by(2.0), Au::zero())
-            .to_webrender();
+        let glyph_bounds = rect.inflate(largest_advance * 2, Au::zero()).to_webrender();
         let common = builder.common_properties(state, glyph_bounds, &parent_style);
 
         // Shadows. According to CSS-BACKGROUNDS, text shadows render in *reverse* order (front to
@@ -1210,7 +1227,7 @@ impl Fragment {
                 },
                 wr::Shadow {
                     offset: LayoutVector2D::new(shadow.horizontal.px(), shadow.vertical.px()),
-                    color: rgba(shadow.color.resolve_to_absolute(&color)),
+                    color: rgba(parent_style.resolve_color(&shadow.color)),
                     blur_radius: shadow.blur.px(),
                 },
                 true, /* should_inflate */
@@ -1235,12 +1252,17 @@ impl Fragment {
             );
         }
 
+        // For glyphs, we use `-webkit-text-fill-color` resolved against `color`, rather than `color` directly.
+        // See <https://compat.spec.whatwg.org/#the-webkit-text-fill-color>.
+        let glyph_fill_color =
+            parent_style.resolve_color(parent_style.get__webkit_text_fill_color());
+
         builder.webrender_display_list_builder.push_text(
             &common,
             glyph_bounds,
             &builder.glyph_buffer,
             fragment.font_key,
-            rgba(color),
+            rgba(glyph_fill_color),
             None,
         );
 
@@ -1341,7 +1363,8 @@ impl Fragment {
                 TextDecorationLine::UNDERLINE => (
                     text_decoration.color,
                     text_decoration.style,
-                    font_metrics.ascent - font_metrics.underline_offset,
+                    font_metrics.ascent - font_metrics.underline_offset +
+                        text_decoration.underline_offset,
                     resolve_thickness(&text_decoration.thickness),
                 ),
                 // <https://drafts.csswg.org/css-text-decor-4/#valdef-text-decoration-line-spelling-error>
@@ -1575,7 +1598,7 @@ impl Fragment {
             return;
         }
 
-        if !fragment.run_data.paints_caret {
+        if !fragment.run_data.paints_caret.load(Ordering::Relaxed) {
             return;
         }
 
@@ -1594,10 +1617,9 @@ impl Fragment {
         )
         .to_webrender();
 
-        let color = parent_style.get_color();
         let caret_color = match parent_style.get_caret_color().0 {
-            ColorOrAuto::Color(ref caret_color) => caret_color.resolve_to_absolute(color),
-            ColorOrAuto::Auto => *color,
+            ColorOrAuto::Color(ref caret_color) => parent_style.resolve_color(caret_color),
+            ColorOrAuto::Auto => *parent_style.get_color(),
         };
         let insertion_point_common =
             builder.common_properties(state, insertion_point_rect, &parent_style);
@@ -1803,10 +1825,7 @@ impl<'a> BuilderForBoxFragment<'a> {
             .paint_info
             .external_scroll_id_for_scroll_tree_node(state.spatial_id);
 
-        let mut common = builder.common_properties(state, rect, self.fragment.style());
-        if let Some(clip_chain_id) = self.border_edge_clip(builder, state, false) {
-            common.clip_chain_id = clip_chain_id;
-        }
+        let common = builder.common_properties(state, rect, self.fragment.style());
         builder.wr().push_hit_test(
             common.clip_rect,
             common.clip_chain_id,
@@ -1865,12 +1884,11 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
 
-        let current_color = style.get_color();
         let filters: Vec<_> = effects
             .backdrop_filter
             .0
             .iter()
-            .map(|filter| FilterToWebRender::to_webrender(filter, current_color))
+            .map(|filter| FilterToWebRender::to_webrender(filter, style))
             .collect();
 
         let mut common = builder.common_properties(state, self.border_rect, style);
@@ -2255,8 +2273,7 @@ impl<'a> BuilderForBoxFragment<'a> {
             return;
         }
 
-        let current_color = style.get_inherited_text().get_color();
-        let style_color = BorderStyleColor::from_border(border, current_color);
+        let style_color = BorderStyleColor::from_style(style);
         let details = wr::BorderDetails::Normal(wr::NormalBorder {
             top: self.build_border_side(style_color.top),
             right: self.build_border_side(style_color.right),

@@ -2,12 +2,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 use html5ever::local_name;
-use js::context::JSContext;
+use js::context::{JSContext, NoGC};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::HTMLInputElementBinding::HTMLInputElementMethods;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
+use script_bindings::dom::UnrootedDom;
 use script_bindings::domstring::DOMString;
-use script_bindings::root::DomRoot;
+use script_bindings::root::{Dom, DomRoot};
+use script_bindings::traits::DomEventTrait;
 use stylo_atoms::Atom;
 use stylo_dom::ElementState;
 
@@ -45,7 +47,12 @@ impl SpecificInputType for RadioInputType {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#radio-button-state-(type=radio):suffering-from-being-missing>
-    fn suffers_from_being_missing(&self, input: &HTMLInputElement, _value: &DOMString) -> bool {
+    fn suffers_from_being_missing(
+        &self,
+        no_gc: &NoGC,
+        input: &HTMLInputElement,
+        _value: &DOMString,
+    ) -> bool {
         if input.radio_group_name().is_none() {
             return false;
         }
@@ -55,7 +62,8 @@ impl SpecificInputType for RadioInputType {
             .upcast::<Node>()
             .GetRootNode(&GetRootNodeOptions::empty());
         let form = input.form_owner();
-        for other in radio_group_iter(
+        for other in radio_group_iter_unrooted(
+            no_gc,
             input,
             input.radio_group_name().as_ref(),
             form.as_deref(),
@@ -213,12 +221,19 @@ impl SpecificInputActivationType for RadioInputActivation {
         &self,
         cx: &mut js::context::JSContext,
         input: &HTMLInputElement,
-        _event: &Event,
+        event: &Event,
         _target: &EventTarget,
     ) {
         // Step 1: If the element is not connected, then return.
         if !input.upcast::<Node>().is_connected() {
             return;
+        }
+
+        // According to the spec, because this input type has its own activation behavior,
+        // it shouldn't go through the flow which changes the user validity to true,
+        // but other browsers and tests disagree.
+        if event.IsTrusted() {
+            input.set_user_validity(cx.no_gc(), true);
         }
 
         // Step 2: Fire an event named input at the element with the bubbles and composed
@@ -265,6 +280,24 @@ pub(crate) fn radio_group_iter<'a>(
     root.traverse_preorder(ShadowIncluding::No)
         .filter_map(DomRoot::downcast::<HTMLInputElement>)
         .filter(move |r| &**r == elem || in_same_group(r, form, group, Some(root)))
+}
+
+pub(crate) fn radio_group_iter_unrooted<'a, 'no_gc>(
+    no_gc: &'no_gc NoGC,
+    elem: &'a HTMLInputElement,
+    group: Option<&'a Atom>,
+    form: Option<&'a HTMLFormElement>,
+    root: &'a Node,
+) -> impl Iterator<Item = UnrootedDom<'no_gc, HTMLInputElement>> + 'a
+where
+    'no_gc: 'a,
+{
+    root.traverse_preorder_unrooted(no_gc, ShadowIncluding::No)
+        .filter_map(UnrootedDom::downcast::<HTMLInputElement>)
+        .filter(move |current_element| {
+            **current_element == Dom::from_ref(elem) ||
+                in_same_group(current_element, form, group, Some(root))
+        })
 }
 
 pub(crate) fn broadcast_radio_checked(

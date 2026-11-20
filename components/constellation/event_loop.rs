@@ -6,12 +6,13 @@
 //! view of a script thread. When an `EventLoop` is dropped, an `ExitScriptThread`
 //! message is sent to the script thread, asking it to shut down.
 
-use std::hash::Hash;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use background_hang_monitor_api::{BackgroundHangMonitorControlMsg, HangAlert};
 use embedder_traits::ScriptToEmbedderChan;
+#[cfg(feature = "multiprocess")]
+use embedder_traits::resources::ResourceBytes;
 use layout_api::ScriptThreadFactory;
 use log::error;
 use media::WindowGLContext;
@@ -36,20 +37,6 @@ pub struct EventLoop {
     /// BackgroundHangMonitor is shared among all [`EventLoop`]s so this will be `None`.
     background_hang_monitor_sender: Option<GenericSender<BackgroundHangMonitorControlMsg>>,
     dont_send_or_sync: PhantomData<Rc<()>>,
-}
-
-impl PartialEq for EventLoop {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for EventLoop {}
-
-impl Hash for EventLoop {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
 }
 
 impl Drop for EventLoop {
@@ -228,5 +215,5 @@ pub struct NewScriptEventLoopProcessInfo {
     pub opts: Opts,
     pub prefs: Box<Preferences>,
     /// The broken image icon data that is used to create an image to show in place of broken images.
-    pub broken_image_icon_data: Vec<u8>,
+    pub broken_image_icon_data: ResourceBytes,
 }

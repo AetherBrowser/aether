@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use app_units::Au;
 use malloc_size_of_derive::MallocSizeOf;
 use servo_arc::Arc as ServoArc;
+use servo_base::id::AtomicOptionScrollTreeNodeId;
 use servo_base::print_tree::PrintTree;
 use style::properties::ComputedValues;
 
 use super::{BaseFragment, BaseFragmentInfo, Fragment};
 use crate::SharedStyle;
-use crate::fragment_tree::CumulativeContentRectCalculation;
-use crate::geom::{PhysicalRect, SyncPhysicalRectAu};
+use crate::fragment_tree::{CumulativeContentRectCalculation, FragmentChildren};
+use crate::geom::{LogicalVec2, PhysicalRect, SyncPhysicalRectAu};
 
 /// Can contain child fragments with relative coordinates, but does not contribute to painting
 /// itself. [`PositioningFragment`]s may be completely anonymous, or just non-painting Fragments
@@ -39,15 +40,25 @@ pub(crate) struct PositioningFragment {
 
     /// Whether or not this [`PositioningFragment`] is a line box.
     is_line_box: bool,
+
+    /// The containing spatial tree node of this [`PositioningFragment`]. This is assigned
+    /// during `StackingContextTree` construction, so isn't available before that time.
+    /// This is used to for determining final viewport size and position of this node and
+    /// will also be used in the future for hit testing.
+    pub spatial_tree_node: AtomicOptionScrollTreeNodeId,
 }
 
 impl PositioningFragment {
     pub fn new_anonymous(
         style: ServoArc<ComputedValues>,
         rect: PhysicalRect<Au>,
-        children: Vec<Fragment>,
+        children: FragmentChildren,
         is_line_box: bool,
     ) -> Arc<Self> {
+        let children = children.into_physical_fragments(
+            style.writing_mode,
+            LogicalVec2::from_physical_size(&rect.size, style.writing_mode),
+        );
         Self::new_with_base_fragment_info(
             BaseFragmentInfo::anonymous(),
             style,
@@ -80,6 +91,7 @@ impl PositioningFragment {
             scrollable_overflow_is_up_to_date: AtomicBool::new(false),
             cumulative_parent_content_rect: Default::default(),
             is_line_box,
+            spatial_tree_node: Default::default(),
         })
     }
 

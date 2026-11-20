@@ -16,10 +16,11 @@ use style::values::computed::{
     LengthPercentage, MaxSize as StyleMaxSize, Percentage, Size as StyleSize,
 };
 
+use crate::containing_block::{ConstraintSpace, IndefiniteContainingBlock};
 use crate::context::LayoutContext;
+use crate::geom::LogicalVec2;
 use crate::layout_box_base::LayoutBoxBase;
 use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, ContentBoxSizesAndPBM, LayoutStyle};
-use crate::{ConstraintSpace, IndefiniteContainingBlock, LogicalVec2};
 
 #[derive(PartialEq)]
 pub(crate) enum IntrinsicSizingMode {
@@ -185,23 +186,31 @@ pub(crate) fn outer_inline(
                         block_stretch_size,
                     )
                 };
+            let mut has_quirky_block_size = false;
             if skippable_for_block_percentage_quirk {
-                block_size.replace_if_indefinite_with(containing_block.size.block.into())
+                has_quirky_block_size = !block_size.is_definite();
+                block_size
+                    .replace_if_indefinite_with(containing_block.maybe_quirky_block_size().into())
             }
-            ConstraintSpace::new(block_size, style, aspect_ratio)
+            if has_quirky_block_size {
+                ConstraintSpace::new_quirky(block_size, style, aspect_ratio)
+            } else {
+                ConstraintSpace::new(block_size, style, aspect_ratio)
+            }
         } else {
             // Even if the size doesn't directly depend on block constraints, since this box
             // doesn't establish a containing block, its contents can depend on its block
             // constraints. And thus have a dependency via the intrinsic size.
             depends_on_block_constraints = true;
+            let block_size = containing_block.maybe_quirky_block_size().into();
             // This assumes that there is no preferred aspect ratio, or that there is no
             // block size constraint to be transferred so the ratio is irrelevant.
             // We only get into here for anonymous blocks, for which the assumption holds.
-            ConstraintSpace::new(
-                containing_block.size.block.into(),
-                containing_block.style,
-                None,
-            )
+            if containing_block.has_quirky_block_size() {
+                ConstraintSpace::new_quirky(block_size, containing_block.style, None)
+            } else {
+                ConstraintSpace::new(block_size, containing_block.style, None)
+            }
         };
         get_inline_content_size(&constraint_space)
     });

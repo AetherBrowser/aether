@@ -15,13 +15,12 @@ use js::context::JSContext;
 use js::jsapi::Heap;
 use js::jsval::JSVal;
 use js::rust::{HandleObject, MutableHandleValue};
-use net_traits::http_status::HttpStatus;
 use net_traits::image_cache::{
     ImageCache, ImageCacheResponseMessage, ImageCacheResult, ImageLoadListener,
     ImageOrMetadataAvailable, ImageResponse, PendingImageId,
 };
 use net_traits::request::{Destination, RequestBuilder, RequestId};
-use net_traits::{FetchMetadata, FetchResponseMsg, Metadata, NetworkError, ResourceFetchTiming};
+use net_traits::{FetchMetadata, FetchResponseMsg, NetworkError, ResourceFetchTiming};
 use pixels::RasterImage;
 use rustc_hash::FxHashSet;
 use script_bindings::cell::DomRefCell;
@@ -55,8 +54,9 @@ use crate::dom::permissionstatus::PermissionStatus;
 use crate::dom::promise::{Promise, RootedPromise};
 use crate::dom::serviceworkerglobalscope::ServiceWorkerGlobalScope;
 use crate::dom::serviceworkerregistration::ServiceWorkerRegistration;
-use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request};
+use crate::fetch::fetch::{RequestWithGlobalScope, create_a_potential_cors_request_with_claim};
 use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTimingListener};
+use crate::url::ensure_blob_referenced_by_url_is_kept_alive;
 // TODO: Service Worker API (persistent notification)
 // https://notifications.spec.whatwg.org/#service-worker-api
 
@@ -751,32 +751,14 @@ impl FetchResponseListener for ResourceFetchListener {
         request_id: RequestId,
         metadata: Result<FetchMetadata, NetworkError>,
     ) {
-        self.image_cache.notify_pending_response(
-            self.pending_image_id,
-            FetchResponseMsg::ProcessResponse(request_id, metadata.clone()),
+        self.status = network_listener::check_response_status(
+            metadata.as_ref().ok().map(FetchMetadata::metadata),
         );
 
-        let metadata = metadata.ok().map(Into::into);
-
-        let status = metadata
-            .as_ref()
-            .map(|metadata: &Metadata| metadata.status.clone())
-            .unwrap_or_else(HttpStatus::new_error);
-
-        self.status = {
-            if status.is_success() {
-                Ok(())
-            } else if status.is_error() {
-                Err(NetworkError::ResourceLoadError(
-                    "No http status code received".to_owned(),
-                ))
-            } else {
-                Err(NetworkError::ResourceLoadError(format!(
-                    "HTTP error code {}",
-                    status.code()
-                )))
-            }
-        };
+        self.image_cache.notify_pending_response(
+            self.pending_image_id,
+            FetchResponseMsg::ProcessResponse(request_id, metadata),
+        );
     }
 
     fn process_response_chunk(
@@ -836,9 +818,10 @@ impl ResourceTimingListener for ResourceFetchListener {
 impl Notification {
     fn build_resource_request(&self, url: &ServoUrl) -> RequestBuilder {
         let global = &self.global();
-        create_a_potential_cors_request(
+        let url = ensure_blob_referenced_by_url_is_kept_alive(global, url.clone());
+        create_a_potential_cors_request_with_claim(
             None,
-            url.clone(),
+            url,
             Destination::Image,
             None, // TODO: check which CORS should be used
             None,

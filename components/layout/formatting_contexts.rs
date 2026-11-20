@@ -13,13 +13,17 @@ use style::logical_geometry::LogicalAxis;
 use style::properties::ComputedValues;
 use style::selector_parser::PseudoElement;
 
+use crate::containing_block::{
+    ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock,
+};
 use crate::context::LayoutContext;
 use crate::dom::{LayoutBox, NodeExt, WeakLayoutBox};
 use crate::dom_traversal::{Contents, NodeAndStyleInfo, NonReplacedContents};
 use crate::flexbox::FlexContainer;
-use crate::flow::BlockFormattingContext;
 use crate::flow::inline::InlineFormattingContext;
+use crate::flow::{BlockFormattingContext, ContentAlignment};
 use crate::fragment_tree::{BaseFragmentInfo, FragmentFlags};
+use crate::geom::LogicalVec2;
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
 use crate::positioned::{LayoutRootLayoutInputs, PositioningContext};
 use crate::replaced::ReplacedContents;
@@ -30,17 +34,16 @@ use crate::sizing::{
 use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
-use crate::{
-    ArcRefCell, ConstraintSpace, ContainingBlock, ContainingBlockSize, IndefiniteContainingBlock,
-    LogicalVec2, PropagatedBoxTreeData,
-};
+use crate::{ArcRefCell, PropagatedBoxTreeData};
 
 /// <https://drafts.csswg.org/css-display/#independent-formatting-context>
 #[derive(Debug, MallocSizeOf)]
 pub(crate) struct IndependentFormattingContext {
     pub base: LayoutBoxBase,
-    // Private so that code outside of this module cannot match variants.
-    // It should go through methods instead.
+    // Private so that code outside of this module cannot match variants; it should go
+    // through methods instead. This reduces accidental layout-mode-specific behavior,
+    // and avoids the risk of accidentally calling `layout()` on the inner contents,
+    // which would bypass caching and be bad for performance.
     contents: IndependentFormattingContextContents,
     /// Data that was originally propagated down to this [`IndependentFormattingContext`]
     /// during creation. This is used during incremental layout.
@@ -215,6 +218,7 @@ impl IndependentFormattingContext {
                     non_replaced_contents,
                     propagated_data,
                     is_list_item,
+                    false, /* is_table_cell */
                 ))
             },
             DisplayInside::Grid => {
@@ -271,6 +275,7 @@ impl IndependentFormattingContext {
                 NonReplacedContents::OfElement,
                 propagated_data,
                 false, /* is_list_item */
+                false, /* is_table_cell */
             ));
 
         let box_slot = widget_info.node.box_slot();
@@ -463,25 +468,32 @@ impl IndependentFormattingContext {
                 // Widget should know the size of the replaced contents.
                 let resolved_block_size =
                     lazy_block_size.resolve(|| replaced_layout.content_block_size);
-                let widget_cb = ContainingBlock {
-                    size: ContainingBlockSize {
-                        inline: containing_block_for_children.size.inline,
-                        block: SizeConstraint::Definite(resolved_block_size),
-                    },
+                let widget_size = LogicalVec2 {
+                    inline: containing_block_for_children.inline_size(),
+                    block: resolved_block_size,
+                };
+                let widget_containing_block = ContainingBlock {
+                    size: ContainingBlockSize::new(
+                        containing_block_for_children.inline_size(),
+                        SizeConstraint::Definite(resolved_block_size),
+                    ),
                     style: &self.base.style,
                 };
                 if let Some(widget) = widget {
-                    let mut widget_layout = widget.borrow().layout(
+                    let widget_layout = widget.borrow().layout(
                         layout_context,
                         positioning_context,
-                        &widget_cb,
-                        &widget_cb,
+                        &widget_containing_block,
+                        &widget_containing_block,
                         None,
                         &LazySize::intrinsic(),
                     );
-                    replaced_layout
-                        .fragments
-                        .append(&mut widget_layout.fragments);
+
+                    replaced_layout.fragments.append(
+                        widget_layout.fragments,
+                        self.base.style.writing_mode,
+                        widget_size,
+                    );
                 }
                 replaced_layout
             },
@@ -595,10 +607,10 @@ impl IndependentFormattingContext {
             layout_context,
             positioning_context,
             &ContainingBlock {
-                size: ContainingBlockSize {
-                    inline: inline_size,
-                    block: SizeConstraint::default(),
-                },
+                size: ContainingBlockSize::new(
+                    inline_size,
+                    SizeConstraint::default(), /* block_size */
+                ),
                 style: self.style(),
             },
             containing_block,
@@ -678,6 +690,15 @@ impl IndependentFormattingContext {
                 block_formatting_context.inline_formatting_context()
             },
             _ => None,
+        }
+    }
+
+    pub(crate) fn content_alignment_for_block_formatting_context(&self) -> ContentAlignment {
+        match &self.contents {
+            IndependentFormattingContextContents::Flow(block_formatting_context) => {
+                block_formatting_context.content_alignment(&self.base)
+            },
+            _ => panic!("Not a block formattign context"),
         }
     }
 }

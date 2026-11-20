@@ -25,7 +25,7 @@ use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
 use crate::desktop::protocols;
 use crate::desktop::tracing::trace_winit_event;
-use crate::history::open_history;
+use crate::history::open_places;
 use crate::parser::get_default_url;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::RunningAppState;
@@ -36,6 +36,8 @@ use crate::window::{PlatformWindow, ServoShellWindowId, TopLevelWebViewCreationR
 pub(crate) enum AppState {
     Initializing,
     Running(Rc<RunningAppState>),
+    /// A state were we are in the process of shutting down but still need the reference to the [`RunningAppState`].
+    Teardown(Rc<RunningAppState>),
     ShuttingDown,
 }
 
@@ -89,8 +91,9 @@ impl App {
             self.opts.config_dir.clone(),
             self.servoshell_preferences.home_settings.clone(),
         );
+        crate::content_filter::install_content_filter(self.opts.config_dir.clone());
 
-        let (history, history_page) = open_history(&self.opts);
+        let (places, history_page) = open_places(&self.opts, self.waker.clone());
 
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
@@ -147,7 +150,7 @@ impl App {
             self.waker.clone(),
             user_content_manager,
             self.preferences.clone(),
-            history,
+            places,
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()
@@ -203,7 +206,7 @@ impl App {
 
         let create_platform_window = |url: Url| self.create_platform_window(url, active_event_loop);
         if !state.spin_event_loop(Some(&create_platform_window)) {
-            self.state = AppState::ShuttingDown;
+            self.state = AppState::Teardown(state.clone());
             return false;
         }
         publish_open_tabs(state);
@@ -305,6 +308,15 @@ impl ApplicationHandler<AppEvent> for App {
 
         // Block until the window gets an event
         event_loop.set_control_flow(ControlFlow::Wait);
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if !self.preferences.network_http_disk_cache.is_empty() &&
+            let AppState::Teardown(state) = &self.state
+        {
+            state.servo.network_manager().store_http_cache_to_disk();
+        }
+        self.state = AppState::ShuttingDown;
     }
 }
 

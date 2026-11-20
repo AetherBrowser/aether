@@ -28,6 +28,7 @@ use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::element::{AttributeMutation, Element};
 use crate::dom::event::{Event, EventBubbles, EventCancelable};
 use crate::dom::eventtarget::EventTarget;
+use crate::dom::html::form_controls::htmlselectelement::HTMLSelectElement;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::{
     FormControl, FormDatum, FormDatumValue, FormSubmitterElement, HTMLFormElement, ResetFrom,
@@ -44,6 +45,7 @@ enum ButtonType {
     Submit,
     Reset,
     Button,
+    Auto,
 }
 
 #[dom_struct]
@@ -68,7 +70,7 @@ impl HTMLButtonElement {
                 prefix,
                 document,
             ),
-            button_type: Cell::new(ButtonType::Submit),
+            button_type: Cell::new(ButtonType::Auto),
             form_owner: Default::default(),
             labels_node_list: Default::default(),
             validity_state: Default::default(),
@@ -92,9 +94,20 @@ impl HTMLButtonElement {
         )
     }
 
-    #[inline]
     pub(crate) fn is_submit_button(&self) -> bool {
-        self.button_type.get() == ButtonType::Submit
+        match self.button_type.get() {
+            ButtonType::Auto => {
+                let element = self.upcast::<Element>();
+
+                !element.has_attribute(&local_name!("command")) &&
+                    !element.has_attribute(&local_name!("commandfor")) &&
+                    self.upcast::<Node>()
+                        .GetParentNode()
+                        .is_none_or(|node| !node.is::<HTMLSelectElement>())
+            },
+            ButtonType::Submit => true,
+            ButtonType::Reset | ButtonType::Button => false,
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#selector-default>
@@ -124,11 +137,26 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
             CommandState::Close => DOMString::from_static("close"),
             CommandState::ShowModal => DOMString::from_static("show-modal"),
             CommandState::RequestClose => DOMString::from_static("request-close"),
+            CommandState::TogglePopover => DOMString::from_static("toggle-popover"),
+            CommandState::HidePopover => DOMString::from_static("hide-popover"),
+            CommandState::ShowPopover => DOMString::from_static("show-popover"),
         }
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-button-command
     make_setter!(SetCommand, "command");
+
+    // https://html.spec.whatwg.org/multipage/#dom-popovertargetaction
+    make_enumerated_getter!(
+        PopoverTargetAction,
+        "popovertargetaction",
+        "toggle" | "show" | "hide",
+        missing => "toggle",
+        invalid => "toggle"
+    );
+
+    // https://html.spec.whatwg.org/multipage/#dom-popovertargetaction
+    make_setter!(SetPopoverTargetAction, "popovertargetaction");
 
     // https://html.spec.whatwg.org/multipage/#dom-fe-disabled
     make_bool_getter!(Disabled, "disabled");
@@ -143,9 +171,14 @@ impl HTMLButtonElementMethods<crate::DomTypeHolder> for HTMLButtonElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-button-type>
     fn Type(&self) -> DOMString {
+        // Step 1. If this is a submit button, then return "submit".
+        if self.is_submit_button() {
+            return DOMString::from_static("submit");
+        };
+        // Steps 2-5.
         match self.button_type.get() {
-            ButtonType::Submit => DOMString::from_static("submit"),
-            ButtonType::Button => DOMString::from_static("button"),
+            ButtonType::Submit => panic!("Should have returned submit already"),
+            ButtonType::Button | ButtonType::Auto => DOMString::from_static("button"),
             ButtonType::Reset => DOMString::from_static("reset"),
         }
     }
@@ -271,22 +304,19 @@ impl HTMLButtonElement {
         })
     }
 
-    fn set_type(&self, cx: &mut JSContext, value: DOMString) {
-        let value = if value.eq_ignore_ascii_case("reset") {
-            ButtonType::Reset
-        } else if value.eq_ignore_ascii_case("button") {
-            ButtonType::Button
-        } else if value.eq_ignore_ascii_case("submit") {
-            ButtonType::Submit
-        } else {
-            let element = self.upcast::<Element>();
-            if element.has_attribute(&local_name!("command")) ||
-                element.has_attribute(&local_name!("commandfor"))
-            {
+    fn set_type(&self, cx: &mut JSContext, value: Option<DOMString>) {
+        let value = if let Some(value) = value {
+            if value.eq_ignore_ascii_case("reset") {
+                ButtonType::Reset
+            } else if value.eq_ignore_ascii_case("button") {
                 ButtonType::Button
-            } else {
+            } else if value.eq_ignore_ascii_case("submit") {
                 ButtonType::Submit
+            } else {
+                ButtonType::Auto
             }
+        } else {
+            ButtonType::Auto
         };
         self.button_type.set(value);
         self.validity_state(cx)
@@ -331,6 +361,15 @@ impl HTMLButtonElement {
         if command.eq_ignore_ascii_case("show-modal") {
             return CommandState::ShowModal;
         }
+        if command.eq_ignore_ascii_case("toggle-popover") {
+            return CommandState::TogglePopover;
+        }
+        if command.eq_ignore_ascii_case("show-popover") {
+            return CommandState::ShowPopover;
+        }
+        if command.eq_ignore_ascii_case("hide-popover") {
+            return CommandState::HidePopover;
+        }
 
         CommandState::Unknown
     }
@@ -341,19 +380,29 @@ impl HTMLButtonElement {
         if command == CommandState::Unknown {
             return false;
         }
+
         // Step 2. If command is in the Custom state, then return true.
         if command == CommandState::Custom {
             return true;
         }
+
         // Step 3. If target is not an HTML element, then return false.
         if !target.is_html_element() {
             return false;
         }
-        // TODO Step 4. If command is in any of the following states:
+
+        // Step 4. If command is in any of the following states:
         // - Toggle Popover
         // - Show Popover
         // - Hide Popover
         // then return true.
+        if matches!(
+            command,
+            CommandState::TogglePopover | CommandState::ShowPopover | CommandState::HidePopover
+        ) {
+            return true;
+        }
+
         // Step 5. If this standard does not define is valid command steps for target's local name, then return false.
         // Step 6. Otherwise, return the result of running target's corresponding is valid command steps given command.
         vtable_for(target.upcast::<Node>()).is_valid_command_steps(command)
@@ -388,16 +437,25 @@ impl VirtualMethods for HTMLButtonElement {
                 self.validity_state(cx)
                     .perform_validation_and_update(cx, ValidationFlags::all());
             },
-            local_name!("type") => self.set_type(cx, attr.to_dom_string()),
+            local_name!("type") => {
+                match mutation {
+                    AttributeMutation::Set(_) => self.set_type(cx, Some(attr.to_dom_string())),
+                    AttributeMutation::Removed => self.set_type(cx, None),
+                };
+            },
             local_name!("command") => self.set_type(
                 cx,
-                self.upcast::<Element>()
-                    .get_string_attribute(&local_name!("type")),
+                Some(
+                    self.upcast::<Element>()
+                        .get_string_attribute(&local_name!("type")),
+                ),
             ),
             local_name!("commandfor") => self.set_type(
                 cx,
-                self.upcast::<Element>()
-                    .get_string_attribute(&local_name!("type")),
+                Some(
+                    self.upcast::<Element>()
+                        .get_string_attribute(&local_name!("type")),
+                ),
             ),
             local_name!("form") => {
                 self.form_attribute_mutated(cx, mutation);
@@ -433,11 +491,18 @@ impl Validatable for HTMLButtonElement {
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
     }
 
+    fn satisfies_constraints(&self) -> bool {
+        let Some(validity_state) = self.validity_state.get() else {
+            return true;
+        };
+        validity_state.invalid_flags().is_empty()
+    }
+
     fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
         // https://html.spec.whatwg.org/multipage/#the-button-element%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#enabling-and-disabling-form-controls%3A-the-disabled-attribute%3Abarred-from-constraint-validation
         // https://html.spec.whatwg.org/multipage/#the-datalist-element%3Abarred-from-constraint-validation
-        self.button_type.get() == ButtonType::Submit &&
+        self.is_submit_button() &&
             !self.upcast::<Element>().disabled_state() &&
             !is_barred_by_datalist_ancestor(no_gc, self.upcast())
     }
@@ -462,7 +527,7 @@ impl Activatable for HTMLButtonElement {
         &self,
         cx: &mut js::context::JSContext,
         _: &Event,
-        target: &EventTarget,
+        event_target: &EventTarget,
     ) {
         // Step 1. If element is disabled, then return.
         if self.upcast::<Element>().disabled_state() {
@@ -470,10 +535,7 @@ impl Activatable for HTMLButtonElement {
         }
 
         // Step 2. If element's node document is not fully active, then return.
-        if !target
-            .downcast::<Node>()
-            .is_none_or(|node| node.owner_document().is_fully_active())
-        {
+        if !self.upcast::<Node>().owner_document().is_fully_active() {
             return;
         }
 
@@ -482,7 +544,7 @@ impl Activatable for HTMLButtonElement {
         if let Some(owner) = self.form_owner() {
             // Step 3.1 If element is a submit button, then submit element's form owner from element
             // ..., and return.
-            if button_type == ButtonType::Submit {
+            if self.is_submit_button() {
                 owner.submit(
                     cx,
                     SubmittedFrom::NotFromForm,
@@ -497,12 +559,7 @@ impl Activatable for HTMLButtonElement {
                 return;
             }
             // Step 3.3 If element's type attribute is in the Auto state, then return.
-            if button_type == ButtonType::Button &&
-                !self
-                    .upcast::<Element>()
-                    .get_string_attribute(&local_name!("type"))
-                    .eq_ignore_ascii_case("button")
-            {
+            if button_type == ButtonType::Auto {
                 return;
             }
         }
@@ -513,15 +570,16 @@ impl Activatable for HTMLButtonElement {
         if let Some(target) = self.command_for_element(cx) {
             // Steps 5.1 Let command be element's command attribute.
             let command = self.command_state();
+
             // Step 5.2 If the result of determining if a command is valid for a target given command and target is false, then return.
             if !Self::determine_if_command_is_valid_for_target(command, &target) {
                 return;
             }
+
             // Step 5.3 Let continue be the result of firing an event named command at target, using
             // CommandEvent, with its command attribute initialized to command, its source attribute
             // initialized to element, and its cancelable attribute initialized to true.
-            // TODO source attribute
-            // Step 5.4 If continue is false, then return.
+            // source attribute
             let event = CommandEvent::new(
                 cx,
                 &self.owner_window(),
@@ -533,32 +591,115 @@ impl Activatable for HTMLButtonElement {
                     .get_string_attribute(&local_name!("command")),
             );
             let event = event.upcast::<Event>();
-            if !event.fire(cx, target.upcast::<EventTarget>()) {
+            let continue_ = event.fire(cx, target.upcast::<EventTarget>());
+
+            // Step 5.4 If continue is false, then return.
+            if !continue_ {
                 return;
             }
+
             // Step 5.5 If target is not connected, then return.
             let target_node = target.upcast::<Node>();
             if !target_node.is_connected() {
                 return;
             }
+
             // Step 5.6 If command is in the Custom state, then return.
             if command == CommandState::Custom {
                 return;
             }
-            // TODO Steps 5.7, 5.8, 5.9
+
+            // Step 5.7. If command is in the Hide Popover state:
+            let element_target = target
+                .downcast::<HTMLElement>()
+                .expect("The command is only valid for HTML elements.");
+            if command == CommandState::HidePopover {
+                // Step 5.7.1. Let validity be the result of running check popover validity given target, true, and null. If this throws an exception, catch it, and let validity be false.
+                let validity = element_target
+                    .check_popover_validity(true, None)
+                    .unwrap_or(false);
+
+                // Step 5.7.2. If validity is true, then run the hide popover algorithm given target, true, true, false, and element.
+                if validity {
+                    element_target
+                        .hide_popover(cx, true, true, false, Some(self.upcast::<HTMLElement>()))
+                        .expect("This should never fail in this codepath");
+                }
+            }
+            // Step 5.8. Otherwise, if command is in the Toggle Popover state:
+            else if command == CommandState::TogglePopover {
+                // Step 5.8.1. Let validity be the result of running check popover validity given
+                // target, false, and null. If this throws an exception, catch it, and let validity
+                // be false.
+                let validity = element_target
+                    .check_popover_validity(false, None)
+                    .unwrap_or(false);
+
+                // Step 5.8.2. If validity is true, then run the show popover algorithm given target,
+                // false, and element.
+                if validity {
+                    element_target
+                        .show_popover(cx, false, Some(self.upcast::<HTMLElement>()))
+                        .expect("This should never fail in this codepath");
+                }
+                // Step 5.8.3. Otherwise:
+                else {
+                    // Step 5.8.3.1. Let validity be the result of running check popover validity
+                    // given target, true, and null. If this throws an exception, catch it, and let
+                    // validity be false.
+                    let validity = element_target
+                        .check_popover_validity(true, None)
+                        .unwrap_or(false);
+
+                    // Step 5.8.3.2. If validity is true, then run the hide popover algorithm given
+                    // target, true, true, false, and element.
+                    if validity {
+                        element_target
+                            .hide_popover(cx, true, true, false, Some(self.upcast::<HTMLElement>()))
+                            .expect("This should never fail in this codepath");
+                    }
+                }
+            }
+            // Step 5.9. Otherwise, if command is in the Show Popover state:
+            else if command == CommandState::ShowPopover {
+                // Step 5.9.1. Let validity be the result of running check popover validity given
+                // target, false, and null. If this throws an exception, catch it, and let validity
+                // be false.
+                let validity = element_target
+                    .check_popover_validity(false, None)
+                    .unwrap_or(false);
+
+                // Step 5.9.2. If validity is true, then run the show popover algorithm given target,
+                // false, and element.
+                if validity {
+                    element_target
+                        .show_popover(cx, false, Some(self.upcast::<HTMLElement>()))
+                        .expect("This should never fail in this codepath");
+                }
+            }
             // Step 5.10 Otherwise, if this standard defines command steps for target's local name,
             // then run the corresponding command steps given target, element, and command.
-            let _ = vtable_for(target_node).command_steps(cx, DomRoot::from_ref(self), command);
+            else {
+                let _ = vtable_for(target_node).command_steps(cx, DomRoot::from_ref(self), command);
+            }
         }
-        // TODO Step 6 Otherwise, run the popover target attribute activation behavior given element
+        // Step 6. Otherwise, run the popover target attribute activation behavior given element
         // and event's target.
+        else if let Some(event_target) = event_target.downcast::<Node>() {
+            self.upcast::<HTMLElement>()
+                .popover_target_attribute_activation_behavior(cx, event_target);
+        }
     }
 }
 
+/// <https://html.spec.whatwg.org/multipage/#attr-button-command>
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub(crate) enum CommandState {
     Unknown,
     Custom,
+    TogglePopover,
+    ShowPopover,
+    HidePopover,
     ShowModal,
     RequestClose,
     Close,

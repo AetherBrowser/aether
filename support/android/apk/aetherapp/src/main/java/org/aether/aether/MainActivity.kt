@@ -69,8 +69,8 @@ class MainActivity : ComponentActivity(), Servo.Client {
     private val urlTextFieldState = TextFieldState()
     private var isRefreshing by mutableStateOf(false)
     private lateinit var historyManager: HistoryManager
-    private var currentUrl = ""
-    private var currentTitle = ""
+    private var currentUrl: String? = null
+    private var currentTitle: String? = null
     private var alertMessage by mutableStateOf<String?>(null)
 
     private class Settings(preferences: SharedPreferences) {
@@ -119,6 +119,9 @@ class MainActivity : ComponentActivity(), Servo.Client {
                         }
                         Omnibox(
                             urlTextFieldState,
+                            canBookmark = navigator.canBookmark,
+                            bookmarked = navigator.isBookmarked,
+                            onToggleBookmark = navigator::toggleBookmark,
                             onSearch = { search ->
                                 navigator.navigate(search)
                                 servoFocusRequester.requestFocus()
@@ -127,7 +130,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                         )
                         if (isRefreshing) {
                             CircularProgressIndicator(
-                                modifier = Modifier.padding(end = 10.dp).size(20.dp)
+                                modifier = Modifier.padding(end = 10.dp).size(20.dp),
                             )
                         }
                         Box {
@@ -135,7 +138,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 onClick = {
                                     menuPage = AppMenuPage.Root
                                     menuExpanded = true
-                                }
+                                },
                             ) {
                                 Icon(
                                     painterResource(R.drawable.menu),
@@ -188,7 +191,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                             )
                         }
                     }
-                }
+                },
             ) { innerPadding ->
                 Servo(
                     experimentalModeEnabled = experimentalModeEnabled,
@@ -253,7 +256,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     }
 
     private fun onHistoryMenuItemClicked(
-        historyActivityResultLauncher: ActivityResultLauncher<Intent>
+        historyActivityResultLauncher: ActivityResultLauncher<Intent>,
     ) {
         historyActivityResultLauncher.launch(Intent(this, HistoryActivity::class.java))
     }
@@ -272,7 +275,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
     // INFO: This currently gets called multiple times on each load.
     override fun onLoadEnded() {
         Log.i(TAG, "onLoadEnded: ")
-        if (currentUrl.isNotEmpty()) {
+        currentUrl?.let { currentUrl ->
             // HistoryManager has a basic method of preventing clobbering
             // by the fact that onLoadEnded gets called multiple times
             // per page.
@@ -353,7 +356,7 @@ private fun AppMenu(
                     leading = {
                         Icon(
                             painterResource(
-                                if (isRefreshing) R.drawable.cancel else R.drawable.refresh
+                                if (isRefreshing) R.drawable.cancel else R.drawable.refresh,
                             ),
                             null,
                         )
@@ -447,14 +450,28 @@ private fun AppMenuItem(
     )
 }
 
+@Composable
+private fun BookmarkStar(bookmarked: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(
+            painterResource(if (bookmarked) R.drawable.star else R.drawable.star_border),
+            stringResource(if (bookmarked) R.string.bookmark_remove else R.string.bookmark_add),
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun Omnibox(
     textFieldState: TextFieldState,
+    canBookmark: Boolean,
+    bookmarked: Boolean,
+    onToggleBookmark: () -> Unit,
     onSearch: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val searchBarState = rememberSearchBarState()
+    var focused by remember { mutableStateOf(false) }
 
     SearchBar(
         state = searchBarState,
@@ -467,11 +484,18 @@ private fun Omnibox(
                 onSearch = onSearch,
                 modifier =
                     Modifier.onFocusChanged { focusState ->
+                        focused = focusState.isFocused
                         if (focusState.isFocused) {
                             coroutineScope.launch { textFieldState.edit { selectAll() } }
                         }
                     },
                 placeholder = { Text(stringResource(R.string.url_or_search)) },
+                trailingIcon =
+                    if (canBookmark && !focused) {
+                        { BookmarkStar(bookmarked, onToggleBookmark) }
+                    } else {
+                        null
+                    },
             )
         },
         modifier = modifier,

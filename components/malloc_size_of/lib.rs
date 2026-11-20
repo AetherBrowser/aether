@@ -52,7 +52,7 @@ use std::ffi::CString;
 use std::hash::{BuildHasher, Hash};
 use std::ops::{Range, RangeInclusive};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Once, OnceLock};
 
 use cookie::Cookie;
 use resvg::usvg::fontdb::Source;
@@ -128,8 +128,8 @@ impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for [T] {
 }
 
 impl<T: MallocSizeOf, const N: usize> MallocSizeOf for Box<[T; N]> {
-    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
-        N * size_of::<T>()
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.iter().map(|value| value.size_of(ops)).sum()
     }
 }
 
@@ -638,6 +638,13 @@ impl<T: MallocConditionalSizeOf> MallocConditionalSizeOf for OnceLock<T> {
         self.get()
             .map(|interior| interior.conditional_size_of(ops))
             .unwrap_or_default()
+    }
+}
+
+impl MallocSizeOf for Once {
+    fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+        // Currently hard to measure
+        0
     }
 }
 
@@ -1280,6 +1287,12 @@ impl MallocSizeOf for content_security_policy::Policy {
     }
 }
 
+impl MallocSizeOf for content_security_policy::CspList {
+    fn size_of(&self, ops: &mut MallocSizeOfOps) -> usize {
+        self.0.size_of(ops)
+    }
+}
+
 malloc_size_of_hash_map!(indexmap::IndexMap<K, V, S>);
 malloc_size_of_hash_set!(indexmap::IndexSet<T, S>);
 
@@ -1295,6 +1308,7 @@ malloc_size_of_is_0!(content_security_policy::PolicyDisposition);
 malloc_size_of_is_0!(content_security_policy::PolicySource);
 malloc_size_of_is_0!(content_security_policy::sandboxing_directive::SandboxingFlagSet);
 malloc_size_of_is_0!(encoding_rs::Decoder);
+malloc_size_of_is_0!(font_types::Tag);
 malloc_size_of_is_0!(http::StatusCode);
 malloc_size_of_is_0!(http::Method);
 malloc_size_of_is_0!(icu_locale_core::subtags::Language);

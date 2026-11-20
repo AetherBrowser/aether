@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{InputEvent, MouseLeftViewportEvent, Theme, ViewportDetails};
-use euclid::{Point2D, Size2D};
+use euclid::Size2D;
 use log::{debug, warn};
 use paint_api::{PaintMessage, PaintProxy};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -16,7 +16,6 @@ use script_traits::{ConstellationInputEvent, ScriptThreadMessage, WebViewState};
 use servo_base::Epoch;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 use servo_constellation_traits::{ScreenshotReadinessResponse, SessionHistoryTraversalRequest};
-use style_traits::CSSPixel;
 
 use crate::browsingcontext::{BrowsingContext, FullyActiveBrowsingContextsIterator};
 use crate::constellation::BrowsingContextGroup;
@@ -56,10 +55,6 @@ pub(crate) struct ConstellationWebView {
     /// The [`BrowsingContextId`] of the currently hovered browsing context, to use for
     /// knowing which frame is currently receiving cursor events.
     pub hovered_browsing_context_id: Option<BrowsingContextId>,
-
-    /// The last mouse move point in the coordinate space of the Pipeline that it
-    /// happened int.
-    pub last_mouse_move_point: Point2D<f32, CSSPixel>,
 
     /// The joint session history for this webview.
     pub session_history: JointSessionHistory,
@@ -126,7 +121,6 @@ impl ConstellationWebView {
             browsing_context_group,
             focused_browsing_context_id,
             hovered_browsing_context_id: None,
-            last_mouse_move_point: Default::default(),
             session_history: JointSessionHistory::new(),
             session_history_traversal_request_queue: Default::default(),
             ongoing_history_traversal_request: None,
@@ -263,11 +257,6 @@ impl ConstellationWebView {
 
         if let InputEvent::MouseMove(_) = &event.event.event {
             update_hovered_browsing_context(Some(pipeline.browsing_context_id), true);
-            self.last_mouse_move_point = event
-                .hit_test_result
-                .as_ref()
-                .expect("MouseMove events should always have hit tests.")
-                .point_in_viewport;
         }
 
         let _ = pipeline
@@ -319,6 +308,20 @@ impl ConstellationWebView {
 
     pub(crate) fn has_pending_change(&self) -> bool {
         !self.pending_changes.is_empty()
+    }
+
+    /// Whether a navigation is in flight in this [`ConstellationWebView`] that will
+    /// report its own end: a queued or ongoing history traversal,
+    /// or a `top_level_pipeline` has not finished loading,
+    /// or a top-level pending change.
+    pub(crate) fn is_navigating(&self, top_level_pipeline: Option<&Pipeline>) -> bool {
+        let top_level_browsing_context_id = BrowsingContextId::from(self.webview_id);
+        !self.session_history_traversal_request_queue.is_empty() ||
+            self.ongoing_history_traversal_request.is_some() ||
+            top_level_pipeline.is_some_and(|pipeline| !pipeline.load_finished) ||
+            self.pending_changes
+                .iter()
+                .any(|change| change.browsing_context_id == top_level_browsing_context_id)
     }
 
     pub(crate) fn pipeline_is_pending(&self, pipeline_id: PipelineId) -> bool {

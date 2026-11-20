@@ -12,7 +12,6 @@ import android.view.Surface
 /** Maps /ports/servoshell API */
 internal class JNIServo {
     init {
-        System.loadLibrary("c++_shared")
         System.loadLibrary("servoshell")
     }
 
@@ -44,6 +43,8 @@ internal class JNIServo {
     external fun goForward()
 
     external fun loadUri(uri: String)
+
+    external fun toggleBookmark()
 
     external fun keydown(keycode: Int, unicode: Int)
 
@@ -87,6 +88,8 @@ internal class JNIServo {
         fun onUrlChanged(url: String)
 
         fun onHistoryChanged(canGoBack: Boolean, canGoForward: Boolean)
+
+        fun onBookmarkStateChanged(canBookmark: Boolean, bookmarked: Boolean)
 
         fun onImeShow()
 

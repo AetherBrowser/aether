@@ -31,6 +31,7 @@ use servo::{
 use super::app::{App, AppInitOptions};
 use super::host_trait::HostTrait;
 use crate::prefs::{ArgumentParsingResult, parse_command_line_arguments};
+use crate::window::ServoShellWindowId;
 
 thread_local! {
     pub static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
@@ -237,7 +238,7 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_addPlatformWindow<'local>(
                 window_handle,
                 viewport_rect,
                 hidpi_scale_factor,
-                None,
+                ServoShellWindowId::next(),
             )
         });
         Ok(())
@@ -400,6 +401,19 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_goForward<'local>(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("goForward");
         call(env, |s| s.go_forward());
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_toggleBookmark<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        debug!("toggleBookmark");
+        call(env, |s| s.toggle_bookmark());
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
@@ -755,6 +769,23 @@ impl HostTrait for HostCallbacks {
                     jni_str!("onHistoryChanged"),
                     jni_sig!("(ZZ)V"),
                     &[can_go_back, can_go_forward],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn on_bookmark_state_changed(&self, can_bookmark: bool, bookmarked: bool) {
+        debug!("on_bookmark_state_changed");
+        self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let can_bookmark = JValue::Bool(can_bookmark as jboolean);
+                let bookmarked = JValue::Bool(bookmarked as jboolean);
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onBookmarkStateChanged"),
+                    jni_sig!("(ZZ)V"),
+                    &[can_bookmark, bookmarked],
                 )?;
                 Ok(())
             })

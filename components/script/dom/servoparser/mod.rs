@@ -1556,7 +1556,9 @@ impl ParserContext {
         if let Some(error) = error {
             let page = match error {
                 NetworkError::SslValidation(reason, bytes) => {
-                    let page = resources::read_string(Resource::BadCertHTML);
+                    let bytes_resource = resources::read_bytes(Resource::BadCertHTML);
+                    let page = str::from_utf8(bytes_resource.as_ref())
+                        .expect("BadCertHTML Resource not valid utf8");
                     let page = page.replace("${reason}", &reason);
                     let encoded_bytes = general_purpose::STANDARD_NO_PAD.encode(bytes);
                     let page = page.replace("${bytes}", encoded_bytes.as_str());
@@ -1567,11 +1569,15 @@ impl ParserContext {
                 NetworkError::HttpError(reason) |
                 NetworkError::ResourceLoadError(reason) |
                 NetworkError::MimeType(reason) => {
-                    let page = resources::read_string(Resource::NetErrorHTML);
+                    let resource_bytes = resources::read_bytes(Resource::NetErrorHTML);
+                    let page = str::from_utf8(resource_bytes.as_ref())
+                        .expect("NetErrorHTML Resource not valid utf8");
                     page.replace("${reason}", &reason)
                 },
                 NetworkError::Crash(details) => {
-                    let page = resources::read_string(Resource::CrashHTML);
+                    let resource_bytes = resources::read_bytes(Resource::CrashHTML);
+                    let page = str::from_utf8(resource_bytes.as_ref())
+                        .expect("CrashHTML Resource not valid utf8");
                     page.replace("${details}", &details)
                 },
                 NetworkError::UnsupportedScheme |
@@ -1600,6 +1606,10 @@ impl ParserContext {
                 NetworkError::DecompressionError => {
                     let page = resources::read_string(Resource::NetErrorHTML);
                     page.replace("${reason}", &format!("{:?}", error))
+                },
+                NetworkError::ContentBlocked => {
+                    let page = resources::read_string(Resource::NetErrorHTML);
+                    page.replace("${reason}", "Blocked by the network filter")
                 },
                 NetworkError::LoadCancelled => {
                     // The next load will show a page
@@ -1753,6 +1763,7 @@ fn insert_an_element_at_the_adjusted_insertion_location(
         &node_to_insert,
         adjusted_insertion_location_parent,
         adjusted_insertion_location_child,
+        &[],
     )
     .is_err()
     {

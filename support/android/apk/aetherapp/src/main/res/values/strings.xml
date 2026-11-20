@@ -8,6 +8,8 @@
   <string name="options">Options</string>
   <string name="menu">Menu</string>
   <string name="home">Home</string>
+  <string name="bookmark_add">Bookmark this page</string>
+  <string name="bookmark_remove">Remove bookmark</string>
   <string name="new_tab">New Tab</string>
   <string name="new_window">New Window</string>
   <string name="more_tools">More Tools</string>

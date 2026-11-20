@@ -102,12 +102,17 @@ components = []
 </%def>
 
 <%def name="include_directory(d, n)">
-<Directory Id="${make_id(path.basename(d))}" Name="${n}">
-  <Component Id="${make_id(path.basename(d))}"
+<%
+    rel = path.relpath(d, dir_to_temp)
+    directory_id = make_id("dir/" + rel)
+    component_id = make_id("cmp/" + rel)
+    components.append(component_id)
+%>
+<Directory Id="${directory_id}" Name="${n}">
+  <Component Id="${component_id}"
              Guid="${uuid.uuid4()}"
              Bitness="always64">
     <CreateFolder/>
-    <% components.append(make_id(path.basename(d))) %>
     % for f in listfiles(d):
     <File Id="${make_id(path.join(d, f).replace(dir_to_temp, ""))}"
           Name="${f}"

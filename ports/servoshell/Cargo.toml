@@ -88,6 +88,7 @@ cfg-if = { workspace = true }
 crossbeam-channel = { workspace = true }
 dpi = { workspace = true }
 euclid = { workspace = true }
+flate2 = { workspace = true }
 hitrace = { workspace = true, optional = true }
 image = { workspace = true }
 keyboard-types = { workspace = true }
@@ -131,6 +132,7 @@ ohos-vsync = { workspace = true }
 ohos-window-sys = { workspace = true }
 ohos-sys-opaque-types = { workspace = true }
 ohos-window-manager-sys = { workspace = true, features = ["api-14"] }
+memmap2 = { workspace = true }
 xcomponent-sys = { workspace = true, features = ["api-20", "keyboard-types"] }
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]

@@ -14,21 +14,30 @@ use resvg::{tiny_skia, usvg};
 /// Logical size of a toolbar icon, in egui points.
 const TOOLBAR_ICON_SIZE: f32 = 14.0;
 
+/// Logical size of a navigation bar icon, the native size of the SVGs.
+const NAVIGATION_ICON_SIZE: f32 = 16.0;
+
 /// Toolbar button hit target.
 const TOOLBAR_BUTTON_SIZE: f32 = 20.0;
 
+/// Height of the navigation bar controls: its buttons and the location bar.
+pub(crate) const NAVIGATION_CONTROL_SIZE: f32 = 28.0;
+
+/// Hit target of a button inside the location bar, which keeps the bar's frame visible around it.
+pub(crate) const LOCATION_BUTTON_SIZE: f32 = 22.0;
+
 /// Rounded square used to mark a toolbar button on hover and press.
-const TOOLBAR_BUTTON_CORNER_RADIUS: u8 = 4;
+pub(crate) const TOOLBAR_BUTTON_CORNER_RADIUS: u8 = 4;
 
 /// Toolbar button: icon only at rest, rounded square on hover, darker on press.
-pub(crate) fn add_toolbar_button(ui: &mut egui::Ui, button: egui::Button<'_>) -> egui::Response {
+pub(crate) fn add_toolbar_button(
+    ui: &mut egui::Ui,
+    button: egui::Button<'_>,
+    size: f32,
+) -> egui::Response {
     // Reserve a paint slot behind the icon so hover/press fill never covers it.
     let background = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add(
-        button
-            .frame(false)
-            .min_size(egui::vec2(TOOLBAR_BUTTON_SIZE, TOOLBAR_BUTTON_SIZE)),
-    );
+    let response = ui.add(button.frame(false).min_size(egui::Vec2::splat(size)));
     if let Some(fill) = toolbar_button_fill_color(
         ui.visuals(),
         toolbar_button_visual_state(
@@ -85,6 +94,8 @@ fn toolbar_button_fill_color(
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ToolbarIcon {
     Back,
+    Bookmark,
+    BookmarkHollow,
     ChevronLeft,
     ChevronRight,
     Close,
@@ -100,6 +111,8 @@ impl ToolbarIcon {
     fn svg_bytes(self) -> &'static [u8] {
         match self {
             Self::Back => include_bytes!("../../../resources/icons/back.svg"),
+            Self::Bookmark => include_bytes!("../../../resources/icons/bookmark.svg"),
+            Self::BookmarkHollow => include_bytes!("../../../resources/icons/bookmark-hollow.svg"),
             Self::ChevronLeft => include_bytes!("../../../resources/icons/chevron-left.svg"),
             Self::ChevronRight => include_bytes!("../../../resources/icons/chevron-right.svg"),
             Self::Close => include_bytes!("../../../resources/icons/close.svg"),
@@ -115,6 +128,8 @@ impl ToolbarIcon {
     fn texture_name(self) -> &'static str {
         match self {
             Self::Back => "toolbar-back",
+            Self::Bookmark => "toolbar-bookmark",
+            Self::BookmarkHollow => "toolbar-bookmark-hollow",
             Self::ChevronLeft => "toolbar-chevron-left",
             Self::ChevronRight => "toolbar-chevron-right",
             Self::Close => "toolbar-close",
@@ -136,13 +151,53 @@ pub(crate) struct ToolbarIconCache {
 
 impl ToolbarIconCache {
     pub(crate) fn button(&mut self, ui: &mut egui::Ui, icon: ToolbarIcon) -> egui::Response {
-        let button = self.image_button(ui, icon);
-        add_toolbar_button(ui, button)
+        self.sized_button(ui, icon, TOOLBAR_ICON_SIZE, TOOLBAR_BUTTON_SIZE)
+    }
+
+    /// Button of the navigation bar, as tall as the location bar.
+    pub(crate) fn navigation_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        icon: ToolbarIcon,
+    ) -> egui::Response {
+        self.sized_button(ui, icon, NAVIGATION_ICON_SIZE, NAVIGATION_CONTROL_SIZE)
+    }
+
+    /// Button drawn over the location bar. Sensing drags keeps them from reaching the field.
+    pub(crate) fn location_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        icon: ToolbarIcon,
+    ) -> egui::Response {
+        let button = self
+            .sized_image_button(ui, icon, NAVIGATION_ICON_SIZE)
+            .sense(egui::Sense::click_and_drag());
+        add_toolbar_button(ui, button, LOCATION_BUTTON_SIZE)
+    }
+
+    fn sized_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        icon: ToolbarIcon,
+        icon_size: f32,
+        button_size: f32,
+    ) -> egui::Response {
+        let button = self.sized_image_button(ui, icon, icon_size);
+        add_toolbar_button(ui, button, button_size)
     }
 
     /// Icon button without the toolbar hover square, for chrome that paints its own background.
     pub(crate) fn image_button(&mut self, ui: &egui::Ui, icon: ToolbarIcon) -> egui::Button<'_> {
-        let button = match self.image(ui, icon) {
+        self.sized_image_button(ui, icon, TOOLBAR_ICON_SIZE)
+    }
+
+    fn sized_image_button(
+        &mut self,
+        ui: &egui::Ui,
+        icon: ToolbarIcon,
+        icon_size: f32,
+    ) -> egui::Button<'_> {
+        let button = match self.sized_image(ui, icon, icon_size) {
             Some(image) => egui::Button::new(image),
             None => egui::Button::new(""),
         };
@@ -155,14 +210,20 @@ impl ToolbarIconCache {
         ui: &egui::Ui,
         icon: ToolbarIcon,
     ) -> Option<egui::Image<'static>> {
-        let pixel_size = (TOOLBAR_ICON_SIZE * ui.pixels_per_point()).round().max(1.0) as u32;
+        self.sized_image(ui, icon, TOOLBAR_ICON_SIZE)
+    }
+
+    fn sized_image(
+        &mut self,
+        ui: &egui::Ui,
+        icon: ToolbarIcon,
+        icon_size: f32,
+    ) -> Option<egui::Image<'static>> {
+        let pixel_size = (icon_size * ui.pixels_per_point()).round().max(1.0) as u32;
         let handle = self.texture(ui.ctx(), icon, pixel_size)?;
         Some(
-            egui::Image::from_texture(SizedTexture::new(
-                handle.id(),
-                egui::vec2(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE),
-            ))
-            .fit_to_exact_size(egui::vec2(TOOLBAR_ICON_SIZE, TOOLBAR_ICON_SIZE)),
+            egui::Image::from_texture(SizedTexture::new(handle.id(), egui::Vec2::splat(icon_size)))
+                .fit_to_exact_size(egui::Vec2::splat(icon_size)),
         )
     }
 
@@ -238,6 +299,24 @@ mod tests {
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "back icon should not be fully transparent"
         );
+    }
+
+    #[test]
+    fn the_filled_bookmark_covers_more_pixels_than_the_hollow_one() {
+        let covered_pixels = |icon: ToolbarIcon| {
+            rasterize_svg(icon.svg_bytes(), 32)
+                .expect("bookmark icon should rasterize")
+                .pixels
+                .iter()
+                .filter(|pixel| pixel.a() > 0)
+                .count()
+        };
+        let hollow = covered_pixels(ToolbarIcon::BookmarkHollow);
+        assert!(
+            hollow > 0,
+            "hollow bookmark should not be fully transparent"
+        );
+        assert!(covered_pixels(ToolbarIcon::Bookmark) > hollow);
     }
 
     #[test]
@@ -338,6 +417,23 @@ mod tests {
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "context-fill should be treated as an opaque white fill"
         );
+    }
+
+    #[test]
+    fn navigation_bar_buttons_are_square() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(
+                icons.navigation_button(ui, ToolbarIcon::Back).rect.size(),
+                egui::Vec2::splat(NAVIGATION_CONTROL_SIZE)
+            );
+            assert_eq!(
+                icons.location_button(ui, ToolbarIcon::Bookmark).rect.size(),
+                egui::Vec2::splat(LOCATION_BUTTON_SIZE)
+            );
+        });
     }
 
     #[test]

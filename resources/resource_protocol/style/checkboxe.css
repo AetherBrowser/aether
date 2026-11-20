@@ -1,0 +1,39 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+input[type="checkbox"] {
+  appearance: none;
+  box-sizing: border-box;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  padding: 0;
+  vertical-align: -0.15em;
+  background: var(--bg);
+  border: 1px solid var(--checkbox-border);
+  border-radius: 4px;
+  accent-color: var(--on-accent);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+@media (forced-colors: active) {
+  input[type="checkbox"] {
+    appearance: auto;
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+    accent-color: ButtonText;
+    forced-color-adjust: auto;
+  }
+}

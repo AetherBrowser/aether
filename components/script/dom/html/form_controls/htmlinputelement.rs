@@ -2,9 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{Cell, RefCell};
 use std::ptr;
 
+use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
 use dom_struct::dom_struct;
 use embedder_traits::{EmbedderControlRequest, InputMethodRequest, RgbColor, SelectedFile};
 use encoding_rs::Encoding;
@@ -21,6 +22,7 @@ use num_traits::ToPrimitive;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
 use script_bindings::domstring::{TracedDOMString, parse_floating_point_number};
+use script_bindings::traits::DomEventTrait;
 use servo_base::generic_channel::GenericSender;
 use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use style::attr::{AttrValue, LengthOrPercentageOrAuto};
@@ -34,6 +36,7 @@ use xml5ever::ns;
 
 use crate::dom::MoveContext;
 use crate::dom::activation::Activatable;
+use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::ElementMethods;
 use crate::dom::bindings::codegen::Bindings::FileListBinding::FileListMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLFormElementBinding::SelectionMode;
@@ -63,7 +66,7 @@ use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::html::htmlformelement::{
     FormControl, FormDatum, FormDatumValue, FormSubmitterElement, HTMLFormElement, SubmittedFrom,
 };
-use crate::dom::input_type::radio_input_type::radio_group_iter;
+use crate::dom::input_type::radio_input_type::radio_group_iter_unrooted;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{
@@ -71,7 +74,7 @@ use crate::dom::node::{
 };
 use crate::dom::nodelist::NodeList;
 use crate::dom::text_input::EmbedderClipboardProvider;
-use crate::dom::types::FocusEvent;
+use crate::dom::types::{FocusEvent, InputEvent};
 use crate::dom::validation::{Validatable, is_barred_by_datalist_ancestor};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 use crate::realms::enter_auto_realm;
@@ -123,7 +126,7 @@ pub(crate) struct HTMLInputElement {
     /// groupo is checked, which is fully independent of the interminateness of the input element.
     indeterminateness: Cell<bool>,
     #[no_trace]
-    text_input: DomRefCell<TextInput<EmbedderClipboardProvider>>,
+    text_input: AtomicRefCell<TextInput<EmbedderClipboardProvider>>,
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
     validity_state: MutNullableDom<ValidityState>,
@@ -131,6 +134,9 @@ pub(crate) struct HTMLInputElement {
     pending_webdriver_response: RefCell<Option<Box<PendingWebDriverResponse>>>,
     /// <https://html.spec.whatwg.org/multipage/#concept-input-value-dirty-flag>
     value_dirty: Cell<bool>,
+    /// <https://html.spec.whatwg.org/multipage/#user-validity>
+    user_validity: Cell<bool>,
+    changed_by_user_while_focused: Cell<bool>,
 
     /// <https://w3c.github.io/selection-api/#dfn-has-scheduled-selectionchange-event>
     has_scheduled_selectionchange_event: Cell<bool>,
@@ -164,7 +170,7 @@ impl HTMLInputElement {
             .clone();
         HTMLInputElement {
             htmlelement: HTMLElement::new_inherited_with_state(
-                ElementState::ENABLED | ElementState::READWRITE,
+                ElementState::ENABLED | ElementState::READWRITE | ElementState::OPTIONAL_,
                 local_name,
                 prefix,
                 document,
@@ -178,7 +184,7 @@ impl HTMLInputElement {
             maxlength: Cell::new(DEFAULT_MAX_LENGTH),
             minlength: Cell::new(DEFAULT_MIN_LENGTH),
             size: Cell::new(DEFAULT_INPUT_SIZE),
-            text_input: DomRefCell::new(TextInput::new(
+            text_input: AtomicRefCell::new(TextInput::new(
                 Lines::Single,
                 DOMString::new(),
                 EmbedderClipboardProvider {
@@ -187,6 +193,8 @@ impl HTMLInputElement {
                 },
             )),
             value_dirty: Cell::new(false),
+            user_validity: Cell::new(false),
+            changed_by_user_while_focused: Cell::new(false),
             form_owner: Default::default(),
             labels_node_list: MutNullableDom::new(None),
             validity_state: Default::default(),
@@ -346,6 +354,89 @@ impl HTMLInputElement {
 
     fn does_multiple_apply(&self) -> bool {
         matches!(*self.input_type(), InputType::Email(_))
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#states-of-the-type-attribute>
+    fn does_required_apply(&self) -> bool {
+        matches!(
+            *self.input_type(),
+            InputType::Text(_) |
+                InputType::Search(_) |
+                InputType::Tel(_) |
+                InputType::Url(_) |
+                InputType::Email(_) |
+                InputType::Password(_) |
+                InputType::Date(_) |
+                InputType::Month(_) |
+                InputType::Week(_) |
+                InputType::Time(_) |
+                InputType::DatetimeLocal(_) |
+                InputType::Number(_) |
+                InputType::Checkbox(_) |
+                InputType::Radio(_) |
+                InputType::File(_)
+        )
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#the-input-element:event-change>
+    /// These values are taken from the table listed for the "change" event.
+    pub(crate) fn does_change_event_apply(&self) -> bool {
+        matches!(
+            *self.input_type(),
+            InputType::Text(_) |
+                InputType::Search(_) |
+                InputType::Tel(_) |
+                InputType::Url(_) |
+                InputType::Email(_) |
+                InputType::Password(_) |
+                InputType::Date(_) |
+                InputType::Month(_) |
+                InputType::Week(_) |
+                InputType::Time(_) |
+                InputType::DatetimeLocal(_) |
+                InputType::Number(_) |
+                InputType::Range(_) |
+                InputType::Color(_) |
+                InputType::Checkbox(_) |
+                InputType::Radio(_) |
+                InputType::File(_)
+        )
+    }
+
+    pub(crate) fn has_defined_activation_behavior(&self) -> bool {
+        InputActivationType::new_from_input_type(&self.input_type()).is_some()
+    }
+
+    #[inline]
+    pub(crate) fn changed_by_user_while_focused(&self) -> bool {
+        self.changed_by_user_while_focused.get()
+    }
+
+    pub(crate) fn set_user_validity(&self, no_gc: &NoGC, value: bool) {
+        if self.user_validity.get() != value {
+            self.user_validity.set(value);
+            self.update_user_valid_state(no_gc);
+        }
+    }
+
+    fn update_required_and_optional_state(&self, no_gc: &NoGC) {
+        let element = self.upcast::<Element>();
+        let required_applies = self.does_required_apply();
+        let required = element.has_attribute(&local_name!("required"));
+
+        // https://html.spec.whatwg.org/multipage/#selector-required
+        // > The :required pseudo-class must match any element falling into one of the following categories:
+        // > - input elements that are required
+        element.set_state(no_gc, ElementState::REQUIRED, required_applies && required);
+
+        // https://html.spec.whatwg.org/multipage/#selector-optional
+        // > The :optional pseudo-class must match any element falling into one of the following categories:
+        // > - input elements to which the required attribute applies that are not required
+        element.set_state(
+            no_gc,
+            ElementState::OPTIONAL_,
+            required_applies && !required,
+        );
     }
 
     // valueAsNumber, step, min, and max all share the same set of
@@ -693,10 +784,10 @@ impl HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#suffering-from-being-missing>
-    fn suffers_from_being_missing(&self, value: &DOMString) -> bool {
+    fn suffers_from_being_missing(&self, no_gc: &NoGC, value: &DOMString) -> bool {
         self.input_type()
             .as_specific()
-            .suffers_from_being_missing(self, value)
+            .suffers_from_being_missing(no_gc, self, value)
     }
 
     /// <https://html.spec.whatwg.org/multipage/#suffering-from-a-type-mismatch>
@@ -910,6 +1001,71 @@ impl HTMLInputElement {
         // The rest of the steps
         image_input_type.dimensions(cx, self)
     }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-input-value>
+    pub(crate) fn set_value(
+        &self,
+        cx: &mut JSContext,
+        mut value: DOMString,
+        changed_by_user: bool,
+    ) -> ErrorResult {
+        match self.value_mode() {
+            ValueMode::Value => {
+                {
+                    // Step 3. Set the element's dirty value flag to true.
+                    self.value_dirty.set(true);
+
+                    // Step 4. Invoke the value sanitization algorithm, if the element's type
+                    // attribute's current state defines one.
+                    self.sanitize_value(&mut value);
+
+                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
+
+                    // Step 5. If the element's value (after applying the value sanitization algorithm)
+                    // is different from oldValue, and the element has a text entry cursor position,
+                    // move the text entry cursor position to the end of the text control,
+                    // unselecting any selected text and resetting the selection direction to "none".
+                    if text_input.get_content() != value {
+                        // Step 2. Set the element's value to the new value.
+                        text_input.set_content(value);
+
+                        text_input.clear_selection_to_end();
+                    }
+                }
+
+                // Additionally, update the placeholder shown state in another
+                // scope to prevent the borrow checker issue. This is normally
+                // being done in the attributed mutated.
+                self.update_placeholder_shown_state(cx.no_gc());
+                self.maybe_update_shared_selection();
+            },
+            ValueMode::Default | ValueMode::DefaultOn => {
+                self.upcast::<Element>()
+                    .set_string_attribute(cx, &local_name!("value"), value);
+            },
+            ValueMode::Filename => {
+                if value.is_empty() {
+                    let window = self.owner_window();
+                    let fl = FileList::new(cx, &window, vec![]);
+                    self.input_type().as_specific().set_files(&fl)
+                } else {
+                    return Err(Error::InvalidState(Some(
+                        "Non-empty value provided for filename".into(),
+                    )));
+                }
+            },
+        }
+
+        self.value_changed(cx, changed_by_user);
+        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
+        Ok(())
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-input-checked>
+    pub(crate) fn set_checked(&self, cx: &mut JSContext, checked: bool, changed_by_user: bool) {
+        self.update_checkedness(cx, checked, true);
+        self.value_changed(cx, changed_by_user);
+    }
 }
 
 impl<'dom> LayoutDom<'dom, HTMLInputElement> {
@@ -931,8 +1087,7 @@ impl<'dom> LayoutDom<'dom, HTMLInputElement> {
         if !element.is_textual_or_password.get() {
             return None;
         }
-        #[expect(unsafe_code)]
-        let text_input = unsafe { element.text_input.borrow_for_layout() };
+        let text_input = element.text_input.borrow_mut();
         text_input.selection_for_layout
     }
 
@@ -975,11 +1130,11 @@ impl TextControlElement for HTMLInputElement {
         self.upcast()
     }
 
-    fn text_input(&self) -> Ref<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input(&self) -> AtomicRef<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow()
     }
 
-    fn text_input_mut(&self) -> RefMut<'_, TextInput<EmbedderClipboardProvider>> {
+    fn text_input_mut(&self) -> AtomicRefMut<'_, TextInput<EmbedderClipboardProvider>> {
         self.text_input.borrow_mut()
     }
 
@@ -1191,8 +1346,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dom-input-checked>
     fn SetChecked(&self, cx: &mut JSContext, checked: bool) {
-        self.update_checkedness(cx, checked, true);
-        self.value_changed(cx);
+        self.set_checked(cx, checked, false);
     }
 
     // https://html.spec.whatwg.org/multipage/#attr-input-colorspace
@@ -1259,57 +1413,8 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dom-input-value>
-    fn SetValue(&self, cx: &mut JSContext, mut value: DOMString) -> ErrorResult {
-        match self.value_mode() {
-            ValueMode::Value => {
-                {
-                    // Step 3. Set the element's dirty value flag to true.
-                    self.value_dirty.set(true);
-
-                    // Step 4. Invoke the value sanitization algorithm, if the element's type
-                    // attribute's current state defines one.
-                    self.sanitize_value(&mut value);
-
-                    let mut text_input = self.text_input.safe_borrow_mut(cx.no_gc());
-
-                    // Step 5. If the element's value (after applying the value sanitization algorithm)
-                    // is different from oldValue, and the element has a text entry cursor position,
-                    // move the text entry cursor position to the end of the text control,
-                    // unselecting any selected text and resetting the selection direction to "none".
-                    if text_input.get_content() != value {
-                        // Step 2. Set the element's value to the new value.
-                        text_input.set_content(value);
-
-                        text_input.clear_selection_to_end();
-                    }
-                }
-
-                // Additionally, update the placeholder shown state in another
-                // scope to prevent the borrow checker issue. This is normally
-                // being done in the attributed mutated.
-                self.update_placeholder_shown_state(cx.no_gc());
-                self.maybe_update_shared_selection();
-            },
-            ValueMode::Default | ValueMode::DefaultOn => {
-                self.upcast::<Element>()
-                    .set_string_attribute(cx, &local_name!("value"), value);
-            },
-            ValueMode::Filename => {
-                if value.is_empty() {
-                    let window = self.owner_window();
-                    let fl = FileList::new(cx, &window, vec![]);
-                    self.input_type().as_specific().set_files(&fl)
-                } else {
-                    return Err(Error::InvalidState(Some(
-                        "Non-empty value provided for filename".into(),
-                    )));
-                }
-            },
-        }
-
-        self.value_changed(cx);
-        self.upcast::<Node>().dirty(cx.no_gc(), NodeDamage::Other);
-        Ok(())
+    fn SetValue(&self, cx: &mut JSContext, value: DOMString) -> ErrorResult {
+        self.set_value(cx, value, false)
     }
 
     // https://html.spec.whatwg.org/multipage/#dom-input-defaultvalue
@@ -1520,6 +1625,30 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     // https://html.spec.whatwg.org/multipage/#dom-input-usemap
     make_setter!(SetUseMap, "usemap");
 
+    // https://html.spec.whatwg.org/multipage/#dom-popovertargetaction
+    make_enumerated_getter!(
+        PopoverTargetAction,
+        "popovertargetaction",
+        "toggle" | "show" | "hide",
+        missing => "toggle",
+        invalid => "toggle"
+    );
+
+    // https://html.spec.whatwg.org/multipage/#dom-popovertargetaction
+    make_setter!(SetPopoverTargetAction, "popovertargetaction");
+
+    /// <https://wicg.github.io/entries-api/#dom-htmlinputelement-webkitdirectory>
+    fn Webkitdirectory(&self) -> bool {
+        self.upcast::<Element>()
+            .has_attribute(&LocalName::from("webkitdirectory"))
+    }
+
+    /// <https://wicg.github.io/entries-api/#dom-htmlinputelement-webkitdirectory>
+    fn SetWebkitdirectory(&self, cx: &mut JSContext, value: bool) {
+        self.upcast::<Element>()
+            .set_bool_attribute(cx, &LocalName::from("webkitdirectory"), value)
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#dom-input-indeterminate>
     fn Indeterminate(&self) -> bool {
         self.indeterminateness.get()
@@ -1599,7 +1728,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-textarea/input-setrangetext>
     fn SetRangeText(&self, cx: &mut JSContext, replacement: DOMString) -> ErrorResult {
         self.set_dom_range_text(cx, replacement, None, None, Default::default())?;
-        self.value_changed(cx);
+        self.value_changed(cx, false);
         Ok(())
     }
 
@@ -1619,7 +1748,7 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
             Some(Utf16CodeUnits::from(end)),
             selection_mode,
         )?;
-        self.value_changed(cx);
+        self.value_changed(cx, false);
         Ok(())
     }
 
@@ -1669,6 +1798,46 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
     /// <https://html.spec.whatwg.org/multipage/#dom-cva-setcustomvalidity>
     fn SetCustomValidity(&self, cx: &mut JSContext, error: DOMString) {
         self.validity_state(cx).set_custom_error_message(cx, error);
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#dom-input-showpicker>
+    fn ShowPicker(&self, cx: &mut JSContext) -> ErrorResult {
+        // Step 1. If this is not mutable, then throw an "InvalidStateError" DOMException.
+        if !self.is_mutable() {
+            return Err(Error::InvalidState(Some(
+                "Input element is not mutable to show picker".into(),
+            )));
+        }
+
+        // Step 2. If this's relevant settings object's origin is not same origin with
+        // this's relevant settings object's top-level origin,
+        // and this is a select element, or this's type attribute is not in
+        // the File Upload state or Color state, then throw a "SecurityError" DOMException.
+        let document = self.owner_document();
+        if Some(document.origin().immutable()) != document.top_level_origin().as_ref() &&
+            !matches!(*self.input_type(), InputType::File(_) | InputType::Color(_))
+        {
+            return Err(Error::Security(Some(
+                "Input element cannot show picker for cross-origin iframe".into(),
+            )));
+        }
+
+        // Step 3. If this's relevant global object does not have transient activation,
+        // then throw a "NotAllowedError" DOMException.
+        if !self.owner_window().has_transient_activation() {
+            return Err(Error::NotAllowed(Some(
+                "Window does not have transient activation".into(),
+            )));
+        }
+
+        // Step 4. If this is a select element, and this is not being rendered,
+        // then throw a "NotSupportedError" DOMException.
+        //
+        // n/a, only applies to select element
+
+        // Step 5. Show the picker, if applicable, for this.
+        self.show_the_picker_if_applicable(cx);
+        Ok(())
     }
 }
 
@@ -1901,7 +2070,7 @@ impl HTMLInputElement {
                 let root = self
                     .upcast::<Node>()
                     .GetRootNode(&GetRootNodeOptions::empty());
-                radio_group_iter(self, group.as_ref(), form.as_deref(), &root)
+                radio_group_iter_unrooted(no_gc, self, group.as_ref(), form.as_deref(), &root)
                     .all(|elem| !elem.Checked())
             },
             _ => false,
@@ -1911,6 +2080,23 @@ impl HTMLInputElement {
             ElementState::INDETERMINATE,
             should_indeterminate_state_apply,
         );
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#selector-user-valid>
+    /// <https://html.spec.whatwg.org/multipage/#selector-user-invalid>
+    pub(crate) fn update_user_valid_state(&self, no_gc: &NoGC) {
+        if self.user_validity.get() {
+            let satisfies_constraints =
+                self.is_instance_validatable(no_gc) && self.satisfies_constraints();
+            let element = self.upcast::<Element>();
+            element.set_state(no_gc, ElementState::USER_VALID, satisfies_constraints);
+            element.set_state(no_gc, ElementState::USER_INVALID, !satisfies_constraints);
+        } else {
+            // Avoid computing constraint validation if user validity is false
+            let element = self.upcast::<Element>();
+            element.set_state(no_gc, ElementState::USER_VALID, false);
+            element.set_state(no_gc, ElementState::USER_INVALID, false);
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#concept-fe-mutable>
@@ -1930,6 +2116,7 @@ impl HTMLInputElement {
     /// > then invoke the value sanitization algorithm, if the type attribute's current
     /// > state defines one.
     pub(crate) fn reset(&self, cx: &mut JSContext) {
+        self.set_user_validity(cx.no_gc(), false);
         self.value_dirty.set(false);
 
         // We set the value and sanitize all in one go.
@@ -1951,7 +2138,7 @@ impl HTMLInputElement {
                 .set_files(&FileList::new(cx, &self.owner_window(), vec![]));
         }
 
-        self.value_changed(cx);
+        self.value_changed(cx, false);
     }
 
     /// <https://w3c.github.io/webdriver/#ref-for-dfn-clear-algorithm-3>
@@ -1982,7 +2169,7 @@ impl HTMLInputElement {
             text_input.set_content(value);
         }
 
-        self.value_changed(cx);
+        self.value_changed(cx, false);
     }
 
     fn update_placeholder_shown_state(&self, no_gc: &NoGC) {
@@ -2112,9 +2299,12 @@ impl HTMLInputElement {
                     .perform_validation_and_update(cx, ValidationFlags::all());
             },
         }
+        self.update_user_valid_state(cx.no_gc());
     }
 
-    fn value_changed(&self, cx: &mut JSContext) {
+    fn value_changed(&self, cx: &mut JSContext, changed_by_user: bool) {
+        self.changed_by_user_while_focused
+            .set(changed_by_user && self.upcast::<Element>().focus_state());
         self.maybe_update_shared_selection();
         self.update_related_validity_states(cx);
         if self.upcast::<Node>().is_connected() {
@@ -2150,14 +2340,31 @@ impl HTMLInputElement {
 
     /// <https://html.spec.whatwg.org/multipage/#show-the-picker,-if-applicable>
     pub(crate) fn show_the_picker_if_applicable(&self, cx: &mut JSContext) {
-        // FIXME: Implement most of this algorithm
+        // Step 1. If element's relevant global object does not have transient activation,
+        // then return.
+        let window = self.owner_window();
+        if !window.has_transient_activation() {
+            return;
+        }
 
         // Step 2. If element is not mutable, then return.
         if !self.is_mutable() {
             return;
         }
 
-        // Step 6. Otherwise, the user agent should show the relevant user interface for selecting a value for element,
+        // Step 3. Consume user activation given element's relevant global object.
+        window.consume_user_activation();
+
+        // Step 4. If element does not support a picker, then return.
+        //
+        // Not applicable, that's handled by `self.input_type().as_specific()`
+
+        // Step 5. If element is an input element and element's type attribute is in the File Upload state,
+        // then run these steps in parallel:
+        // TODO: Implement steps regarding asking for permission
+
+        // Step 6. Otherwise, the user agent should show the relevant
+        // user interface for selecting a value for element,
         // in the way it normally would when the user interacts with the control.
         self.input_type()
             .as_specific()
@@ -2194,7 +2401,7 @@ impl HTMLInputElement {
         if *event_type == *"blur" && !matches!(&*self.input_type(), InputType::File(..)) {
             document
                 .embedder_controls()
-                .hide_embedder_control(self.upcast());
+                .hide_embedder_control_for_element(self.upcast());
         } else if *event_type == *"focus" {
             let input_type = &*self.input_type();
             let Ok(input_method_type) = input_type.try_into() else {
@@ -2266,6 +2473,10 @@ impl VirtualMethods for HTMLInputElement {
                     self.update_checkedness(cx, checked_state, false);
                 }
                 self.update_default_state_indirectly(cx.no_gc());
+            },
+            local_name!("min") | local_name!("max") => {
+                self.validity_state(cx)
+                    .perform_validation_and_update(cx, ValidationFlags::all());
             },
             local_name!("size") => {
                 let size = mutation.new_value(attr).map(|value| value.as_uint());
@@ -2377,12 +2588,15 @@ impl VirtualMethods for HTMLInputElement {
                     .as_specific()
                     .update_placeholder_contents(cx, self);
 
+                self.validity_state(cx)
+                    .perform_validation_and_update(cx, ValidationFlags::all());
                 self.update_checked_state(cx.no_gc());
                 self.update_indeterminate_state(cx.no_gc());
                 self.update_default_state_indirectly(cx.no_gc());
                 if element.focus_state() {
                     element.set_focusring_state(cx.no_gc(), self.is_textual_or_password());
                 }
+                self.update_required_and_optional_state(cx.no_gc());
             },
             local_name!("value") if !self.value_dirty.get() => {
                 // This is only run when the `value` or `defaultValue` attribute is set. It
@@ -2451,6 +2665,9 @@ impl VirtualMethods for HTMLInputElement {
             local_name!("form") => {
                 self.form_attribute_mutated(cx, mutation);
             },
+            local_name!("required") => {
+                self.update_required_and_optional_state(cx.no_gc());
+            },
             _ => {
                 self.input_type()
                     .as_specific()
@@ -2458,12 +2675,12 @@ impl VirtualMethods for HTMLInputElement {
             },
         }
 
-        self.value_changed(cx);
+        self.value_changed(cx, false);
 
         if could_have_had_embedder_control && !self.may_have_embedder_control() {
             self.owner_document()
                 .embedder_controls()
-                .hide_embedder_control(self.upcast());
+                .hide_embedder_control_for_element(self.upcast());
         }
     }
 
@@ -2496,7 +2713,7 @@ impl VirtualMethods for HTMLInputElement {
         self.input_type()
             .as_specific()
             .run_shared_bind_to_tree_or_moving_steps(cx, self);
-        self.value_changed(cx);
+        self.value_changed(cx, false);
     }
 
     fn moving_steps(&self, cx: &mut JSContext, context: &MoveContext) {
@@ -2512,7 +2729,7 @@ impl VirtualMethods for HTMLInputElement {
         // Always attempt to hide IME when unbinding input elements from the tree.
         self.owner_document_unrooted(cx.no_gc())
             .embedder_controls()
-            .hide_embedder_control(self.upcast());
+            .hide_embedder_control_for_element(self.upcast());
 
         let form_owner = self.form_owner();
         self.super_type().unwrap().unbind_from_tree(cx, context);
@@ -2532,7 +2749,8 @@ impl VirtualMethods for HTMLInputElement {
     /// <https://dom.spec.whatwg.org/#action-versus-occurance>
     fn handle_event(&self, cx: &mut JSContext, event: &Event) {
         if let Some(event) = event.downcast::<FocusEvent>() {
-            self.handle_focus_event(cx, event)
+            self.handle_focus_event(cx, event);
+            self.maybe_update_shared_selection();
         }
 
         let value_change_events = self
@@ -2540,7 +2758,9 @@ impl VirtualMethods for HTMLInputElement {
             .as_specific()
             .handle_event(cx, self, event);
 
-        self.value_changed(cx);
+        if event.is::<InputEvent>() {
+            self.value_changed(cx, event.IsTrusted());
+        }
 
         self.fire_value_change_events(cx, value_change_events);
 
@@ -2570,11 +2790,12 @@ impl VirtualMethods for HTMLInputElement {
         elem.text_input
             .safe_borrow_mut(cx.no_gc())
             .clone_content_from(&self.text_input.borrow());
-        elem.value_changed(cx);
+        elem.value_changed(cx, false);
     }
 
     fn attribute_affects_presentational_hints(&self, attr: AttrRef<'_>) -> bool {
         match attr.local_name() {
+            &local_name!("type") => true,
             &local_name!("width") |
             &local_name!("height") |
             &local_name!("hspace") |
@@ -2609,9 +2830,21 @@ impl Validatable for HTMLInputElement {
         self.upcast()
     }
 
+    /// <https://html.spec.whatwg.org/multipage/#have-range-limitations>
+    fn has_range_limitations(&self) -> bool {
+        self.does_value_as_number_apply() && (self.minimum().is_some() || self.maximum().is_some())
+    }
+
     fn validity_state(&self, cx: &mut JSContext) -> DomRoot<ValidityState> {
         self.validity_state
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
+    }
+
+    fn satisfies_constraints(&self) -> bool {
+        let Some(validity_state) = self.validity_state.get() else {
+            return true;
+        };
+        validity_state.invalid_flags().is_empty()
     }
 
     fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
@@ -2640,7 +2873,7 @@ impl Validatable for HTMLInputElement {
         let value = self.Value();
 
         if validate_flags.contains(ValidationFlags::VALUE_MISSING) &&
-            self.suffers_from_being_missing(&value)
+            self.suffers_from_being_missing(cx.no_gc(), &value)
         {
             failed_flags.insert(ValidationFlags::VALUE_MISSING);
         }
@@ -2706,7 +2939,7 @@ impl Activatable for HTMLInputElement {
             .legacy_pre_activation_behavior(cx, self);
 
         if activation_state.is_some() {
-            self.value_changed(cx);
+            self.value_changed(cx, false);
         }
 
         activation_state
@@ -2740,7 +2973,7 @@ impl Activatable for HTMLInputElement {
         ty.as_specific()
             .legacy_canceled_activation_behavior(cx, self, cache);
 
-        self.value_changed(cx);
+        self.value_changed(cx, false);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-input-element:activation-behaviour>
@@ -2765,11 +2998,16 @@ impl Activatable for HTMLInputElement {
 
         // Step 3. If element has a form owner and element's type attribute
         // is not in the Button state, then return.
-        // TODO
+        if self.form_owner().is_some() && !matches!(*self.input_type(), InputType::Button(_)) {
+            return;
+        }
 
         // Step 4. Run the popover target attribute activation behavior
         // given element and event's target.
-        // TODO
+        if let Some(target) = target.downcast::<Node>() {
+            self.upcast::<HTMLElement>()
+                .popover_target_attribute_activation_behavior(cx, target);
+        }
     }
 }
 

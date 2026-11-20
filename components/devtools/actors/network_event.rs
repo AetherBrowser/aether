@@ -6,15 +6,15 @@
 //! Handles interaction with the remote web console on network events (HTTP requests, responses) in Servo.
 
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use atomic_refcell::AtomicRefCell;
 use base64::engine::Engine;
 use base64::engine::general_purpose::STANDARD;
-use chrono::{Local, LocalResult, TimeZone};
 use devtools_traits::{HttpRequest, HttpResponse};
 use headers::{ContentLength, HeaderMapExt};
 use http::HeaderMap;
+use jiff::ZonedDateTime;
 use malloc_size_of_derive::MallocSizeOf;
 use net::cookie::ServoCookie;
 use net_traits::fetch::headers::extract_mime_type_as_dataurl_mime;
@@ -153,6 +153,7 @@ struct ResponseFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     transferred_size: Option<u64>,
     content_size: usize,
+    truncated: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -192,6 +193,7 @@ struct ResponseContent {
     text: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     transferred_size: Option<u64>,
+    truncated: bool,
 }
 
 #[derive(Clone, Serialize, MallocSizeOf)]
@@ -481,27 +483,28 @@ impl Actor for NetworkEventActor {
                 let content = response.response.body.as_ref().map(|body| {
                     let (encoding, text) = if mime_type.is_some() {
                         // Queue a LongStringActor for this body
-                        let body_string = String::from_utf8_lossy(body).to_string();
+                        let body_string = String::from_utf8_lossy(&body.data).to_string();
                         let long_string_actor = LongStringActor::register(registry, body_string);
                         let value = long_string_actor.long_string_obj();
                         (None, serde_json::to_value(value).unwrap())
                     } else {
-                        let b64 = STANDARD.encode(body);
+                        let b64 = STANDARD.encode(&body.data);
                         (Some("base64".into()), serde_json::to_value(b64).unwrap())
                     };
                     let is_content_encoded = encoding.is_some();
 
                     ResponseContent {
-                        body_size: body.len(),
+                        body_size: body.data.len(),
                         content_charset: String::new(),
-                        decoded_body_size: body.len(),
+                        decoded_body_size: body.content_size,
                         encoding,
                         headers_size: raw_headers.len(),
                         is_content_encoded,
                         mime_type,
-                        size: body.len(),
+                        size: body.content_size,
                         text,
                         transferred_size,
+                        truncated: body.truncated,
                     }
                 });
 
@@ -624,7 +627,7 @@ impl NetworkEventActor {
                 .response
                 .body
                 .as_ref()
-                .is_some_and(|body| !body.is_empty()),
+                .is_some_and(|body| !body.data.is_empty()),
             response_cookies_available: cookies.is_some(),
             response_headers_available: headers.is_some(),
             response_start_available: true,
@@ -640,8 +643,13 @@ impl NetworkEventActor {
                 .response
                 .body
                 .as_ref()
-                .map(|body| body.len())
+                .map(|body| body.content_size)
                 .unwrap_or(0),
+            truncated: response
+                .response
+                .body
+                .as_ref()
+                .is_some_and(|body| body.truncated),
         })
     }
 
@@ -720,17 +728,14 @@ impl ActorEncode<NetworkEventMsg> for NetworkEventActor {
         let request = self.request.borrow();
         let request = &request.as_ref().expect("There should be a request").request;
 
-        let started_datetime_rfc3339 = match Local.timestamp_millis_opt(
-            request
-                .started_date_time
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64,
-        ) {
-            LocalResult::None => String::new(),
-            LocalResult::Single(date_time) => date_time.to_rfc3339(),
-            LocalResult::Ambiguous(date_time, _) => date_time.to_rfc3339(),
-        };
+        let started_datetime_rfc3339 = ZonedDateTime::try_from(request.started_date_time)
+            .map(|date_time| {
+                date_time
+                    .timestamp()
+                    .display_with_offset(date_time.offset())
+                    .to_string()
+            })
+            .unwrap_or_default();
 
         let browsing_context_actor =
             registry.find::<BrowsingContextActor>(&self.browsing_context_name);

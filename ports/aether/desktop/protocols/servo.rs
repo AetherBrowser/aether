@@ -16,6 +16,7 @@
 //! - about:home
 //! - about:about
 //! - about:search-engines
+//! - about:content-filter
 //! - about:history-data
 
 use std::future::Future;
@@ -101,6 +102,16 @@ impl ProtocolHandler for ServoProtocolHandler {
                 json_response(
                     request,
                     crate::search::handle_search_engines_request(url.query()),
+                )
+            },
+
+            "content-filter" => {
+                if !internal_json_request_is_allowed(request, url.query()) {
+                    return forbidden_response();
+                }
+                json_response(
+                    request,
+                    crate::content_filter::handle_content_filter_request(url.query()),
                 )
             },
 

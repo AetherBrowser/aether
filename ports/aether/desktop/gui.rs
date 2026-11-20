@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(any(
     target_os = "windows",
     target_os = "linux",
@@ -20,13 +20,12 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use accesskit::Affine;
 use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
     Button, FontDefinitions, Id, Key, Label, LayerId, Order, PaintCallback, Panel, WidgetInfo,
-    WidgetType, pos2,
+    WidgetType,
 };
 #[cfg(any(
     target_os = "windows",
@@ -57,14 +56,32 @@ use winit::window::Window;
 
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
-use crate::desktop::icons::{ToolbarIcon, ToolbarIconCache};
+use crate::desktop::icons::{
+    LOCATION_BUTTON_SIZE, NAVIGATION_CONTROL_SIZE, TOOLBAR_BUTTON_CORNER_RADIUS, ToolbarIcon,
+    ToolbarIconCache,
+};
 use crate::desktop::menu::AppMenu;
 use crate::desktop::shortcuts::BrowserAction;
+use crate::desktop::webview_widget::WebViewWidget;
 use crate::home::{AETHER_HOME_URL, BLANK_URL};
 use crate::parser::complete_com_domain;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     ServoShellWindow, TopLevelWebViewCreationRequest, can_view_source, new_tab_url,
+};
+
+/// Space between the bookmark star and the frame of the location bar.
+const BOOKMARK_STAR_INSET: f32 = (NAVIGATION_CONTROL_SIZE - LOCATION_BUTTON_SIZE) / 2.0;
+
+/// Corner radius of the location bar, concentric with the hover square of the bookmark star.
+const LOCATION_CORNER_RADIUS: u8 = TOOLBAR_BUTTON_CORNER_RADIUS + BOOKMARK_STAR_INSET as u8;
+
+/// Margin of the location bar text, which stops before the bookmark star.
+const LOCATION_TEXT_MARGIN: egui::Margin = egui::Margin {
+    left: 8,
+    right: (LOCATION_BUTTON_SIZE + 2.0 * BOOKMARK_STAR_INSET) as i8,
+    top: 2,
+    bottom: 2,
 };
 
 /// The egui id of the location bar.
@@ -137,9 +154,20 @@ pub struct Gui {
     /// so the close button works and the page does not receive them.
     devtools_rect: egui::Rect,
 
-    /// AccessKit tree updates pending the next egui tick.
+    /// A record of accessibility tree ids that correspond to extant WebViews and have already been
+    /// sent to AccessKit. This is used to avoid focusing a grafted tree before it has been sent.
+    /// Pruned at the end of each GUI update.
+    sent_webview_accesskit_trees: HashSet<accesskit::TreeId>,
+
+    /// AccessKit tree updates pending to be sent during the next call to [`Self::update`].
     /// This allows us to ensure that graft nodes are sent before the subtrees they graft.
     pending_accesskit_updates: Vec<accesskit::TreeUpdate>,
+
+    /// Whether the [`WebViewWidget`] corresponding to the currently active [`WebView`] has keyboard
+    /// focus within the egui interface. This remains `true` even if the application loses system
+    /// focus, so that application focus can be re-set to the [`WebViewWidget`] once the application
+    /// regains system focus.
+    webview_widget_focused: bool,
 }
 
 fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
@@ -289,6 +317,7 @@ impl Gui {
         event_loop_proxy: EventLoopProxy<AppEvent>,
         rendering_context: Rc<OffscreenRenderingContext>,
         initial_url: Url,
+        device_pixel_override: Option<f32>,
     ) -> Self {
         rendering_context
             .make_current()
@@ -317,6 +346,13 @@ impl Gui {
             // On platforms where winit fails to obtain a system theme, fall back to a light theme
             // since it is the more common default.
             options.fallback_theme = egui::Theme::Light;
+
+            // Set the zoom before the first frame. egui otherwise uses a 10000² placeholder
+            // size when a pending zoom is applied with no previous frame, which panics when
+            // creating the RenderingContext (same fix as servoshell #49812).
+            options.zoom_factor = device_pixel_override.map_or(1.0, |device_pixel_override| {
+                device_pixel_override / winit_window.scale_factor() as f32
+            });
         });
 
         Self {
@@ -338,7 +374,9 @@ impl Gui {
             app_menu_action: None,
             devtools_open: false,
             devtools_rect: egui::Rect::NOTHING,
+            sent_webview_accesskit_trees: Default::default(),
             pending_accesskit_updates: vec![],
+            webview_widget_focused: false,
         }
     }
 
@@ -371,12 +409,14 @@ impl Gui {
         self.app_menu_action.take()
     }
 
-    pub(crate) fn surrender_focus(&self) {
-        self.context.egui_ctx.memory_mut(|memory| {
-            if let Some(focused) = memory.focused() {
-                memory.surrender_focus(focused);
-            }
-        });
+    /// See [`webview_widget_focused`](#structfield.webview_widget_focused)
+    pub(crate) fn webview_widget_focused(&self) -> bool {
+        self.webview_widget_focused
+    }
+
+    /// See [`webview_widget_focused`](#structfield.webview_widget_focused)
+    pub(crate) fn set_webview_widget_focused(&mut self, focused: bool) {
+        self.webview_widget_focused = focused;
     }
 
     pub(crate) fn on_window_event(
@@ -419,6 +459,34 @@ impl Gui {
         self.app_menu.contains_pointer(position)
     }
 
+    /// Draws the bookmark star over the right end of the location bar.
+    fn bookmark_star(
+        ui: &mut egui::Ui,
+        toolbar_icons: &mut ToolbarIconCache,
+        location_rect: egui::Rect,
+        bookmarked: bool,
+    ) -> egui::Response {
+        let (icon, label) = if bookmarked {
+            (ToolbarIcon::Bookmark, "Remove bookmark")
+        } else {
+            (ToolbarIcon::BookmarkHollow, "Bookmark this page")
+        };
+        let mut star_rect = location_rect;
+        star_rect.max.x -= BOOKMARK_STAR_INSET;
+        let star = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(star_rect), |ui| {
+                toolbar_icons.location_button(ui, icon).on_hover_text(label)
+            })
+            .inner;
+        star.widget_info(|| {
+            let mut info = WidgetInfo::new(WidgetType::Button);
+            info.label = Some(label.into());
+            info.selected = Some(bookmarked);
+            info
+        });
+        star
+    }
+
     /// Draws a browser tab, checking for clicks and queues appropriate [`UserInterfaceCommand`]s.
     /// Using a custom widget here would've been nice, but it doesn't seem as though egui
     /// supports that, so we arrange multiple Widgets in a way that they look connected.
@@ -434,7 +502,6 @@ impl Gui {
             (_, Some(url)) => url.to_string(),
             _ => "New Tab".into(),
         };
-
         let inactive_bg_color = ui.visuals().window_fill;
         let active_bg_color = ui.visuals().widgets.active.weak_bg_fill;
         let active = window.active_webview().map(|webview| webview.id()) == Some(webview.id());
@@ -596,10 +663,12 @@ impl Gui {
                         ui.available_size(),
                         egui::Layout::left_to_right(egui::Align::Center),
                         |ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+
                             let back_button = ui
                                 .add_enabled_ui(self.can_go_back, |ui| {
                                     toolbar_icons
-                                        .button(ui, ToolbarIcon::Back)
+                                        .navigation_button(ui, ToolbarIcon::Back)
                                         .on_hover_text("Back")
                                 })
                                 .inner;
@@ -616,7 +685,7 @@ impl Gui {
                             let forward_button = ui
                                 .add_enabled_ui(self.can_go_forward, |ui| {
                                     toolbar_icons
-                                        .button(ui, ToolbarIcon::Forward)
+                                        .navigation_button(ui, ToolbarIcon::Forward)
                                         .on_hover_text("Forward")
                                 })
                                 .inner;
@@ -633,7 +702,7 @@ impl Gui {
                             match self.load_status {
                                 LoadStatus::Started | LoadStatus::HeadParsed => {
                                     let stop_button = toolbar_icons
-                                        .button(ui, ToolbarIcon::Stop)
+                                        .navigation_button(ui, ToolbarIcon::Stop)
                                         .on_hover_text("Stop");
                                     stop_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -646,7 +715,7 @@ impl Gui {
                                 },
                                 LoadStatus::Complete | LoadStatus::Stopped => {
                                     let reload_button = toolbar_icons
-                                        .button(ui, ToolbarIcon::Reload)
+                                        .navigation_button(ui, ToolbarIcon::Reload)
                                         .on_hover_text("Reload");
                                     reload_button.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -663,7 +732,7 @@ impl Gui {
                             }
 
                             let home_button = toolbar_icons
-                                .button(ui, ToolbarIcon::Home)
+                                .navigation_button(ui, ToolbarIcon::Home)
                                 .on_hover_text("Home");
                             home_button.widget_info(|| {
                                 let mut info = WidgetInfo::new(WidgetType::Button);
@@ -674,14 +743,14 @@ impl Gui {
                                 *location_dirty = false;
                                 window.queue_user_interface_command(UserInterfaceCommand::Home);
                             }
-                            ui.add_space(2.0);
+                            ui.add_space(4.0);
 
                             ui.allocate_ui_with_layout(
                                 ui.available_size(),
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     let menu_button_response = toolbar_icons
-                                        .button(ui, ToolbarIcon::Menu)
+                                        .navigation_button(ui, ToolbarIcon::Menu)
                                         .on_hover_text("Menu");
                                     menu_button_response.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -691,10 +760,17 @@ impl Gui {
                                     });
                                     menu_button = Some(menu_button_response);
 
-                                    let mut experimental_preferences_enabled =
+                                    let experimental_preferences_enabled =
                                         state.experimental_preferences_enabled();
                                     let prefs_toggle = ui
-                                        .toggle_value(&mut experimental_preferences_enabled, "☢")
+                                        .add(
+                                            Button::selectable(
+                                                experimental_preferences_enabled,
+                                                "☢",
+                                            )
+                                            .min_size(egui::Vec2::splat(NAVIGATION_CONTROL_SIZE))
+                                            .corner_radius(TOOLBAR_BUTTON_CORNER_RADIUS),
+                                        )
                                         .on_hover_text("Enable experimental prefs");
                                     prefs_toggle.widget_info(|| {
                                         let mut info = WidgetInfo::new(WidgetType::Button);
@@ -704,19 +780,32 @@ impl Gui {
                                     });
                                     if prefs_toggle.clicked() {
                                         state.set_experimental_preferences_enabled(
-                                            experimental_preferences_enabled,
+                                            !experimental_preferences_enabled,
                                         );
                                         *location_dirty = false;
                                         window.queue_user_interface_command(
                                             UserInterfaceCommand::ReloadAll,
                                         );
                                     }
+                                    ui.add_space(4.0);
+
+                                    let widgets = &mut ui.visuals_mut().widgets;
+                                    for visuals in [
+                                        &mut widgets.inactive,
+                                        &mut widgets.hovered,
+                                        &mut widgets.active,
+                                    ] {
+                                        visuals.corner_radius =
+                                            egui::CornerRadius::same(LOCATION_CORNER_RADIUS);
+                                    }
 
                                     let location_id = location_id();
                                     let location_field = ui.add_sized(
-                                        ui.available_size(),
+                                        egui::vec2(ui.available_width(), NAVIGATION_CONTROL_SIZE),
                                         egui::TextEdit::singleline(location)
                                             .id(location_id)
+                                            .margin(LOCATION_TEXT_MARGIN)
+                                            .vertical_align(egui::Align::Center)
                                             .hint_text("Search or enter address"),
                                     );
 
@@ -783,6 +872,22 @@ impl Gui {
                                             window.queue_user_interface_command(
                                                 UserInterfaceCommand::Go(location.clone()),
                                             );
+                                        }
+                                    }
+
+                                    if !*location_dirty &&
+                                        let Some(webview) = window.active_webview() &&
+                                        let Some(url) = webview.url() &&
+                                        let Some(bookmarked) = state.bookmark_state(&url)
+                                    {
+                                        let bookmark_star = Self::bookmark_star(
+                                            ui,
+                                            toolbar_icons,
+                                            location_field.rect,
+                                            bookmarked,
+                                        );
+                                        if bookmark_star.clicked() {
+                                            state.toggle_bookmark(&webview);
                                         }
                                     }
                                 },
@@ -869,38 +974,56 @@ impl Gui {
                 self.devtools_rect = egui::Rect::NOTHING;
             }
 
-            let scale =
-                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
-
-            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx));
-
             // If the top parts of the GUI changed size, then update the size of the WebView and also
             // the size of its RenderingContext.
-            let available_rect = ctx.available_rect_before_wrap();
+            let webview_rect = ctx.available_rect_before_wrap();
+            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx, webview_rect));
 
-            // Build a graft node for each WebView.
-            let affine = {
-                // The grafted WebView tree reports bounds in device pixels relative to the
-                // WebView's own origin, so this node supplies the offset of the WebView within
-                // the window, and scales it to the same scale as the rest of the nodes in egui's
-                // AccessKit tree.
-                let scale = (1.0 / window.platform_window().hidpi_scale_factor().get()) as f64;
-                let x = available_rect.min.x as f64;
-                let y = available_rect.min.y as f64;
-                Affine::new([scale, 0.0, 0.0, scale, x, y])
-            };
-            for (webview_id, webview) in window.webviews() {
-                if let Some(tree_id) = webview.accesskit_tree_id() {
-                    let id = egui::Id::new(webview_id);
-                    ctx.accesskit_node_builder(id, |node| {
-                        node.set_tree_id(tree_id);
-                        // Only the transform is set: AccessKit consumers exclude graft nodes from
-                        // the presented tree, so bounds on this node would never be read.
-                        node.set_transform(affine);
-                    });
+            // Some other widget may have claimed focus on this tick, so detect if the currently
+            // focused egui widget is still a WebView.
+            let focused_widget = ctx.memory(|memory| memory.focused());
+            if focused_widget.is_some_and(|focused_widget| {
+                !window
+                    .webview_collection()
+                    .values()
+                    .any(|webview| egui::Id::new(webview.id()) == focused_widget)
+            }) {
+                self.webview_widget_focused = false;
+            }
+
+            // Create a WebViewWidget for each webview, not just the active one, so that every
+            // webview gets an AccessKit graft node. This prevents any TreeUpdates from inactive
+            // webviews from causing a panic in AccessKit.
+            let scale_factor =
+                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
+            let active_webview = window.active_webview();
+            for (_, webview) in window.webviews() {
+                let webview_active = active_webview.as_ref() == Some(&webview);
+                let webview_contains_focus = webview_active && self.webview_widget_focused;
+
+                // AccessKit will panic if we try to focus a graft node whose grafted tree hasn't
+                // been sent yet, so we need to keep track of whether a TreeUpdate containing the
+                // grafted tree has been sent before focusing the WebViewWidget if accessibility is
+                // active.
+                let tree_id_sent = webview
+                    .accesskit_tree_id()
+                    .is_none_or(|tree_id| self.sent_webview_accesskit_trees.contains(&tree_id));
+                let can_take_focus = webview_active && webview.focused() && tree_id_sent;
+                let panel = WebViewWidget::new(
+                    webview.clone(),
+                    scale_factor,
+                    webview_rect,
+                    webview_contains_focus,
+                    can_take_focus,
+                );
+
+                // If focus moves into the WebView via keyboard or assistive technology, then we need
+                // to update the GUI state to reflect that.
+                if ctx.add(panel).gained_focus() {
+                    self.webview_widget_focused = true;
                 }
             }
-            let size = Size2D::new(available_rect.width(), available_rect.height()) * scale;
+            let size = Size2D::new(webview_rect.width(), webview_rect.height()) * scale_factor;
             if let Some(webview) = window.active_webview() &&
                 size != webview.size()
             {
@@ -915,7 +1038,7 @@ impl Gui {
                     ctx.clone(),
                     LayerId::new(Order::Tooltip, Id::new("tooltip")),
                     "tooltip layer".into(),
-                    pos2(0.0, available_rect.max.y),
+                    webview_rect.right_bottom(),
                 )
                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
             }
@@ -924,7 +1047,7 @@ impl Gui {
 
             if let Some(render_to_parent) = rendering_context.render_to_parent_callback() {
                 ctx.layer_painter(LayerId::background()).add(PaintCallback {
-                    rect: available_rect,
+                    rect: webview_rect,
                     callback: Arc::new(CallbackFn::new(move |info, painter| {
                         let clip = info.viewport_in_pixels();
                         let rect_in_parent = Rect::new(
@@ -950,8 +1073,18 @@ impl Gui {
             .as_mut()
             .expect("guaranteed by Gui::new()");
         for tree_update in self.pending_accesskit_updates.drain(..) {
+            let tree_id = tree_update.tree_id;
             adapter.update_if_active(|| tree_update);
+            self.sent_webview_accesskit_trees.insert(tree_id);
         }
+
+        // Prune any AccessKit tree ids which don't correspond to extant WebViews.
+        self.sent_webview_accesskit_trees.retain(|tree_id| {
+            window
+                .webview_collection()
+                .values()
+                .any(|webview| webview.accesskit_tree_id() == Some(*tree_id))
+        });
     }
 
     /// Paint the GUI, as of the last update.
@@ -1152,6 +1285,7 @@ fn load_pending_favicons(
             continue;
         };
         let Some(favicon) = webview.favicon() else {
+            texture_cache.remove(&id);
             continue;
         };
 
@@ -1213,6 +1347,81 @@ mod tests {
             location_text(&url("https://example.com/")),
             "https://example.com/"
         );
+    }
+
+    /// Shows a location bar with its star and returns their responses.
+    fn location_bar_with_star(
+        ui: &mut egui::Ui,
+        icons: &mut ToolbarIconCache,
+        text: &mut String,
+    ) -> (egui::Response, egui::Response) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let field = ui.add_sized(
+                egui::vec2(400.0, NAVIGATION_CONTROL_SIZE),
+                egui::TextEdit::singleline(text).margin(LOCATION_TEXT_MARGIN),
+            );
+            let star = Gui::bookmark_star(ui, icons, field.rect, false);
+            (field, star)
+        })
+        .inner
+    }
+
+    #[test]
+    fn the_bookmark_star_stays_inside_the_frame_of_the_location_bar() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut text = String::new();
+
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+            let (field, star) = location_bar_with_star(ui, &mut icons, &mut text);
+
+            assert!(
+                field
+                    .rect
+                    .shrink(BOOKMARK_STAR_INSET)
+                    .contains_rect(star.rect)
+            );
+            assert_eq!(star.rect.right(), field.rect.right() - BOOKMARK_STAR_INSET);
+            assert_eq!(star.rect.center().y, field.rect.center().y);
+            assert!(field.rect.right() - star.rect.left() <= LOCATION_TEXT_MARGIN.right as f32);
+        });
+    }
+
+    #[test]
+    fn a_click_on_the_star_does_not_reach_the_location_bar() {
+        let ctx = egui::Context::default();
+        let mut icons = ToolbarIconCache::default();
+        let mut text = String::new();
+        let mut star_center = egui::Pos2::ZERO;
+        let _ = ctx.run_ui(screen_input(vec![]), |ui| {
+            star_center = location_bar_with_star(ui, &mut icons, &mut text)
+                .1
+                .rect
+                .center();
+        });
+
+        let button = |pressed| egui::Event::PointerButton {
+            pos: star_center,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let mut star_clicked = false;
+        for events in [
+            vec![egui::Event::PointerMoved(star_center), button(true)],
+            vec![button(false)],
+            vec![],
+        ] {
+            let _ = ctx.run_ui(screen_input(events), |ui| {
+                let (field, star) = location_bar_with_star(ui, &mut icons, &mut text);
+
+                star_clicked |= star.clicked();
+                assert!(!field.clicked());
+                assert!(!field.has_focus());
+                assert!(!field.hovered());
+            });
+        }
+        assert!(star_clicked);
     }
 
     #[test]

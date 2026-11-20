@@ -8,19 +8,20 @@
 # except according to those terms.
 
 from __future__ import annotations
+
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Iterable, Optional, TypeVar
 
+from geckordp.actors.descriptors.tab import TabActor
 from geckordp.actors.events import Events
 from geckordp.actors.resources import Resources
 from geckordp.actors.root import RootActor
-from geckordp.actors.descriptors.tab import TabActor
 from geckordp.actors.watcher import WatcherActor
 from geckordp.rdp_client import RDPClient
-
-from collections.abc import Callable
 
 # Set this to true to log requests in the internal web servers.
 LOG_REQUESTS = False
@@ -391,6 +392,77 @@ def collect_network_events(
     if isinstance(result, Exception):
         raise result
     return result, seen
+
+
+def collect_network_response(
+    devtools: Devtools,
+    url_predicate: Callable[[str], bool],
+    trigger: Optional[Callable[[], None]] = None,
+    timeout: int = 3,
+):
+    """
+    Watch network-event resources and wait for the first request seen whose URL matches
+    `url_predicate` to get a response. Returns the network event, whose `actor` can be sent
+    messages like getResponseContent, and the response fields (status, mimeType, sizes).
+    These fields arrive in a resources-updated-array message after the request's
+    resources-available-array message.
+    """
+    done = Future()
+    # geckordp runs callbacks on a thread pool, so updates may be handled before the
+    # matching available event. Buffer them and check for a match from both callbacks.
+    lock = Lock()
+    matched_event = None
+    responses = {}
+
+    def resolve_if_ready():
+        if matched_event is not None and matched_event["resourceId"] in responses and not done.done():
+            done.set_result((matched_event, responses[matched_event["resourceId"]]))
+
+    def on_available(data):
+        nonlocal matched_event
+        try:
+            with lock:
+                for [resource_type, resources] in data.get("array", []):
+                    if resource_type != "network-event":
+                        continue
+                    for event in resources:
+                        if matched_event is None and url_predicate(event.get("url", "")):
+                            matched_event = event
+                resolve_if_ready()
+        except Exception as e:
+            if not done.done():
+                done.set_result(e)
+
+    def on_updated(data):
+        try:
+            with lock:
+                for [resource_type, resources] in data.get("array", []):
+                    if resource_type != "network-event":
+                        continue
+                    for resource in resources:
+                        updates = resource.get("resourceUpdates", {})
+                        if "status" in updates:
+                            responses.setdefault(resource["resourceId"], updates)
+                resolve_if_ready()
+        except Exception as e:
+            if not done.done():
+                done.set_result(e)
+
+    for actor in [devtools.watcher.actor_id] + [target["actor"] for target in devtools.targets]:
+        devtools.client.add_event_listener(actor, Events.Watcher.RESOURCES_AVAILABLE_ARRAY, on_available)
+        devtools.client.add_event_listener(actor, Events.Watcher.RESOURCES_UPDATED_ARRAY, on_updated)
+    devtools.watcher.watch_resources([Resources.NETWORK_EVENT])
+
+    if trigger is not None:
+        trigger()
+
+    try:
+        result = done.result(timeout)
+    except TimeoutError:
+        raise AssertionError(f"No network response update for event {matched_event}")
+    if isinstance(result, Exception):
+        raise result
+    return result
 
 
 def get_request_headers(devtools: Devtools, network_event: dict[str, Any]):

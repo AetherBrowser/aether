@@ -1,7 +1,7 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
-
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use content_security_policy::{self as csp};
@@ -53,6 +53,8 @@ pub enum Initiator {
     XSLT,
     Prefetch,
     Link,
+    /// `navigator.sendBeacon`. Its fetch destination is empty, like `fetch()`.
+    Beacon,
 }
 
 /// A request [destination](https://fetch.spec.whatwg.org/#concept-request-destination)
@@ -228,6 +230,8 @@ pub struct RequestClient {
     pub is_nested_browsing_context: bool,
     /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#insecure-requests-policy>
     pub insecure_requests_policy: InsecureRequestsPolicy,
+    /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-navigations-set>
+    pub upgrade_insecure_navigations_set: HashSet<UpgradeInsecureNavigations>,
     /// <https://w3c.github.io/webappsec-secure-contexts/#potentially-trustworthy-origin>
     pub has_trustworthy_ancestor_origin: bool,
     /// <https://fetch.spec.whatwg.org/#determining-the-network-partition-key>
@@ -419,6 +423,12 @@ pub enum InsecureRequestsPolicy {
     Upgrade,
 }
 
+#[derive(Clone, Debug, Deserialize, MallocSizeOf, PartialEq, Eq, Hash, Serialize)]
+pub struct UpgradeInsecureNavigations {
+    pub host: String,
+    pub port: u16,
+}
+
 pub trait RequestHeadersSize {
     fn total_size(&self) -> usize;
 }
@@ -493,6 +503,9 @@ pub struct RequestBuilder {
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
 
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub user_activation: bool,
+
     /// <https://fetch.spec.whatwg.org/#concept-request-referrer>
     pub referrer: Referrer,
 
@@ -553,6 +566,7 @@ impl RequestBuilder {
             keep_alive: false,
             credentials_mode: CredentialsMode::CredentialsSameOrigin,
             use_url_credentials: false,
+            user_activation: false,
             origin: Origin::Client,
             client: None,
             policy_container: RequestPolicyContainer::default(),
@@ -633,6 +647,12 @@ impl RequestBuilder {
     /// <https://fetch.spec.whatwg.org/#request-keepalive-flag>
     pub fn keep_alive(mut self, keep_alive: bool) -> RequestBuilder {
         self.keep_alive = keep_alive;
+        self
+    }
+
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub fn user_activation(mut self, user_activation: bool) -> RequestBuilder {
+        self.user_activation = user_activation;
         self
     }
 
@@ -781,6 +801,7 @@ impl RequestBuilder {
         request.response_tainting = self.response_tainting;
         request.crash = self.crash;
         request.client = self.client;
+        request.user_activation = self.user_activation;
         request.policy_container = self.policy_container;
         request.is_internal_request = self.is_internal_request;
         request.embedder_initiated = self.embedder_initiated;
@@ -876,6 +897,8 @@ pub struct Request {
     pub parser_metadata: ParserMetadata,
     /// <https://fetch.spec.whatwg.org/#concept-request-policy-container>
     pub policy_container: RequestPolicyContainer,
+    /// <https://fetch.spec.whatwg.org/#request-user-activation>
+    pub user_activation: bool,
     /// Servo internal: if crash details are present, trigger a crash error page with these details.
     pub crash: Option<String>,
     /// Servo internal: whether this request originates from Servo internal implementation
@@ -921,6 +944,7 @@ impl Request {
             use_cors_preflight: false,
             credentials_mode: CredentialsMode::CredentialsSameOrigin,
             use_url_credentials: false,
+            user_activation: false,
             cache_mode: CacheMode::Default,
             redirect_mode: RedirectMode::Follow,
             integrity_metadata: String::new(),

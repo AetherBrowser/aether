@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::Sender;
+use embedder_traits::ViewportDetails;
 use embedder_traits::user_contents::UserContentManagerId;
-use embedder_traits::{ViewportDetails, WebDriverLoadStatus};
 use http::header;
 use js::context::JSContext;
 use net_traits::blob_url_store::UrlWithBlobClaim;
@@ -239,6 +239,10 @@ impl InProgressLoad {
             origin: Origin::Origin(client_origin),
             is_nested_browsing_context: self.parent_info.is_some(),
             insecure_requests_policy,
+            upgrade_insecure_navigations_set: self
+                .load_data
+                .inherited_upgrade_insecure_navigations_set
+                .clone(),
             has_trustworthy_ancestor_origin: self.load_data.has_trustworthy_ancestor_origin,
             network_partition_key: None,
         };
@@ -261,6 +265,7 @@ impl InProgressLoad {
         .redirect_mode(RedirectMode::Manual)
         .crash(self.load_data.crash.clone())
         .client(request_client)
+        .user_activation(self.load_data.has_transient_activation)
         .url_list(self.url_list.clone())
         // An address-bar load, the View Source menu, and WebDriver use
         // `LoadOrigin::Constellation` or `LoadOrigin::WebDriver`. A document
@@ -386,6 +391,11 @@ pub(crate) fn navigate(
         load_data.reload_navigation = true;
     }
 
+    // Step 2. Let sourceSnapshotParams be the result of snapshotting source snapshot params given sourceDocument.
+    // TODO: Fully implement 'sourceSnaphotParams'. For now, we only store the parameters that we
+    // care about directly in 'LoadData'.
+    load_data.has_transient_activation = window.has_transient_activation();
+
     // Step 3. Let initiatorOriginSnapshot be sourceDocument's origin.
     let initiator_origin_snapshot = &load_data.load_origin;
 
@@ -449,15 +459,8 @@ pub(crate) fn navigate(
     {
         // Step 14.1. Navigate to a fragment given navigable, url, historyHandling,
         // userInvolvement, sourceElement, navigationAPIState, and navigationId.
-        let webdriver_sender = window.webdriver_load_status_sender();
-        if let Some(ref sender) = webdriver_sender {
-            let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-        }
         navigate_to_fragment(cx, window, &load_data.url, history_handling);
         // Step 14.2. Return.
-        if let Some(sender) = webdriver_sender {
-            let _ = sender.send(WebDriverLoadStatus::NavigationStop);
-        }
         return;
     }
 
@@ -475,9 +478,6 @@ pub(crate) fn navigate(
     // and a new WebDriver BiDi navigation status whose id is navigationId,
     // status is "pending", and url is url.
     // TODO
-    if let Some(sender) = window.webdriver_load_status_sender() {
-        let _ = sender.send(WebDriverLoadStatus::NavigationStart);
-    }
 
     // Step 18. If navigable's ongoing navigation is "traversal", then:
     // TODO

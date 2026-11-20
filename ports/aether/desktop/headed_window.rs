@@ -26,7 +26,7 @@ use servo::{
     convert_rect_to_css_pixel,
 };
 use url::Url;
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
     ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
@@ -43,7 +43,7 @@ use {
 };
 
 use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
-use super::keyutils::keyboard_event_from_winit;
+use super::keyutils::{keyboard_event_from_winit, keyboard_modifiers_from_winit_modifiers};
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
 use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::{AppEvent, RepaintEventLoopWaker};
@@ -192,6 +192,7 @@ impl HeadedWindow {
             event_loop_proxy.clone(),
             rendering_context.clone(),
             initial_url,
+            servoshell_preferences.device_pixel_ratio_override,
         ));
 
         debug!("Created window {:?}", winit_window.id());
@@ -264,6 +265,11 @@ impl HeadedWindow {
         let webview_rect: Rect<_, _> = webview.size().into();
         if !webview_rect.contains(point) {
             return;
+        }
+
+        // A primary or secondary mouse button event moves keyboard focus to the webview.
+        if button == MouseButton::Left || button == MouseButton::Right {
+            self.gui.borrow_mut().set_webview_widget_focused(true);
         }
 
         if self
@@ -425,7 +431,7 @@ impl HeadedWindow {
                 BrowserAction::SelectTab(_) |
                 BrowserAction::SelectLastTab
         ) {
-            self.gui.borrow().surrender_focus();
+            self.gui.borrow_mut().set_webview_widget_focused(true);
         }
         match action {
             BrowserAction::NewTab => {
@@ -523,17 +529,12 @@ impl HeadedWindow {
     fn show_ime(&self, control_id: EmbedderControlId, input_method: InputMethodControl) {
         self.visible_input_method.set(Some(control_id));
 
-        let position = input_method.position();
+        let position = input_method.position().to_f32();
+        let toolbar_height = (self.toolbar_height() * self.hidpi_scale_factor()).0;
         self.winit_window.set_ime_allowed(true);
         self.winit_window.set_ime_cursor_area(
-            LogicalPosition::new(
-                position.min.x,
-                position.min.y + (self.toolbar_height().0 as i32),
-            ),
-            LogicalSize::new(
-                position.max.x - position.min.x,
-                position.max.y - position.min.y,
-            ),
+            PhysicalPosition::new(position.min.x, position.min.y + toolbar_height),
+            PhysicalSize::new(position.width(), position.height()),
         );
     }
 
@@ -690,19 +691,31 @@ impl HeadedWindow {
                 window.queue_user_interface_command(UserInterfaceCommand::Back);
                 consumed = true;
             },
-            WindowEvent::MouseWheel { .. } | WindowEvent::MouseInput { .. }
-                if !should_forward_mouse_event_to_egui() =>
-            {
-                self.gui.borrow().surrender_focus();
-            },
             WindowEvent::KeyboardInput { .. }
-                if !self.gui.borrow().has_keyboard_focus() &&
+                if self.gui.borrow().webview_widget_focused() &&
                     !self.gui.borrow().is_app_menu_open() =>
             {
                 // Keyboard events should go to the WebView unless some other GUI
                 // component has keyboard focus.
+                //
+                // TODO: Release focus from the webview if keyboard focus moves past the beginning
+                // or end of the web contents.
             },
             ref event => {
+                if let WindowEvent::Focused(focused) = event {
+                    state.set_window_has_focus(window.clone(), *focused);
+
+                    if !focused {
+                        // If the window lost focus, update the gui so that if focus is in web
+                        // contents the webview widget can surrender focus to avoid a crash in
+                        // accesskit when on_window_event() is called below.
+                        //
+                        // If the window gained focus, we still need to wait a tick before
+                        // requesting focus on the webview widget, so skip it here.
+                        self.gui.borrow_mut().update(&state, &window, self);
+                    }
+                }
+
                 let response = self
                     .gui
                     .borrow_mut()
@@ -710,10 +723,6 @@ impl HeadedWindow {
 
                 if response.repaint && *event != WindowEvent::RedrawRequested {
                     self.winit_window.request_redraw();
-                }
-
-                if let WindowEvent::Focused(focused) = event {
-                    state.set_window_has_focus(window.clone(), *focused);
                 }
 
                 // All CursorMoved events, even when forwarded to the WebView, are also
@@ -725,8 +734,6 @@ impl HeadedWindow {
                 {
                     consumed = false;
                 } else {
-                    // TODO how do we handle the tab key? (see doc for consumed)
-                    // Note that servo doesn’t yet support tabbing through links and inputs
                     consumed = response.consumed;
                 }
                 // Clicks, hover, and Escape while the menu is open must not reach the page.
@@ -798,6 +805,7 @@ impl HeadedWindow {
                     webview.notify_input_event(InputEvent::Wheel(WheelEvent::new(
                         delta,
                         point.into(),
+                        keyboard_modifiers_from_winit_modifiers(self.modifiers_state.get()),
                     )));
                 },
                 WindowEvent::Touch(touch) => {
@@ -1168,22 +1176,10 @@ impl PlatformWindow for HeadedWindow {
         let control_id = embedder_control.id();
         match embedder_control {
             EmbedderControl::SelectElement(prompt) => {
-                // FIXME: Reading the toolbar height is needed here to properly position the select dialog.
-                // But if the toolbar height changes while the dialog is open then the position won't be updated
-                let offset = self.gui.borrow().toolbar_height();
-                self.add_dialog(
-                    webview_id,
-                    Dialog::new_select_element_dialog(prompt, offset),
-                );
+                self.add_dialog(webview_id, Dialog::new_select_element_dialog(prompt));
             },
             EmbedderControl::ColorPicker(color_picker) => {
-                // FIXME: Reading the toolbar height is needed here to properly position the select dialog.
-                // But if the toolbar height changes while the dialog is open then the position won't be updated
-                let offset = self.gui.borrow().toolbar_height();
-                self.add_dialog(
-                    webview_id,
-                    Dialog::new_color_picker_dialog(color_picker, offset),
-                );
+                self.add_dialog(webview_id, Dialog::new_color_picker_dialog(color_picker));
             },
             EmbedderControl::InputMethod(input_method_control) => {
                 self.show_ime(control_id, input_method_control);
@@ -1199,8 +1195,7 @@ impl PlatformWindow for HeadedWindow {
                 self.add_dialog(webview_id, Dialog::new_simple_dialog(simple_dialog));
             },
             EmbedderControl::ContextMenu(prompt) => {
-                let offset = self.gui.borrow().toolbar_height();
-                self.add_dialog(webview_id, Dialog::new_context_menu(prompt, offset));
+                self.add_dialog(webview_id, Dialog::new_context_menu(prompt));
             },
         }
     }

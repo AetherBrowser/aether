@@ -74,6 +74,9 @@ pub struct Pipeline {
     /// Has this pipeline received a notification that it is completely loaded?
     pub completely_loaded: bool,
 
+    /// Has this pipeline reported the end of its load? (No matter aborted or not)
+    pub load_finished: bool,
+
     /// The title of this pipeline's document.
     pub title: String,
 
@@ -146,6 +149,7 @@ impl Pipeline {
             history_state_id: None,
             history_states: HashSet::new(),
             completely_loaded: false,
+            load_finished: false,
             title: String::new(),
             focus_sequence: FocusSequenceNumber::default(),
             // Assume that every new Pipeline has an active document until told otherwise.

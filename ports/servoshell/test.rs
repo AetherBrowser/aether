@@ -114,10 +114,10 @@ fn test_cmdline_and_location_bar_url() {
         "data:text/html,a",
     );
     test_url(
-        "about:config",
-        "about:config",
-        "about:config",
-        "about:config",
+        "servo:config",
+        "servo:config",
+        "servo:config",
+        "servo:config",
     );
     test_url(
         "README.md",
@@ -179,10 +179,10 @@ fn test_cmdline_and_location_bar_url() {
         "data:text/html,a",
     );
     test_url(
-        "about:config",
-        "about:config",
-        "about:config",
-        "about:config",
+        "servo:config",
+        "servo:config",
+        "servo:config",
+        "servo:config",
     );
     test_url(
         "README.md",

@@ -2,28 +2,31 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use js::context::JSContext;
 use script_bindings::codegen::GenericBindings::NodeBinding::NodeMethods;
+use script_bindings::dom::UnrootedDom;
 use script_bindings::inheritance::Castable;
 
-use crate::dom::NodeTraits;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::document::Document;
-use crate::dom::element::{AdjacentPosition, Element};
+use crate::dom::element::Element;
 use crate::dom::execcommand::contenteditable::node::{
-    NodeOrString, is_allowed_child, move_preserving_ranges, wrap_node_list,
+    NodeOrString, is_allowed_child, wrap_node_list,
 };
 use crate::dom::html::htmllielement::HTMLLIElement;
 use crate::dom::html::htmlolistelement::HTMLOListElement;
 use crate::dom::html::htmlulistelement::HTMLUListElement;
 use crate::dom::node::Node;
 use crate::dom::selection::Selection;
-use crate::dom::text::Text;
 
 /// <https://w3c.github.io/editing/docs/execCommand/#indent>
-pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<DomRoot<Node>>) {
+pub(crate) fn indent(
+    cx: &mut JSContext,
+    context_object: &Document,
+    node_list: VecDeque<DomRoot<Node>>,
+) {
     // Step 1. If node list is empty, do nothing and abort these steps.
     if node_list.is_empty() {
         return;
@@ -31,7 +34,7 @@ pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<Dom
 
     // Step 2. Let first node be the first member of node list.
     let first_node = node_list
-        .first()
+        .front()
         .expect("Must have a first node by now.")
         .clone();
 
@@ -48,7 +51,7 @@ pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<Dom
         wrap_node_list(
             cx,
             node_list,
-            |sibling| {
+            |_cx, sibling| {
                 sibling
                     .downcast::<Element>()
                     .is_some_and(|sibling| sibling.local_name() == tag)
@@ -71,7 +74,7 @@ pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<Dom
     let new_parent = wrap_node_list(
         cx,
         node_list,
-        |sibling| {
+        |_cx, sibling| {
             sibling
                 .downcast::<Element>()
                 .is_some_and(|sibling| sibling.is_simple_indentation_element())
@@ -85,78 +88,7 @@ pub(crate) fn indent(cx: &mut JSContext, document: &Document, node_list: Vec<Dom
 
     // Step 5. Fix disallowed ancestors of new parent.
     if let Some(new_parent) = new_parent {
-        new_parent.fix_disallowed_ancestors(cx, document);
-    }
-}
-
-/// <https://w3c.github.io/editing/docs/execCommand/#normalize-sublists>
-pub(crate) fn normalize_sublists(cx: &mut JSContext, item: DomRoot<Node>) {
-    let item_element = item
-        .downcast::<Element>()
-        .expect("item should be an element");
-
-    // Step 1. If item is not an li or it is not editable or its parent is not editable, abort these steps.
-    if !item.is::<HTMLLIElement>() ||
-        !item.is_editable() ||
-        !item
-            .GetParentElement()
-            .is_some_and(|parent| parent.upcast::<Node>().is_editable())
-    {
-        return;
-    }
-
-    // Step 2. Let new item be null.
-    let mut new_item: Option<DomRoot<Element>> = None;
-
-    // Step 3. While item has an ol or ul child:
-    while item
-        .child_elements()
-        .any(|child| child.is::<HTMLOListElement>() || child.is::<HTMLUListElement>())
-    {
-        // Step 3.1. Let child be the last child of item.
-        let child = item.GetLastChild().expect("Must have a last child here.");
-
-        // Step 3.2. If child is an ol or ul, or new item is null and child is a Text node whose data consists of zero of more space characters:
-        if child.is::<HTMLOListElement>() ||
-            child.is::<HTMLUListElement>() ||
-            (new_item.is_none() &&
-                child
-                    .downcast::<Text>()
-                    .is_some_and(|text| text.data().bytes().all(|byte| byte == b' ')))
-        {
-            // Step 3.2.1. Set new item to null.
-            new_item = None;
-
-            // Step 3.2.2. Insert child into the parent of item immediately following item, preserving ranges.
-            move_preserving_ranges(cx, &child, |cx| {
-                item_element
-                    .insert_adjacent(cx, AdjacentPosition::AfterEnd, &child)
-                    .map(|elem| elem.expect("Should have inserted"))
-            });
-
-            continue;
-        }
-        // Step 3.3. Otherwise:
-        // Step 3.3.1. If new item is null,
-        //             let new item be the result of calling createElement("li") on the ownerDocument of item,
-        //             then insert new item into the parent of item immediately after item.
-        if new_item.is_none() {
-            new_item = Some(item.owner_document().create_element(cx, "li"));
-            item_element
-                .insert_adjacent(cx, AdjacentPosition::AfterEnd, &child)
-                .expect("Insertion should always work here.");
-        }
-
-        // Step 3.3.2. Insert child into new item as its first child, preserving ranges.
-        move_preserving_ranges(cx, &child, |cx| {
-            new_item
-                .as_ref()
-                .expect("Must have new item here")
-                .downcast::<Element>()
-                .expect("New item must be able to support children")
-                .insert_adjacent(cx, AdjacentPosition::AfterBegin, &child)
-                .map(|elem| elem.expect("Should have inserted"))
-        });
+        new_parent.fix_disallowed_ancestors(cx, context_object);
     }
 }
 
@@ -179,7 +111,7 @@ pub(crate) fn execute_indent_command(
 
     // Step 2. For each item in items, normalize sublists of item.
     for item in items {
-        normalize_sublists(cx, item);
+        item.normalize_sublists(cx);
     }
 
     // Normalizing sublists probably messes up the range
@@ -197,25 +129,26 @@ pub(crate) fn execute_indent_command(
     //         if node is editable and is an allowed child of "div" or "ol"
     //         and if the last member of node list (if any) is not an ancestor of node,
     //         append node to node list.
-    for node in new_range.contained_nodes(cx.no_gc()) {
-        if node.is_editable() &&
+    let mut contained_nodes = new_range.contained_nodes_rooted();
+    while let Some(node) = contained_nodes.next(cx.no_gc()) {
+        if node.is_editable(cx) &&
             (is_allowed_child(
-                NodeOrString::Node(node.clone()),
+                NodeOrString::Node(UnrootedDom::from_ref(&*node, cx.no_gc())),
                 NodeOrString::String("div".to_owned()),
             ) || is_allowed_child(
-                NodeOrString::Node(node.clone()),
+                NodeOrString::Node(UnrootedDom::from_ref(&*node, cx.no_gc())),
                 NodeOrString::String("ol".to_owned()),
             )) &&
             node_list
                 .last()
                 .is_none_or(|last| !last.is_ancestor_of(&node))
         {
-            node_list.push(node.as_rooted());
+            node_list.push(node);
         }
     }
 
     // Step 6. If the first visible member of node list is an li whose parent is an ol or ul:
-    if let Some(first_visible_member) = node_list.iter().find(|node| node.is_visible(cx.no_gc())) &&
+    if let Some(first_visible_member) = node_list.iter().find(|node| node.is_visible(cx)) &&
         first_visible_member.is::<HTMLLIElement>() &&
         let Some(parent) = first_visible_member.GetParentNode() &&
         (parent.is::<HTMLOListElement>() || parent.is::<HTMLUListElement>())
@@ -225,7 +158,7 @@ pub(crate) fn execute_indent_command(
 
         // Step 6.2. While sibling is invisible, set sibling to its previousSibling.
         while let Some(ref some_sibling) = sibling &&
-            some_sibling.is_invisible(cx.no_gc())
+            some_sibling.is_invisible(cx)
         {
             sibling = some_sibling.GetPreviousSibling();
         }
@@ -234,7 +167,7 @@ pub(crate) fn execute_indent_command(
         if let Some(sibling) = sibling &&
             sibling.is::<HTMLLIElement>()
         {
-            normalize_sublists(cx, sibling);
+            sibling.normalize_sublists(cx);
         }
     }
 
@@ -242,10 +175,10 @@ pub(crate) fn execute_indent_command(
     let mut node_list_iter = node_list.iter().peekable();
     while node_list_iter.peek().is_some() {
         // Step 7.1. Let sublist be a list of nodes, initially empty.
-        let mut sublist: Vec<DomRoot<Node>> = vec![];
+        let mut sublist: VecDeque<DomRoot<Node>> = VecDeque::new();
 
         // Step 7.2. Remove the first member of node list and append it to sublist.
-        sublist.push(
+        sublist.push_back(
             node_list_iter
                 .next()
                 .expect("Must always have a next item")
@@ -256,12 +189,12 @@ pub(crate) fn execute_indent_command(
         //           sublist, remove the first member of node list and append it to sublist.
         while node_list_iter.peek().is_some_and(|node| {
             sublist
-                .last()
+                .back()
                 .expect("Must always have last element here.")
                 .GetNextSibling()
                 .is_some_and(|next_sibling| &&next_sibling == node)
         }) {
-            sublist.push(
+            sublist.push_back(
                 node_list_iter
                     .next()
                     .expect("Must always have a next item")

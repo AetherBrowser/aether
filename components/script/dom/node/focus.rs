@@ -308,7 +308,7 @@ impl Node {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#autofocus-delegate>
-    fn autofocus_delegate(
+    pub(crate) fn autofocus_delegate(
         &self,
         cx: &mut JSContext,
         focus_trigger: FocusTrigger,
@@ -381,7 +381,7 @@ impl Node {
         // > 4. If new focus target is a focusable area and its DOM anchor is inert, then return.
         let document = self.owner_document();
         let focusable_area = focusable_area.take().unwrap();
-        if focusable_area.dom_anchor(&document).is_inert() {
+        if focusable_area.dom_anchor(&document).is_inert(cx) {
             return false;
         }
 

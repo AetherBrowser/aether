@@ -16,6 +16,8 @@ use gstreamer;
 use gstreamer_app;
 use gstreamer_play;
 use gstreamer_play::prelude::*;
+use malloc_size_of::MallocSizeOf;
+use malloc_size_of_derive::MallocSizeOf;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver};
 use servo_media::MediaInstanceError;
 use servo_media_player::audio::AudioRenderer;
@@ -122,13 +124,25 @@ enum PlayerSource {
     Stream(ServoMediaStreamSrc),
 }
 
+impl MallocSizeOf for PlayerSource {
+    fn size_of(&self, _ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        // Currently both are external types
+        0
+    }
+}
+
+#[derive(MallocSizeOf)]
 struct PlayerInner {
+    #[ignore_malloc_size_of = "External Type"]
     player: gstreamer_play::Play,
+    #[ignore_malloc_size_of = "External Type"]
     signal_adapter: gstreamer_play::PlaySignalAdapter,
     source: Option<PlayerSource>,
+    #[ignore_malloc_size_of = "External Type"]
     video_sink: gstreamer_app::AppSink,
     input_size: u64,
     seekable: bool,
+    #[ignore_malloc_size_of = "External Type"]
     play_state: gstreamer_play::PlayState,
     paused: Cell<bool>,
     can_resume: Cell<bool>,
@@ -137,8 +151,12 @@ struct PlayerInner {
     volume: Cell<f64>,
     stream_type: StreamType,
     last_metadata: Option<Metadata>,
+    #[ignore_malloc_size_of = "External Type"]
     cat: gstreamer::DebugCategory,
+    #[conditional_malloc_size_of]
     enough_data: Arc<AtomicBool>,
+    /// To allow teardown to free seek_data that is waiting for the script thread.
+    seek_lock: Option<SeekLock>,
 }
 
 impl PlayerInner {
@@ -433,27 +451,53 @@ impl SeekChannel {
     }
 }
 
+#[derive(MallocSizeOf)]
 pub struct GStreamerPlayer {
     /// The player unique ID.
     id: usize,
     /// The ID of the client context this player belongs to.
     context_id: ClientContextId,
     /// Channel to communicate with the owner GStreamerBackend instance.
+    #[conditional_malloc_size_of]
     backend_chan: Arc<Mutex<Sender<BackendMsg>>>,
+    #[conditional_malloc_size_of]
     inner: RefCell<Option<Arc<Mutex<PlayerInner>>>>,
+    #[conditional_malloc_size_of]
     observer: Arc<Mutex<GenericCallback<PlayerEvent>>>,
+    #[ignore_malloc_size_of = "External Type"]
     audio_renderer: Option<Arc<Mutex<dyn AudioRenderer>>>,
+    #[ignore_malloc_size_of = "External Type"]
     video_renderer: Option<Arc<Mutex<dyn VideoFrameRenderer>>>,
     /// Indicates whether the setup was succesfully performed and
     /// we are ready to consume a/v data.
+    #[conditional_malloc_size_of]
     is_ready: Arc<Once>,
     /// Indicates whether the type of media stream to be played is a live stream.
     stream_type: StreamType,
     /// Decorator used to setup the video sink and process the produced frames.
+    #[conditional_malloc_size_of]
     render: Arc<Mutex<GStreamerRender>>,
     /// Whether to enable download buffering. This is only enabled heuristically for some media,
     /// because it causes issues in certain situations. See <https://github.com/servo/servo/issues/23241>.
     download_buffering_enabled: AtomicBool,
+}
+
+/// downloadbuffer keeps the download in the user cache directory and it will
+/// make the whole pipeline fail if it can't be accessed.
+fn ensure_download_directory() -> bool {
+    let cache_dir = glib::user_cache_dir();
+    match std::fs::create_dir_all(&cache_dir) {
+        Ok(()) => true,
+        Err(error) => {
+            gstreamer::warning!(
+                gstreamer::DebugCategory::get("servoplayer").unwrap(),
+                "Can't use cache dir {:?} ({}), won't be able to use progressive download",
+                cache_dir,
+                error
+            );
+            false
+        },
+    }
 }
 
 impl GStreamerPlayer {
@@ -509,9 +553,10 @@ impl GStreamerPlayer {
         let signal_adapter = gstreamer_play::PlaySignalAdapter::new_sync_emit(&player);
         let pipeline = player.pipeline();
 
-        // FIXME(#282): The progressive downloading breaks playback on Windows and Android.
-        if !cfg!(any(target_os = "windows", target_os = "android")) &&
-            self.download_buffering_enabled.load(Ordering::Relaxed)
+        // FIXME(#43421): The progressive downloading breaks playback on Android.
+        if !cfg!(target_os = "android") &&
+            self.download_buffering_enabled.load(Ordering::Relaxed) &&
+            ensure_download_directory()
         {
             // Set player to perform progressive downloading. This will make the
             // player store the downloaded media in a local temporary file for
@@ -652,6 +697,7 @@ impl GStreamerPlayer {
             last_metadata: None,
             cat: gstreamer::DebugCategory::get("servoplayer").unwrap(),
             enough_data: Arc::new(AtomicBool::new(false)),
+            seek_lock: None,
         })));
 
         let inner = self.inner.borrow();
@@ -668,10 +714,13 @@ impl GStreamerPlayer {
             let _ = notify!(observer, PlayerEvent::Error(error.to_string()));
         });
 
-        let inner_clone = inner.clone();
+        let weak_inner = Arc::downgrade(inner);
         let observer = self.observer.clone();
         // Handle `state-changed` signal.
         signal_adapter.connect_state_changed(move |_, play_state| {
+            let Some(inner_clone) = weak_inner.upgrade() else {
+                return;
+            };
             inner_clone.lock().unwrap().play_state = play_state;
 
             let state = match play_state {
@@ -701,13 +750,16 @@ impl GStreamerPlayer {
         });
 
         // Handle `media-info-updated` signal.
-        let inner_clone = inner.clone();
+        let weak_inner = Arc::downgrade(inner);
         let observer = self.observer.clone();
         signal_adapter.connect_media_info_updated(move |_, info| {
             let Ok(metadata) = metadata_from_media_info(info) else {
                 return;
             };
 
+            let Some(inner_clone) = weak_inner.upgrade() else {
+                return;
+            };
             let mut inner = inner_clone.lock().unwrap();
 
             if inner.last_metadata.as_ref() == Some(&metadata) {
@@ -730,6 +782,13 @@ impl GStreamerPlayer {
                 }
             }
 
+            let new_duration = metadata.duration;
+            let duration_changed = new_duration.is_some() &&
+                inner
+                    .last_metadata
+                    .as_ref()
+                    .is_some_and(|last_metadata| last_metadata.duration != new_duration);
+
             inner.last_metadata = Some(metadata.clone());
             gstreamer::info!(
                 inner.cat,
@@ -739,13 +798,27 @@ impl GStreamerPlayer {
             );
             let _ = notify!(observer, PlayerEvent::MetadataUpdated(metadata));
 
+            // We need to check this here because there is no guarantee that
+            // duration-changed and media-info-updated come in the same order.
+            // If the latter arrives before the former, it will look like the
+            // new duration was the old one.
+            if duration_changed {
+                gstreamer::info!(
+                    inner.cat,
+                    obj = &inner.player,
+                    "Duration changed with metadata: {:?}",
+                    new_duration
+                );
+                let _ = notify!(observer, PlayerEvent::DurationChanged(new_duration));
+            }
+
             if send_pause_event {
                 let _ = notify!(observer, PlayerEvent::StateChanged(PlaybackState::Paused));
             }
         });
 
         // Handle `duration-changed` signal.
-        let inner_clone = inner.clone();
+        let weak_inner = Arc::downgrade(inner);
         let observer = self.observer.clone();
         signal_adapter.connect_duration_changed(move |_, duration| {
             let duration = duration.map(|duration| {
@@ -755,6 +828,9 @@ impl GStreamerPlayer {
                 )
             });
 
+            let Some(inner_clone) = weak_inner.upgrade() else {
+                return;
+            };
             let mut inner = inner_clone.lock().unwrap();
             if let Some(ref mut metadata) = inner.last_metadata &&
                 metadata.duration != duration
@@ -822,7 +898,7 @@ impl GStreamerPlayer {
         };
 
         let (receiver, error_handler_id) = {
-            let inner_clone = inner.clone();
+            let weak_inner = Arc::downgrade(inner);
             let inner = inner.lock().unwrap();
             let pipeline = inner.player.pipeline();
 
@@ -835,6 +911,7 @@ impl GStreamerPlayer {
             pipeline.connect("source-setup", false, move |args| {
                 let source = args[1].get::<gstreamer::Element>().unwrap();
 
+                let inner_clone = weak_inner.upgrade()?;
                 let mut inner = inner_clone.lock().unwrap();
                 let source = match inner.stream_type {
                     StreamType::Seekable => {
@@ -852,10 +929,11 @@ impl GStreamerPlayer {
                         let observer_ = observer.clone();
                         let observer__ = observer.clone();
                         let observer___ = observer.clone();
-                        let servosrc_ = servosrc.clone();
+                        let weak_servosrc = servosrc.downgrade();
                         let enough_data_ = inner.enough_data.clone();
                         let enough_data__ = inner.enough_data.clone();
                         let seek_channel = Arc::new(Mutex::new(SeekChannel::new()));
+                        inner.seek_lock = Some(seek_channel.lock().unwrap().sender());
                         servosrc.set_callbacks(
                             gstreamer_app::AppSrcCallbacks::builder()
                                 .need_data(move |_, _| {
@@ -876,6 +954,9 @@ impl GStreamerPlayer {
                                     let _ = notify!(observer__, PlayerEvent::EnoughData);
                                 })
                                 .seek_data(move |_, offset| {
+                                    let Some(servosrc_) = weak_servosrc.upgrade() else {
+                                        return false;
+                                    };
                                     let (ret, ack_channel) = if servosrc_.set_seek_offset(offset) {
                                         let _ = notify!(
                                             observer___,
@@ -1057,5 +1138,41 @@ impl Drop for GStreamerPlayer {
                 tx_ack,
             });
         let _ = rx_ack.recv();
+        // We dispose the GstPlay from this thread while we still have a
+        // reference, so that the GstPlay thread join happens here. Otherwise,
+        // if the last reference was held by a GstPlay message being posted, the
+        // GstPlay dispose would be done from its own thread and it would be
+        // freed while still in use. Besides, the seek_data can be blocked
+        // waiting for the script thread, which is this one, busy disposing the
+        // player. We release it first so that the join does not wait forever.
+        if let Some(inner) = self.inner.borrow_mut().take() {
+            let seek_lock = inner.lock().unwrap().seek_lock.take();
+            let player = inner.lock().unwrap().player.clone();
+            let (ack_sender, _ack_receiver) =
+                generic_channel::channel::<()>().expect("Couldn't create IPC channel");
+            if let Some(seek_lock) = seek_lock {
+                let _ = seek_lock.lock_channel.send((false, ack_sender));
+            }
+            // This code below can be reverted once we ensure we are using the
+            // code at
+            // https://gitlab.freedesktop.org/gstreamer/gstreamer/-/merge_requests/13022
+            // SAFETY: nobody uses the player after this moment. Handlers keep weak refs.
+            unsafe {
+                player.run_dispose();
+            }
+            // Let's ensure the safety we claim above.
+            let unique = Arc::try_unwrap(inner).is_ok();
+            let play_refs = player.ref_count();
+            if !unique || play_refs > 1 {
+                gstreamer::error!(
+                    gstreamer::DebugCategory::get("servoplayer").unwrap(),
+                    "GStreamerPlayer drop: inner is not unique or player has other references, there be dragons!"
+                );
+                debug_assert!(
+                    false,
+                    "GStreamerPlayer drop: inner is not unique or player has other references"
+                );
+            }
+        }
     }
 }

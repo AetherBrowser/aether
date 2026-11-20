@@ -31,6 +31,7 @@ use style::computed_values::visibility::T as Visibility;
 use style::computed_values::white_space_collapse::T as WhiteSpaceCollapseValue;
 use style::context::{QuirksMode, SharedStyleContext, StyleContext, ThreadLocalStyleContext};
 use style::dom::{NodeInfo, OpaqueNode};
+use style::logical_geometry::WritingMode;
 use style::properties::style_structs::Font;
 use style::properties::{
     ComputedValues, Importance, LonghandId, PropertyDeclarationBlock, PropertyDeclarationId,
@@ -67,10 +68,7 @@ fn root_transform_for_fragments(
     scroll_tree: &ScrollTree,
     fragments: &[Fragment],
 ) -> Option<FastLayoutTransform> {
-    let box_fragment = fragments
-        .first()
-        .and_then(Fragment::retrieve_box_fragment)?;
-    let scroll_tree_node_id = box_fragment.spatial_tree_node()?;
+    let scroll_tree_node_id = fragments.first()?.spatial_tree_node()?;
     Some(scroll_tree.cumulative_node_to_root_transform(scroll_tree_node_id))
 }
 
@@ -203,11 +201,13 @@ pub fn process_node_scroll_area_request(
             .union(&tree.initial_containing_block),
     };
 
+    // Note that with `Rect::round()`, the resulting size would depend on
+    // the position (and change when both the origin and size are not whole
+    // integers). To avoid that, round origin and size separately.
     Rect::new(
-        rect.origin.map(Au::to_f32_px),
-        rect.size.to_vector().map(Au::to_f32_px).to_size(),
+        rect.origin.map(Au::to_f32_px).round(),
+        rect.size.to_vector().map(Au::to_f32_px).to_size().round(),
     )
-    .round()
     .to_i32()
 }
 
@@ -683,15 +683,12 @@ pub fn process_offset_parent_query(
     let fragment = node.fragments_for_pseudo(None).first().cloned()?;
     let mut border_box =
         fragment.cumulative_box_area_rect(BoxAreaType::Border, layout_thread.into())?;
-    let cumulative_sticky_offsets = fragment
-        .retrieve_box_fragment()
-        .and_then(|box_fragment| box_fragment.spatial_tree_node())
-        .map(|node_id| {
-            scroll_tree
-                .cumulative_sticky_offsets(node_id)
-                .map(Au::from_f32_px)
-                .cast_unit()
-        });
+    let cumulative_sticky_offsets = fragment.spatial_tree_node().map(|node_id| {
+        scroll_tree
+            .cumulative_sticky_offsets(node_id)
+            .map(Au::from_f32_px)
+            .cast_unit()
+    });
     border_box = border_box.translate(cumulative_sticky_offsets.unwrap_or_default());
 
     // 2.  If the offsetParent of the element is null return the x-coordinate of the left
@@ -845,9 +842,13 @@ pub(crate) fn process_scroll_container_query(
     node: Option<ServoLayoutNode<'_>>,
     query_flags: ScrollContainerQueryFlags,
     viewport_overflow: AxesOverflow,
+    viewport_writing_mode: WritingMode,
 ) -> Option<ScrollContainerResponse> {
     let Some(node) = node else {
-        return Some(ScrollContainerResponse::Viewport(viewport_overflow));
+        return Some(ScrollContainerResponse::Viewport(
+            viewport_overflow,
+            viewport_writing_mode,
+        ));
     };
 
     // 1. If any of the following holds true, return null and terminate this algorithm:
@@ -874,6 +875,7 @@ pub(crate) fn process_scroll_container_query(
         return Some(ScrollContainerResponse::Element(
             node.opaque().into(),
             style.effective_overflow(flags),
+            style.writing_mode,
         ));
     }
 
@@ -921,6 +923,7 @@ pub(crate) fn process_scroll_container_query(
             return Some(ScrollContainerResponse::Element(
                 ancestor.opaque().into(),
                 ancestor_style.effective_overflow(ancestor_flags),
+                ancestor_style.writing_mode,
             ));
         }
 
@@ -929,7 +932,10 @@ pub(crate) fn process_scroll_container_query(
 
     match current_position_value {
         Position::Fixed => None,
-        _ => Some(ScrollContainerResponse::Viewport(viewport_overflow)),
+        _ => Some(ScrollContainerResponse::Viewport(
+            viewport_overflow,
+            viewport_writing_mode,
+        )),
     }
 }
 
@@ -1058,12 +1064,17 @@ fn rendered_text_collection_steps(
                         if let Some(grandparent_node) =
                             unsafe { parent_node.dangerous_dom_parent() }
                         {
-                            if !matches!(
-                                grandparent_node.type_id(),
-                                Some(LayoutNodeType::Element(
-                                    LayoutElementType::HTMLSelectElement
-                                ))
-                            ) {
+                            // The grandparent might not be an element (for example a `Document`
+                            // or a shadow root), and layout can't represent those node types,
+                            // so check for an element before asking for its type.
+                            let grandparent_is_select = grandparent_node.as_element().is_some() &&
+                                matches!(
+                                    grandparent_node.type_id(),
+                                    Some(LayoutNodeType::Element(
+                                        LayoutElementType::HTMLSelectElement
+                                    ))
+                                );
+                            if !grandparent_is_select {
                                 return items;
                             }
                         } else {

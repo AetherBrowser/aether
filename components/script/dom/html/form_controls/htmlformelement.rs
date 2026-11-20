@@ -766,12 +766,12 @@ impl HTMLFormElement {
         submit_method_flag: SubmittedFrom,
         submitter: FormSubmitterElement,
     ) {
-        // Step 1
+        // Step 1. If form cannot navigate, then return.
         if self.upcast::<Element>().cannot_navigate() {
             return;
         }
 
-        // Step 2
+        // Step 2. If form's constructing entry list is true, then return.
         if self.constructing_entry_list.get() {
             return;
         }
@@ -786,21 +786,27 @@ impl HTMLFormElement {
         }
 
         let base = doc.base_url();
-        // TODO: Handle browsing contexts (Step 5)
-        // Step 6
+        // Step 5. If submitted from submit() method is false:
         if submit_method_flag == SubmittedFrom::NotFromForm {
-            // Step 6.1
+            // Step 5.1. If form's firing submission events is true, then return.
             if self.firing_submission_events.get() {
                 return;
             }
-            // Step 6.2
+            // Step 5.2. Set form's firing submission events to true.
             self.firing_submission_events.set(true);
-            // Step 6.3
+            // Step 5.3. For each element field in the list of submittable elements
+            // whose form owner is form, set field's user validity to true.
+            self.Elements(cx).set_user_validity_on_all(cx.no_gc());
+            // Step 5.4. If the submitter element's no-validate state is false,
+            // then interactively validate the constraints of form and examine
+            // the result. If the result is negative (i.e., the constraint validation
+            // concluded that there were invalid fields and probably informed the
+            // user of this):
             if !submitter.no_validate(self) && self.interactive_validation(cx).is_err() {
                 self.firing_submission_events.set(false);
                 return;
             }
-            // Step 6.4
+            // Step 5.5
             // spec calls this "submitterButton" but it doesn't have to be a button,
             // just not be the form itself
             let submitter_button = match submitter {
@@ -815,7 +821,7 @@ impl HTMLFormElement {
                 FormSubmitterElement::Button(b) => Some(b.upcast::<HTMLElement>()),
             };
 
-            // Step 6.5
+            // Step 5.6
             let event = SubmitEvent::new(
                 cx,
                 self.global().as_window(),
@@ -827,13 +833,13 @@ impl HTMLFormElement {
             let event = event.upcast::<Event>();
             event.fire(cx, self.upcast::<EventTarget>());
 
-            // Step 6.6
+            // Step 5.7
             self.firing_submission_events.set(false);
-            // Step 6.7
+            // Step 5.8
             if event.DefaultPrevented() {
                 return;
             }
-            // Step 6.8
+            // Step 5.9
             if self.upcast::<Element>().cannot_navigate() {
                 return;
             }
@@ -931,6 +937,10 @@ impl HTMLFormElement {
             target_document.get_referrer_policy(),
             Some(target_window.as_global_scope().is_secure_context()),
             Some(target_document.insecure_requests_policy()),
+            target_window
+                .as_global_scope()
+                .upgrade_insecure_navigations_set()
+                .clone(),
             target_document.has_trustworthy_ancestor_origin(),
             target_document.creation_sandboxing_flag_set_considering_parent_iframe(),
         );
@@ -1893,11 +1903,11 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
 
     /// <https://html.spec.whatwg.org/multipage/#association-of-controls-and-forms>
     fn unbind_form_control_from_tree(&self, cx: &mut JSContext) {
-        let elem = self.to_element();
-        let has_form_attr = elem.has_attribute(&local_name!("form"));
+        let element = self.to_element();
+        let has_form_attr = element.has_attribute(&local_name!("form"));
         let same_subtree = self
             .form_owner()
-            .is_none_or(|form| elem.is_in_same_home_subtree(&*form));
+            .is_none_or(|form| element.is_in_same_home_subtree(&*form));
 
         self.unregister_if_necessary();
 
@@ -1909,6 +1919,12 @@ pub(crate) trait FormControl: DomObject<ReflectorType = ()> + NodeTraits {
         if !same_subtree || (self.is_listed() && has_form_attr) {
             self.reset_form_owner(cx);
         }
+
+        // Unbinding from a tree might enable a form control, if a fieldset ancestor is the only
+        // reason it was disabled. The fact that it's enabled doesn't do much while it's
+        // disconnected, but it is an observable fact to keep track of.
+        self.to_html_element()
+            .maybe_update_form_control_disabled(cx);
     }
 
     fn get_form_attribute<InputFn, OwnerFn>(

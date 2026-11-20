@@ -4,11 +4,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use app_units::Au;
 use dom_struct::dom_struct;
+use euclid::Point2D;
 use html5ever::{LocalName, Prefix, local_name, ns};
 use js::context::{JSContext, NoGC};
 use js::rust::HandleObject;
 use script_bindings::cell::DomRefCell;
+use script_bindings::codegen::GenericBindings::EventBinding::EventMethods;
 use script_bindings::codegen::GenericBindings::HTMLElementBinding::HTMLElementMethods;
 use script_bindings::domstring::TracedDOMString;
 use script_bindings::error::{Error, ErrorResult};
@@ -31,9 +34,11 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::html::htmlelement::HTMLElement;
 use crate::dom::htmlbuttonelement::{CommandState, HTMLButtonElement};
 use crate::dom::iterators::ShadowIncluding;
+use crate::dom::mouseevent::MouseEvent;
 use crate::dom::node::focus::FocusTrigger;
 use crate::dom::node::virtualmethods::VirtualMethods;
 use crate::dom::node::{BindContext, Node, NodeTraits, UnbindContext};
+use crate::dom::pointerevent::PointerEvent;
 use crate::dom::toggleevent::ToggleEvent;
 
 #[dom_struct]
@@ -119,7 +124,12 @@ impl HTMLDialogElement {
             )));
         }
 
-        // TODO: Step 5. If subject is in the popover showing state, then throw an "InvalidStateError" DOMException.
+        // Step 5. If subject is in the popover showing state, then throw an "InvalidStateError" DOMException.
+        if subject.popover_visibility_state_showing() {
+            return Err(Error::InvalidState(Some(
+                "Cannot call showModal() on a dialog that is showing as a popover.".into(),
+            )));
+        }
 
         // Step 6. If the result of firing an event named beforetoggle, using ToggleEvent, with the cancelable attribute initialized to true, the oldState attribute initialized to "closed", the newState attribute initialized to "open", and the source attribute initialized to source at subject is false, then return.
         let event = ToggleEvent::new(
@@ -147,7 +157,10 @@ impl HTMLDialogElement {
             return Ok(());
         }
 
-        // TODO: Step 9. If subject is in the popover showing state, then return.
+        // Step 9. If subject is in the popover showing state, then return.
+        if subject.popover_visibility_state_showing() {
+            return Ok(());
+        }
 
         // Step 10. Queue a dialog toggle event task given subject, "closed", "open", and source.
         self.queue_dialog_toggle_event_task("closed", "open", source);
@@ -169,8 +182,10 @@ impl HTMLDialogElement {
         // Step 15. If subject's node document's top layer does not already contain subject, then add an element to the top layer given subject.
         // Note: Just checking the top layer would break when a modal is shown right after being closed, as the dialog would still be pending removal.
         let document = subject.owner_document();
-        if !document.is_in_the_top_layer(subject) {
-            document.add_an_element_to_the_top_layer(subject, cx.no_gc());
+        if !document.overlay_handler().is_in_the_top_layer(subject) {
+            document
+                .overlay_handler()
+                .add_an_element_to_the_top_layer(subject, cx.no_gc());
         }
 
         // Step 16. Set subject's previously focused element to the focused element.
@@ -182,15 +197,18 @@ impl HTMLDialogElement {
             cx.no_gc(),
         );
 
-        // TODO: Step 17. Let document be subject's node document.
+        // Step 17. Let document be subject's node document.
+        //
+        // We already get the document in step 15.
 
-        // TODO: Step 18. Let hideUntil be the result of running topmost popover ancestor given subject, document's showing hint popover list, null, and false.
+        // Step 18. Let hideUntil be the result of running topmost popover ancestor given subject,
+        // null, and false.
+        let hide_until = subject.topmost_popover_ancestor(cx.no_gc(), None, false);
 
-        // TODO: Step 19. If hideUntil is null, then set hideUntil to the result of running topmost popover ancestor given subject, document's showing auto popover list, null, and false.
-
-        // TODO: Step 20. If hideUntil is null, then set hideUntil to document.
-
-        // TODO: Step 21. Run hide all popovers until given hideUntil, false, and true.
+        // Step 19. Run hide popovers until given document, hideUntil, false, and true.
+        document
+            .overlay_handler()
+            .hide_popovers_until(cx, hide_until.as_deref(), false, true);
 
         // Step 22. Run the dialog focusing steps given subject.
         self.run_dialog_focusing_steps(cx);
@@ -269,6 +287,7 @@ impl HTMLDialogElement {
         if subject.state().contains(ElementState::MODAL) {
             subject
                 .owner_document()
+                .overlay_handler()
                 .request_an_element_to_be_removed_from_the_top_layer(subject, cx.no_gc());
         }
 
@@ -415,7 +434,7 @@ impl HTMLDialogElement {
     }
 
     /// <https://html.spec.whatwg.org/multipage/#dialog-focusing-steps>
-    fn run_dialog_focusing_steps(&self, cx: &mut JSContext) {
+    pub(crate) fn run_dialog_focusing_steps(&self, cx: &mut JSContext) {
         // TODO: Step 1. If the allow focus steps given subject's node document return false, then return.
 
         // Step 2. Let control be null.
@@ -466,9 +485,14 @@ impl HTMLDialogElement {
         // Step 2. Assert: subject is connected.
         assert!(subject.is_connected());
 
-        // TODO Step 3. Assert: subject's node document's open dialogs list does not contain
-        // subject.
-        // TODO Step 4. Add subject to subject's node document's open dialogs list.
+        // Step 3. Assert: subject's node document's open dialogs list does not contain subject.
+        let document = subject.owner_document();
+        assert!(!document.overlay_handler().open_dialogs_list_contains(self));
+
+        // Step 4. Add subject to subject's node document's open dialogs list.
+        document
+            .overlay_handler()
+            .add_to_open_dialogs_list(self, no_gc);
 
         // Step 5. Set the dialog close watcher with subject.
         self.set_the_close_watcher(no_gc);
@@ -476,7 +500,10 @@ impl HTMLDialogElement {
 
     /// <https://html.spec.whatwg.org/multipage/#dialog-setup-steps>
     pub(crate) fn dialog_cleanup_steps(&self, no_gc: &NoGC) {
-        // TODO Step 1. Remove subject from subject's node document's open dialogs list.
+        // Step 1. Remove subject from subject's node document's open dialogs list.
+        self.owner_document()
+            .overlay_handler()
+            .remove_from_open_dialogs_list(self, no_gc);
 
         // Step 2. If subject's close watcher is not null, then:
         // Step 2.1. Destroy subject's close watcher.
@@ -531,6 +558,128 @@ impl HTMLDialogElement {
 
         // Step 1.2. Return None.
         ComputedClosedByState::None
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#light-dismiss-open-dialogs>
+    pub(crate) fn light_dismiss_open_dialogs(
+        cx: &mut JSContext,
+        pointer_event: &PointerEvent,
+        target: &EventTarget,
+    ) {
+        // Step 1. Assert: event's isTrusted attribute is true.
+        let event = pointer_event.upcast::<Event>();
+        assert!(event.IsTrusted());
+
+        // Step 2. Let document be event's target's node document.
+        let Some(target) = target.downcast::<Node>() else {
+            return;
+        };
+        let document = target.owner_doc();
+
+        // Step 3. If document's open dialogs list is empty, then return.
+        if document.overlay_handler().topmost_open_dialog().is_none() {
+            return;
+        }
+
+        // Step 4. Let ancestor be the result of running nearest clicked dialog given event.
+        let ancestor = Self::nearest_clicked_dialog(cx, pointer_event, target);
+
+        // Step 5. If event's type is "pointerdown", then set document's dialog pointerdown
+        // target to ancestor.
+        if event.type_() == *"pointerdown" {
+            document
+                .overlay_handler()
+                .set_dialog_pointerdown_target(ancestor.as_deref());
+        }
+
+        // Step 6. If event's type is "pointerup":
+        if event.type_() == *"pointerup" {
+            // Step 6.1. Let sameTarget be true if ancestor is document's dialog pointerdown target.
+            let same_target = ancestor == document.overlay_handler().dialog_pointerdown_target();
+
+            // Step 6.2. Set document's dialog pointerdown target to null.
+            document
+                .overlay_handler()
+                .set_dialog_pointerdown_target(None);
+
+            // Step 6.3. If sameTarget is false, then return.
+            if !same_target {
+                return;
+            }
+
+            // Step 6.4. Let topmostDialog be the last element of document's open dialogs list.
+            let Some(topmost_dialog) = document.overlay_handler().topmost_open_dialog() else {
+                return;
+            };
+
+            // Step 6.5. If ancestor is topmostDialog, then return.
+            if ancestor.as_ref() == Some(&topmost_dialog) {
+                return;
+            }
+
+            // Step 6.6. If topmostDialog's computed closed-by state is not Any, then return.
+            if topmost_dialog.computed_closed_by_state() != ComputedClosedByState::Any {
+                return;
+            }
+
+            // Step 6.7. Assert: topmostDialog's close watcher is not null.
+            let close_watcher = topmost_dialog
+                .close_watcher
+                .borrow()
+                .clone()
+                .expect("Open dialog must have a close watcher");
+
+            // Step 6.8. Request to close topmostDialog's close watcher with false.
+            close_watcher.request_to_close(cx, false);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#nearest-clicked-dialog>
+    fn nearest_clicked_dialog(
+        cx: &mut JSContext,
+        pointer_event: &PointerEvent,
+        target: &Node,
+    ) -> Option<DomRoot<HTMLDialogElement>> {
+        // Step 1. Let target be event's target.
+        // Step 2. If target is a dialog element, target has an open attribute, target's is modal is
+        // true, and event's clientX and clientY are outside the bounds of target, then return null.
+        let point = pointer_event.upcast::<MouseEvent>().client_point();
+        let point = Point2D::new(Au::from_px(point.x), Au::from_px(point.y));
+        if target.is::<HTMLDialogElement>() &&
+            let Some(element) = target.downcast::<Element>() &&
+            element.has_attribute(&local_name!("open")) &&
+            element.state().contains(ElementState::MODAL) &&
+            target
+                .border_box(cx)
+                .is_some_and(|rect| !rect.contains(point))
+        {
+            return None;
+        }
+
+        // Step 3. Let currentNode be target.
+        let mut current_node = Some(DomRoot::from_ref(target));
+
+        // Step 4. While currentNode is not null:
+        while let Some(node) = current_node {
+            // Step 4.1. If currentNode is a dialog element and currentNode has an open attribute,
+            // then return currentNode.
+            if let Some(dialog) = node.downcast::<HTMLDialogElement>() &&
+                dialog
+                    .upcast::<Element>()
+                    .has_attribute(&local_name!("open"))
+            {
+                return Some(DomRoot::from_ref(dialog));
+            }
+
+            // Step 4.2. Set currentNode to currentNode's parent in the flat tree.
+            current_node = node
+                .parent_in_flat_tree(cx.no_gc())
+                .into_parent()
+                .map(|parent| parent.as_rooted());
+        }
+
+        // Step 5. Return null.
+        None
     }
 }
 
@@ -620,15 +769,17 @@ impl HTMLDialogElementMethods<crate::DomTypeHolder> for HTMLDialogElement {
             cx.no_gc(),
         );
 
-        // TODO: Step 8. Let document be this's node document.
+        // Step 8. Let document be this's node document.
+        let document = self.owner_document();
 
-        // TODO: Step 9. Let hideUntil be the result of running topmost popover ancestor given this, document's showing hint popover list, null, and false.
+        // Step 9. Let hideUntil be the result of running topmost popover ancestor given this,
+        // null, and false.
+        let hide_until = element.topmost_popover_ancestor(cx.no_gc(), None, false);
 
-        // TODO: Step 10. If hideUntil is null, then set hideUntil to the result of running topmost popover ancestor given this, document's showing auto popover list, null, and false.
-
-        // TODO: Step 11. If hideUntil is null, then set hideUntil to document.
-
-        // TODO: Step 12. Run hide all popovers until given hideUntil, false, and true.
+        // Step 10. Run hide popovers until given document, hideUntil, false, and true.
+        document
+            .overlay_handler()
+            .hide_popovers_until(cx, hide_until.as_deref(), false, true);
 
         // Step 13. Run the dialog focusing steps given this.
         self.run_dialog_focusing_steps(cx);
@@ -691,8 +842,11 @@ impl VirtualMethods for HTMLDialogElement {
             return true;
         }
 
-        // TODO Step 1. If element is in the popover showing state, then return.
+        // Step 1. If element is in the popover showing state, then return.
         let element = self.upcast::<Element>();
+        if element.popover_visibility_state_showing() {
+            return false;
+        }
 
         // Step 2. If command is in the Close state and element has an open attribute, then
         // close the dialog element with source's optional value and source.
@@ -752,8 +906,10 @@ impl VirtualMethods for HTMLDialogElement {
         // Step 2. If removedNode's node document's top layer contains removedNode, then remove
         // an element from the top layer immediately given removedNode.
         let document = removed_node.owner_document();
-        if document.top_layer_contains(removed_node) {
-            document.remove_an_element_from_the_top_layer_immediately(removed_node, cx.no_gc());
+        if document.overlay_handler().top_layer_contains(removed_node) {
+            document
+                .overlay_handler()
+                .remove_an_element_from_the_top_layer_immediately(removed_node, cx.no_gc());
         }
 
         // Step 3. Set is modal of removedNode to false.

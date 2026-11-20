@@ -23,7 +23,7 @@ use dom_struct::dom_struct;
 use embedder_traits::{
     ConsoleLogLevel, EmbedderMsg, JavaScriptEvaluationError, ScriptToEmbedderChan,
 };
-use fonts::FontContext;
+use fonts::{FontContext, WebFontDocumentContext};
 use js::context::{JSContext, NoGC};
 use js::jsapi::{GetNonCCWObjectGlobal, HandleObject, Heap, JSObject};
 use js::jsval::UndefinedValue;
@@ -42,6 +42,7 @@ use net_traits::image_cache::ImageCache;
 use net_traits::policy_container::PolicyContainer;
 use net_traits::request::{
     InsecureRequestsPolicy, Origin as RequestOrigin, Referrer, RequestBuilder, RequestClient,
+    UpgradeInsecureNavigations,
 };
 use net_traits::{CoreResourceMsg, CoreResourceThread, ReferrerPolicy, ResourceThreads};
 use profile_traits::{
@@ -141,7 +142,7 @@ use crate::dom::types::{AbortSignal, MessageEvent};
 use crate::dom::webgpu::gpudevice::GPUDevice;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
-use crate::dom::window::Window;
+use crate::dom::window::{FontCspHandler, FontNetworkTimingHandler, Window};
 use crate::dom::workerglobalscope::WorkerGlobalScope;
 use crate::dom::workletglobalscope::WorkletGlobalScope;
 use crate::event_loop::script_thread::{ScriptThread, with_script_thread};
@@ -293,7 +294,6 @@ pub(crate) struct GlobalScope {
     gpu_devices: DomRefCell<HashMapTracedValues<WebGPUDevice, WeakRef<GPUDevice>, FxBuildHasher>>,
 
     // https://w3c.github.io/performance-timeline/#supportedentrytypes-attribute
-    #[ignore_malloc_size_of = "mozjs"]
     frozen_supported_performance_entry_types: CachedFrozenArray,
 
     /// The stack of active group labels for the Console APIs.
@@ -337,6 +337,10 @@ pub(crate) struct GlobalScope {
 
     /// <https://fetch.spec.whatwg.org/#environment-settings-object-fetch-group>
     fetch_group: DomRefCell<FetchGroup>,
+
+    /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-navigations-set>
+    #[no_trace]
+    inherited_upgrade_insecure_navigations_set: DomRefCell<HashSet<UpgradeInsecureNavigations>>,
 }
 
 impl GlobalScope {
@@ -344,6 +348,11 @@ impl GlobalScope {
     pub(crate) fn tear_down(&self) {
         self.fetch_group_mut().terminate(self);
         self.close_event_sources();
+        if let Some(window) = self.downcast::<Window>() &&
+            let Some(cookie_store) = window.cookie_store()
+        {
+            cookie_store.clean_up();
+        }
         self.with_module_map(|module_map| std::mem::take(&mut *module_map.borrow_mut()));
     }
 
@@ -403,6 +412,7 @@ impl GlobalScope {
         top_level_creation_url: Option<ServoUrl>,
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         inherited_secure_context: Option<bool>,
+        inherited_upgrade_insecure_navigations_set: HashSet<UpgradeInsecureNavigations>,
         unminify_js: bool,
     ) -> Self {
         let resource_threads_sender = resource_threads.sender();
@@ -448,6 +458,9 @@ impl GlobalScope {
             import_map: Default::default(),
             resolved_module_set: Default::default(),
             fetch_group: DomRefCell::new(FetchGroup::new(resource_threads_sender)),
+            inherited_upgrade_insecure_navigations_set: DomRefCell::new(
+                inherited_upgrade_insecure_navigations_set,
+            ),
         }
     }
 
@@ -477,6 +490,23 @@ impl GlobalScope {
             window.with_timers(f)
         } else {
             unreachable!("Unsupported global type retrieving timers")
+        }
+    }
+
+    /// The context used to load web fonts for this global, for both windows and workers.
+    pub(crate) fn web_font_context(&self, no_gc: &NoGC) -> WebFontDocumentContext {
+        let task_source = self
+            .task_manager()
+            .dom_manipulation_task_source()
+            .to_sendable();
+        WebFontDocumentContext {
+            policy_container: self.policy_container(),
+            request_client: self.request_client(Some(no_gc)),
+            document_url: self.api_base_url(),
+            csp_handler: Box::new(FontCspHandler {
+                task_source: task_source.clone(),
+            }),
+            network_timing_handler: Box::new(FontNetworkTimingHandler { task_source }),
         }
     }
 
@@ -535,6 +565,18 @@ impl GlobalScope {
         new_registration
     }
 
+    fn send_service_worker_state_update_done(&self, worker_id: ServiceWorkerId) {
+        let res = self.script_to_constellation_chan().send(
+            ScriptToConstellationMessage::ServiceWorkerStateUpdateDone(
+                worker_id,
+                self.pipeline_id(),
+            ),
+        );
+        if res.is_err() {
+            error!("Sending ServiceWorkerStateUpdateDone failed");
+        }
+    }
+
     /// <https://w3c.github.io/ServiceWorker/#update-state-algorithm>
     pub(crate) fn update_service_worker_state(
         &self,
@@ -548,6 +590,7 @@ impl GlobalScope {
         // Step 4.3: Let workerObj be objectMap[worker].
         let Some(worker) = object_map.get(&worker_id) else {
             // Step 4.2: If objectMap[worker] does not exist, then abort these steps.
+            self.send_service_worker_state_update_done(worker_id);
             return;
         };
 
@@ -556,6 +599,8 @@ impl GlobalScope {
 
         // Step 4.5: Fire an event named statechange at workerObj.
         worker.upcast().fire_event(cx, atom!("statechange"));
+
+        self.send_service_worker_state_update_done(worker_id);
     }
 
     /// <https://w3c.github.io/ServiceWorker/#get-the-service-worker-object>
@@ -872,19 +917,15 @@ impl GlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#dom-messageport-close>
     pub(crate) fn close_message_port(&self, port_id: &MessagePortId) {
         if let MessagePortState::Managed(_id, message_ports) =
-            &mut *self.message_port_state.borrow_mut()
+            &mut *self.message_port_state.borrow_mut() &&
+            let Some(managed_port) = message_ports.get_mut(port_id)
         {
-            match message_ports.get_mut(port_id) {
-                None => panic!("close_message_port called on an unknown port."),
-                Some(managed_port) => {
-                    if let Some(port_impl) = managed_port.port_impl.as_mut() {
-                        port_impl.close();
-                        managed_port.explicitly_closed = true;
-                    } else {
-                        panic!("managed-port has no port-impl.");
-                    }
-                },
-            };
+            if let Some(port_impl) = managed_port.port_impl.as_mut() {
+                port_impl.close();
+                managed_port.explicitly_closed = true;
+            } else {
+                panic!("managed-port has no port-impl.");
+            }
         } else {
             warn!("close_message_port called on a global not managing any ports.")
         }
@@ -2136,6 +2177,18 @@ impl GlobalScope {
         self.devtools_chan.as_ref()
     }
 
+    /// The debugger global that has this global as a debuggee, if any.
+    #[cfg(feature = "devtools")]
+    pub(crate) fn debugger_global(
+        &self,
+        cx: &mut JSContext,
+    ) -> Option<DomRoot<DebuggerGlobalScope>> {
+        if self.is::<Window>() {
+            return with_script_thread(|script_thread| script_thread.debugger_global());
+        }
+        self.downcast::<WorkerGlobalScope>()?.debugger_global(cx)
+    }
+
     /// Get a sender to the memory profiler thread.
     pub(crate) fn mem_profiler_chan(&self) -> &profile_mem::ProfilerChan {
         &self.mem_profiler_chan
@@ -2311,6 +2364,7 @@ impl GlobalScope {
             origin: RequestOrigin::Origin(self.origin().immutable().clone()),
             is_nested_browsing_context: false,
             insecure_requests_policy: self.insecure_requests_policy(),
+            upgrade_insecure_navigations_set: self.upgrade_insecure_navigations_set().clone(),
             has_trustworthy_ancestor_origin: false,
             network_partition_key: None,
         }
@@ -2449,6 +2503,20 @@ impl GlobalScope {
         }
         debug!("unsupported global, defaulting insecure requests policy to DoNotUpgrade");
         InsecureRequestsPolicy::DoNotUpgrade
+    }
+
+    /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-navigations-set>
+    pub(crate) fn upgrade_insecure_navigations_set(
+        &self,
+    ) -> Ref<'_, HashSet<UpgradeInsecureNavigations>> {
+        self.inherited_upgrade_insecure_navigations_set.borrow()
+    }
+
+    /// <https://w3c.github.io/webappsec-upgrade-insecure-requests/#upgrade-insecure-navigations-set>
+    pub(crate) fn upgrade_insecure_navigations_set_mut(
+        &self,
+    ) -> RefMut<'_, HashSet<UpgradeInsecureNavigations>> {
+        self.inherited_upgrade_insecure_navigations_set.borrow_mut()
     }
 
     /// Whether this document has ancestor navigables that are trustworthy
@@ -2920,12 +2988,12 @@ impl GlobalScope {
     }
 
     /// <https://www.w3.org/TR/CSP/#get-csp-of-object>
-    pub(crate) fn get_csp_list(&self) -> Option<CspList> {
+    pub(crate) fn call_on_csp_list<T, F: FnOnce(&Option<CspList>) -> T>(&self, f: F) -> T {
         if self.is::<Window>() || self.is::<WorkerGlobalScope>() {
-            return self.policy_container().csp_list.clone();
+            return f(&self.policy_container().as_ref().csp_list);
         }
         // TODO: Worklet global scopes.
-        None
+        f(&None)
     }
 
     pub(crate) fn status_code(&self) -> Option<u16> {
@@ -3069,6 +3137,20 @@ impl GlobalScope {
             request_builder,
             NetworkListener::new(context, task_source),
             None, /* state */
+        );
+    }
+
+    pub(crate) fn fetch_favicon<Listener: FetchResponseListener>(
+        &self,
+        request_builder: RequestBuilder,
+        context: Listener,
+        task_source: SendableTaskSource,
+    ) {
+        self.fetch_group_mut().fetch_with_options(
+            request_builder,
+            NetworkListener::new(context, task_source),
+            None, /* state */
+            false,
         );
     }
 

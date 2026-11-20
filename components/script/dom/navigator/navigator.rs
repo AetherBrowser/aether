@@ -17,7 +17,7 @@ use js::context::JSContext;
 use js::rust::MutableHandleValue;
 use net_traits::blob_url_store::UrlWithBlobClaim;
 use net_traits::request::{
-    CredentialsMode, Destination, RequestBuilder, RequestId, RequestMode,
+    CredentialsMode, Destination, Initiator, RequestBuilder, RequestId, RequestMode,
     is_cors_safelisted_request_content_type,
 };
 use net_traits::{FetchMetadata, NetworkError, ResourceFetchTiming};
@@ -604,6 +604,7 @@ impl NavigatorMethods<crate::DomTypeHolder> for Navigator {
         )
         .mode(cors_mode)
         .destination(Destination::None)
+        .initiator(Initiator::Beacon)
         .with_global_scope(&global)
         .method(http::Method::POST)
         .body(request_body)

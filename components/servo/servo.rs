@@ -652,7 +652,7 @@ impl ServoInner {
                     webview.set_cursor(cursor);
                 }
             },
-            EmbedderMsg::NewFavicon(webview_id, image) => {
+            EmbedderMsg::SetFavicon(webview_id, image) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     webview.set_favicon(image);
                 }
@@ -803,9 +803,18 @@ impl ServoInner {
                     None => self.delegate.borrow().show_console_message(level, message),
                 }
             },
-            EmbedderMsg::ShowEmbedderControl(control_id, position, embedder_control_request) => {
+            EmbedderMsg::ShowEmbedderControl(control_id, rect, embedder_control_request) => {
                 if let Some(webview) = self.get_webview_handle(control_id.webview_id) {
-                    webview.show_embedder_control(control_id, position, embedder_control_request);
+                    let device_rect = self
+                        .paint
+                        .borrow()
+                        .map_pipeline_rect_to_device_rect(control_id.webview_id, rect)
+                        .unwrap_or_default();
+                    webview.show_embedder_control(
+                        control_id,
+                        device_rect.to_i32(),
+                        embedder_control_request,
+                    );
                 }
             },
             EmbedderMsg::HideEmbedderControl(control_id) => {

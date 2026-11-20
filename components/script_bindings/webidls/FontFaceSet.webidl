@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-/*
+// https://drafts.csswg.org/css-font-loading/#fontfacesetloadevent
 dictionary FontFaceSetLoadEventInit : EventInit {
   sequence<FontFace> fontfaces = [];
 };
 
-[Exposed=(Window,Worker)]
+[Exposed=(Window,Worker), Pref="dom_fontface_enabled"]
 interface FontFaceSetLoadEvent : Event {
   constructor(DOMString type, optional FontFaceSetLoadEventInit eventInitDict = {});
   // WebIDL needs to support FrozenArray & SameObject
@@ -16,10 +16,9 @@ interface FontFaceSetLoadEvent : Event {
 };
 
 enum FontFaceSetLoadStatus { "loading" , "loaded" };
-*/
 
 // https://drafts.csswg.org/css-font-loading/#FontFaceSet-interface
-[Exposed=(Window /*, Worker */)]
+[Exposed=(Window,Worker)]
 interface FontFaceSet : EventTarget {
   // constructor(sequence<FontFace> initialFaces);
 
@@ -33,9 +32,12 @@ interface FontFaceSet : EventTarget {
   undefined clear();
 
   // events for when loading state changes
-  // attribute EventHandler onloading;
-  // attribute EventHandler onloadingdone;
-  // attribute EventHandler onloadingerror;
+  [Pref="dom_fontface_enabled"]
+  attribute EventHandler onloading;
+  [Pref="dom_fontface_enabled"]
+  attribute EventHandler onloadingdone;
+  [Pref="dom_fontface_enabled"]
+  attribute EventHandler onloadingerror;
 
   // check and start loads if appropriate
   // and fulfill promise when all loads complete
@@ -50,5 +52,6 @@ interface FontFaceSet : EventTarget {
   readonly attribute Promise<FontFaceSet> ready;
 
   // loading state, "loading" while one or more fonts loading, "loaded" otherwise
-  // readonly attribute FontFaceSetLoadStatus status;
+  [Pref="dom_fontface_enabled"]
+  readonly attribute FontFaceSetLoadStatus status;
 };

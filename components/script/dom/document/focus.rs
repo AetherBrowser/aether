@@ -25,6 +25,7 @@ use crate::dom::bindings::root::MutNullableDom;
 use crate::dom::focusevent::FocusEventType;
 use crate::dom::html::form_controls::htmlinputelement::HTMLInputElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
+use crate::dom::input_type::ValueChangeEvents;
 use crate::dom::node::focus::{FocusNavigationScopeOwner, FocusTrigger};
 use crate::dom::types::{Element, EventTarget, FocusEvent, HTMLElement, HTMLIFrameElement, Window};
 use crate::dom::{Document, Event, EventBubbles, EventCancelable, Node, NodeTraits};
@@ -170,7 +171,7 @@ pub(crate) struct DocumentFocusHandler {
     has_focus: Cell<bool>,
     /// <https://html.spec.whatwg.org/multipage/#sequential-focus-navigation-starting-point>
     sequential_focus_navigation_starting_point: MutNullableDom<Node>,
-    last_non_script_focus_triggered_by_keyboard: Cell<bool>,
+    last_user_interaction_was_keyboard: Cell<bool>,
 }
 
 impl DocumentFocusHandler {
@@ -181,7 +182,7 @@ impl DocumentFocusHandler {
             focus_sequence: Cell::new(FocusSequenceNumber::default()),
             has_focus: Cell::new(has_focus),
             sequential_focus_navigation_starting_point: Default::default(),
-            last_non_script_focus_triggered_by_keyboard: Cell::new(true),
+            last_user_interaction_was_keyboard: Cell::new(true),
         }
     }
 
@@ -191,6 +192,14 @@ impl DocumentFocusHandler {
 
     pub(crate) fn set_has_focus(&self, has_focus: bool) {
         self.has_focus.set(has_focus);
+    }
+
+    pub(crate) fn set_last_user_interaction_was_keyboard(
+        &self,
+        last_user_interaction_was_keyboard: bool,
+    ) {
+        self.last_user_interaction_was_keyboard
+            .set(last_user_interaction_was_keyboard);
     }
 
     /// Return the element that currently has focus. If `None` is returned the viewport itself has focus.
@@ -210,6 +219,37 @@ impl DocumentFocusHandler {
             element
                 .downcast::<HTMLElement>()
                 .is_some_and(|html_element| html_element.is_editing_host())
+    }
+
+    /// Updates the focus-within state for all relevent ancestors. In case there were both
+    /// a previous and new focused element, all ancestors up to the common ancestor are
+    /// traversed. If that's not the case, all ancestors of the respective nodes are updated up
+    /// to the root node.
+    fn update_focus_within_state(
+        no_gc: &NoGC,
+        previous_element: Option<&Element>,
+        new_element: Option<&Element>,
+    ) {
+        let maybe_common_ancestor = match (previous_element, new_element) {
+            (Some(previous_element), Some(new_element)) => previous_element
+                .upcast::<Node>()
+                .common_ancestor_in_flat_tree(no_gc, new_element.upcast()),
+            _ => None,
+        };
+        if let Some(previous_element) = previous_element {
+            previous_element.set_focus_within_state_for_inclusive_ancestors(
+                no_gc,
+                maybe_common_ancestor.as_deref(),
+                false,
+            );
+        }
+        if let Some(new_element) = new_element {
+            new_element.set_focus_within_state_for_inclusive_ancestors(
+                no_gc,
+                maybe_common_ancestor.as_deref(),
+                true,
+            );
+        }
     }
 
     /// Set the element that currently has focus and update the focus state for both the previously
@@ -251,12 +291,22 @@ impl DocumentFocusHandler {
         }
         if let Some(newly_focused_element) = new_focusable_area.element() {
             recursively_set_focus_status(no_gc, newly_focused_element, true);
-            if self.last_non_script_focus_triggered_by_keyboard.get() ||
-                Self::focused_element_supports_keyboard_input(newly_focused_element)
+
+            // We should never show a focus ring on an iframe, since focus is handled separately
+            // inside of that iframe
+            if !newly_focused_element.is::<HTMLIFrameElement>() &&
+                (self.last_user_interaction_was_keyboard.get() ||
+                    Self::focused_element_supports_keyboard_input(newly_focused_element))
             {
                 newly_focused_element.set_focusring_state(no_gc, true);
             }
         }
+
+        Self::update_focus_within_state(
+            no_gc,
+            self.focused_area.borrow().element(),
+            new_focusable_area.element(),
+        );
 
         *self.focused_area.borrow_mut() = new_focusable_area;
     }
@@ -408,14 +458,14 @@ impl DocumentFocusHandler {
         // > and a script causes focus to move elsewhere,
         // > don’t indicate focus on the newly focused element.
         //
-        // We use `last_non_script_focus_triggered_by_keyboard` to track whether the last non-script
+        // We use `last_user_interaction_was_keyboard` to track whether the last non-script
         // trigger was a keyboard trigger.
         match focus_trigger {
             FocusTrigger::Keyboard => {
-                self.last_non_script_focus_triggered_by_keyboard.set(true);
+                self.last_user_interaction_was_keyboard.set(true);
             },
             FocusTrigger::Click => {
-                self.last_non_script_focus_triggered_by_keyboard.set(false);
+                self.last_user_interaction_was_keyboard.set(false);
             },
             FocusTrigger::Script => {
                 // Explicitly not updating anything
@@ -440,9 +490,17 @@ impl DocumentFocusHandler {
             // changed the element's value or its list of selected files while the control was
             // focused without committing that change (such that it is different to what it was
             // when the control was first focused), then:
-            // Step 2.1.1: Set entry's user validity to true.
-            // Step 2.1.2: Fire an event named change at the element, with the bubbles attribute initialized to true.
-            // TODO: Implement this.
+            if let Some(element) = entry.element() &&
+                let Some(input) = element.downcast::<HTMLInputElement>() &&
+                input.does_change_event_apply() &&
+                !input.has_defined_activation_behavior() &&
+                input.changed_by_user_while_focused()
+            {
+                // Step 2.1.1: Set entry's user validity to true.
+                input.set_user_validity(cx.no_gc(), true);
+                // Step 2.1.2: Fire an event named change at the element, with the bubbles attribute initialized to true.
+                input.fire_value_change_events(cx, ValueChangeEvents::Change);
+            }
 
             // Step 2.2:
             // - If entry is an element, let blur event target be entry.

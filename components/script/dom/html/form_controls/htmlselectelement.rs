@@ -2,11 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::Cell;
 use std::default::Default;
 use std::iter;
 
 use dom_struct::dom_struct;
-use embedder_traits::{EmbedderControlRequest, SelectElementRequest};
+use embedder_traits::{EmbedderControlRequest, MouseButton, SelectElementRequest};
 use embedder_traits::{SelectElementOption, SelectElementOptionOrOptgroup};
 use html5ever::{local_name, LocalName, Prefix};
 use js::context::{JSContext, NoGC};
@@ -16,7 +17,6 @@ use script_bindings::dom::UnrootedDom;
 use style::attr::AttrValue;
 use stylo_dom::ElementState;
 
-use crate::dom::activation::Activatable;
 use crate::dom::element::attributes::storage::AttrRef;
 use crate::dom::iterators::ShadowIncluding;
 use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
@@ -55,7 +55,7 @@ use crate::dom::nodelist::NodeList;
 use crate::dom::shadowroot::ShadowRoot;
 use crate::dom::shadowroot::ua_shadowroot::{CreateUAShadowRootForSelf, UAShadowRoot};
 use crate::dom::text::Text;
-use crate::dom::types::{FocusEvent, HTMLDataListElement};
+use crate::dom::types::{FocusEvent, HTMLDataListElement, MouseEvent};
 use crate::dom::validation::{is_barred_by_datalist_ancestor, Validatable};
 use crate::dom::validitystate::{ValidationFlags, ValidityState};
 use crate::dom::node::virtualmethods::VirtualMethods;
@@ -127,6 +127,8 @@ pub(crate) struct HTMLSelectElement {
     selected_options: MutNullableDom<HTMLCollection>,
     form_owner: MutNullableDom<HTMLFormElement>,
     labels_node_list: MutNullableDom<NodeList>,
+    /// <https://html.spec.whatwg.org/multipage/#user-validity>
+    user_validity: Cell<bool>,
     validity_state: MutNullableDom<ValidityState>,
     shadow_tree: DomRefCell<Option<ShadowTree>>,
 }
@@ -194,7 +196,7 @@ impl HTMLSelectElement {
     ) -> HTMLSelectElement {
         HTMLSelectElement {
             htmlelement: HTMLElement::new_inherited_with_state(
-                ElementState::ENABLED | ElementState::VALID,
+                ElementState::ENABLED | ElementState::VALID | ElementState::OPTIONAL_,
                 local_name,
                 prefix,
                 document,
@@ -203,6 +205,7 @@ impl HTMLSelectElement {
             selected_options: Default::default(),
             form_owner: Default::default(),
             labels_node_list: Default::default(),
+            user_validity: Cell::new(false),
             validity_state: Default::default(),
             shadow_tree: Default::default(),
         }
@@ -295,13 +298,53 @@ impl HTMLSelectElement {
         }
     }
 
+    fn update_related_validity_states(&self, cx: &mut JSContext) {
+        self.validity_state(cx)
+            .perform_validation_and_update(cx, ValidationFlags::VALUE_MISSING);
+        self.update_user_valid_state(cx.no_gc());
+    }
+
+    pub(crate) fn set_user_validity(&self, no_gc: &NoGC, value: bool) {
+        if self.user_validity.get() != value {
+            self.user_validity.set(value);
+            self.update_user_valid_state(no_gc);
+        }
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#selector-user-valid>
+    /// <https://html.spec.whatwg.org/multipage/#selector-user-invalid>
+    pub(crate) fn update_user_valid_state(&self, no_gc: &NoGC) {
+        if self.user_validity.get() {
+            let satisfies_constraints =
+                self.is_instance_validatable(no_gc) && self.satisfies_constraints();
+            let element = self.upcast::<Element>();
+            element.set_state(no_gc, ElementState::USER_VALID, satisfies_constraints);
+            element.set_state(no_gc, ElementState::USER_INVALID, !satisfies_constraints);
+        } else {
+            // Avoid computing constraint validation if user validity is false
+            let element = self.upcast::<Element>();
+            element.set_state(no_gc, ElementState::USER_VALID, false);
+            element.set_state(no_gc, ElementState::USER_INVALID, false);
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#the-select-element:concept-form-reset-control>
-    pub(crate) fn reset(&self, no_gc: &NoGC) {
-        for opt in self.list_of_options(no_gc) {
-            opt.set_selectedness(no_gc, opt.DefaultSelected());
+    pub(crate) fn reset(&self, cx: &mut JSContext) {
+        // Step 1. Set selectElement's user validity to false.
+        self.set_user_validity(cx.no_gc(), false);
+        // Step 2. For each optionElement of selectElement's list of options:
+        for opt in self.list_of_options(cx) {
+            // Step 2.1. If optionElement has a selected attribute, then set
+            // optionElement's selectedness to true; otherwise set it to false.
+            opt.set_selectedness(cx, opt.DefaultSelected());
+            // Step 2.2. Set optionElement's dirtiness to false.
             opt.set_dirtiness(false);
         }
-        self.selectedness_setting_algorithm(no_gc);
+        // Step 3. Run the selectedness setting algorithm given selectElement.
+        self.selectedness_setting_algorithm(cx);
+        // Step 4. Update a select's descendant selectedcontent elements
+        // given selectElement.
+        self.update_a_selects_descendant_selectedcontent_elements(cx);
     }
 
     /// <https://html.spec.whatwg.org/multipage/#selectedness-setting-algorithm>
@@ -566,7 +609,8 @@ impl HTMLSelectElement {
             .queue(task!(send_select_update_notification: move |cx| {
                 let this = this.root();
 
-                // TODO: Step 1. Set the select element's user validity to true.
+                // Step 1. Set the select element's user validity to true.
+                this.set_user_validity(cx.no_gc(), true);
 
                 // Step 2. Fire an event named input at the select element, with the bubbles and composed
                 // attributes initialized to true.
@@ -811,9 +855,7 @@ impl HTMLSelectElementMethods<crate::DomTypeHolder> for HTMLSelectElement {
             opt.set_selectedness(cx.no_gc(), false);
         }
 
-        self.validity_state(cx)
-            .perform_validation_and_update(cx, ValidationFlags::VALUE_MISSING);
-
+        self.update_related_validity_states(cx);
         self.update_shadow_tree(cx);
     }
 
@@ -906,12 +948,22 @@ impl VirtualMethods for HTMLSelectElement {
                 self.multiple_attribute_mutated(cx, mutation);
             },
             local_name!("required") => {
-                self.validity_state(cx)
-                    .perform_validation_and_update(cx, ValidationFlags::VALUE_MISSING);
+                self.update_related_validity_states(cx);
+
+                // https://html.spec.whatwg.org/multipage/#selector-required
+                // > The :required pseudo-class must match any element falling into one of the following categories:
+                // > - select elements that have a required attribute
+                let element = self.upcast::<Element>();
+                let required = matches!(mutation, AttributeMutation::Set(_));
+                element.set_state(cx.no_gc(), ElementState::REQUIRED, required);
+
+                // https://html.spec.whatwg.org/multipage/#selector-optional
+                // > The :optional pseudo-class must match any element falling into one of the following categories:
+                // > - select elements that do not have a required attribute
+                element.set_state(cx.no_gc(), ElementState::OPTIONAL_, !required);
             },
             local_name!("disabled") => {
-                self.validity_state(cx)
-                    .perform_validation_and_update(cx, ValidationFlags::VALUE_MISSING);
+                self.update_related_validity_states(cx);
             },
             local_name!("form") => {
                 self.form_attribute_mutated(cx, mutation);
@@ -921,7 +973,7 @@ impl VirtualMethods for HTMLSelectElement {
         if could_have_had_embedder_control && !self.may_have_embedder_control() {
             self.owner_document()
                 .embedder_controls()
-                .hide_embedder_control(self.upcast());
+                .hide_embedder_control_for_element(self.upcast());
         }
     }
 
@@ -929,7 +981,7 @@ impl VirtualMethods for HTMLSelectElement {
         self.super_type().unwrap().unbind_from_tree(cx, context);
         self.owner_document_unrooted(cx.no_gc())
             .embedder_controls()
-            .hide_embedder_control(self.upcast());
+            .hide_embedder_control_for_element(self.upcast());
     }
 
     fn children_changed(&self, cx: &mut JSContext, mutation: &ChildrenMutation) {
@@ -957,7 +1009,17 @@ impl VirtualMethods for HTMLSelectElement {
         {
             self.owner_document()
                 .embedder_controls()
-                .hide_embedder_control(self.upcast());
+                .hide_embedder_control_for_element(self.upcast());
+        }
+
+        // https://html.spec.whatwg.org/multipage/#select-open-picker
+        if event.IsTrusted() &&
+            !self.upcast::<Element>().disabled_state() &&
+            let Some(mouse_event) = event.downcast::<MouseEvent>() &&
+            mouse_event.button() == MouseButton::Primary &&
+            *event.type_() == *"mousedown"
+        {
+            self.show_menu(cx);
         }
     }
 }
@@ -984,6 +1046,13 @@ impl Validatable for HTMLSelectElement {
     fn validity_state(&self, cx: &mut JSContext) -> DomRoot<ValidityState> {
         self.validity_state
             .or_init(|| ValidityState::new(cx, &self.owner_window(), self.upcast()))
+    }
+
+    fn satisfies_constraints(&self) -> bool {
+        let Some(validity_state) = self.validity_state.get() else {
+            return true;
+        };
+        validity_state.invalid_flags().is_empty()
     }
 
     fn is_instance_validatable(&self, no_gc: &NoGC) -> bool {
@@ -1015,29 +1084,6 @@ impl Validatable for HTMLSelectElement {
         }
 
         failed_flags
-    }
-}
-
-impl Activatable for HTMLSelectElement {
-    fn as_element(&self) -> &Element {
-        self.upcast()
-    }
-
-    fn is_instance_activatable(&self) -> bool {
-        !self.upcast::<Element>().disabled_state()
-    }
-
-    fn activation_behavior(
-        &self,
-        cx: &mut js::context::JSContext,
-        event: &Event,
-        _target: &EventTarget,
-    ) {
-        if !event.IsTrusted() {
-            return;
-        }
-
-        self.show_menu(cx);
     }
 }
 

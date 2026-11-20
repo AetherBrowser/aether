@@ -15,8 +15,8 @@ use bitflags::bitflags;
 use crossbeam_channel::Sender;
 use dpi::PhysicalSize;
 use embedder_traits::{
-    EventLoopWaker, InputEventAndId, InputEventId, InputEventResult, ScreenshotCaptureError,
-    Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
+    EventLoopWaker, InputEventAndId, InputEventId, InputEventResult, PipelineRect,
+    ScreenshotCaptureError, Scroll, ShutdownState, ViewportDetails, WebViewPoint, WebViewRect,
 };
 use euclid::{Scale, Size2D};
 use image::RgbaImage;
@@ -50,7 +50,7 @@ use webgl::webgl_thread::WebGLContextBusyMap;
 #[cfg(feature = "webgpu")]
 use webgpu::canvas_context::WebGpuExternalImageMap;
 use webrender::{CaptureBits, MemoryReport};
-use webrender_api::units::{DevicePixel, DevicePoint};
+use webrender_api::units::{DevicePixel, DevicePoint, DeviceRect};
 use webrender_api::{FontInstanceKey, FontKey, ImageKey};
 #[cfg(feature = "webxr")]
 use webxr::WebXrRegistry;
@@ -217,11 +217,13 @@ impl Paint {
 
         // Create the WebXR main thread.
         #[cfg(feature = "webxr")]
-        let webxr_main_thread = webxr::MainThreadRegistry::new(
+        let mut webxr_main_thread = webxr::MainThreadRegistry::new(
             state.event_loop_waker.clone(),
             webxr_layer_grand_manager,
         )
         .expect("Failed to create WebXR device registry");
+        #[cfg(feature = "webxr")]
+        webxr_main_thread.register_fallback(webxr::inline::InlineDiscovery);
 
         #[cfg(feature = "webgl")]
         let webgl_paint = WebGLPaint {
@@ -281,9 +283,8 @@ impl Paint {
             warn!("The rendering context has no surfman connection, WebGL will be unavailable");
             return painter_id;
         };
-        let Ok(adapter) = connection.create_adapter().inspect_err(|error| {
-            warn!("Could not create a surfman adapter, WebGL will be unavailable: {error:?}")
-        }) else {
+        let Some(adapter) = rendering_context.adapter() else {
+            warn!("Could not retrieve surfman adapter, WebGL will be unavailable");
             return painter_id;
         };
 
@@ -985,5 +986,19 @@ impl Paint {
             .collect();
 
         let _ = result_sender.send((font_keys, font_instance_keys));
+    }
+
+    /// Map the given [`PipelineRect`] into the device coordinates relative to the WebView origin,
+    /// returning `None` if the pipeline isn't known or active.
+    pub fn map_pipeline_rect_to_device_rect(
+        &self,
+        webview_id: WebViewId,
+        pipeline_rect: PipelineRect,
+    ) -> Option<DeviceRect> {
+        Some(
+            self.maybe_painter(webview_id.into())?
+                .webview_renderer(webview_id)?
+                .map_rect_to_device_pixel(pipeline_rect.pipeline_id, pipeline_rect.rect),
+        )
     }
 }

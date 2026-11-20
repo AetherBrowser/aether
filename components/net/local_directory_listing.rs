@@ -6,9 +6,9 @@ use std::fmt::Write as _;
 use std::fs::Metadata;
 use std::path::PathBuf;
 
-use chrono::{DateTime, Local};
-use embedder_traits::resources::{Resource, read_string};
+use embedder_traits::resources::{Resource, read_bytes};
 use headers::{ContentType, HeaderMapExt};
+use jiff::ZonedDateTime;
 use net_traits::request::Request;
 use net_traits::response::{Response, ResponseBody};
 use net_traits::{NetworkError, ResourceFetchTiming};
@@ -73,7 +73,8 @@ pub(crate) async fn build_html_directory_listing(
         parent_url.as_str().clone_into(&mut parent_url_string);
     }
 
-    page_html.push_str(&read_string(Resource::DirectoryListingHTML));
+    page_html
+        .push_str(str::from_utf8(read_bytes(Resource::DirectoryListingHTML).as_ref()).unwrap());
 
     page_html.push_str("<script>\n");
     write!(
@@ -127,8 +128,9 @@ fn write_directory_entry(
     let file_size = metadata_to_file_size_string(&metadata);
     let last_modified = metadata
         .modified()
-        .map(DateTime::<Local>::from)
-        .map(|time| time.format("%F %r").to_string())
+        .ok()
+        .and_then(|mtime| ZonedDateTime::try_from(mtime).ok())
+        .map(|timestamp| timestamp.strftime("%F %r").to_string())
         .unwrap_or_default();
 
     // The file name is the only value here that reaches the page unencoded; the

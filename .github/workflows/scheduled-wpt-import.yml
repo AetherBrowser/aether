@@ -2,8 +2,8 @@ name: WPT Import
 
 on:
   schedule:
-    # Run this job every Sunday at 00:00.
-    - cron: "0 0 * * 0"
+    # Run this job every Sunday at 00:01.
+    - cron: "0 1 * * 0"
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:

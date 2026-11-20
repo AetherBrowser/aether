@@ -52,6 +52,19 @@ impl ProtocolHandler for ServoProtocolHandler {
                 )
             },
             "home" => forbidden_response(),
+            // Read-only here. The desktop settings page is what writes the list.
+            "content-filter"
+                if !request.is_navigation_request() &&
+                    !request_is_from_web_content(request) &&
+                    url.query().is_none_or(str::is_empty) =>
+            {
+                bytes_response(
+                    request,
+                    crate::content_filter::handle_content_filter_request(None).as_bytes(),
+                    "application/json",
+                )
+            },
+            "content-filter" => forbidden_response(),
             _ => error_response("Invalid shortcut"),
         }
     }
