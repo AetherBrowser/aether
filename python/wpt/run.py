@@ -202,9 +202,7 @@ def _fetch_open_intermittent_issues(repo: str, token: str | None) -> list[dict]:
     `gh` versions on CI runners: some apply the filter to each issue object and
     then return an empty list.
     """
-    url: str | None = (
-        f"https://api.github.com/repos/{repo}/issues?state=open&labels=I-intermittent&per_page=100"
-    )
+    url: str | None = f"https://api.github.com/repos/{repo}/issues?state=open&labels=I-intermittent&per_page=100"
     issues: list[dict] = []
     while url:
         request = urllib.request.Request(
@@ -234,9 +232,7 @@ def _fetch_open_intermittent_issues(repo: str, token: str | None) -> list[dict]:
         # those issues with an empty labels array, so do not require the label
         # to be present in the payload. Drop C-disabled only when it is visible.
         for issue in page:
-            label_names = {
-                label.get("name") for label in issue.get("labels", []) if isinstance(label, dict)
-            }
+            label_names = {label.get("name") for label in issue.get("labels", []) if isinstance(label, dict)}
             if "C-disabled" in label_names:
                 continue
             issues.append({"number": issue["number"], "title": issue["title"]})
