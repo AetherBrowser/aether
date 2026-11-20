@@ -4305,7 +4305,7 @@ where
                         .browsing_contexts
                         .get(&BrowsingContextId::from(webview_id))
                         .is_some_and(|ctx| ctx.pipeline_id == pipeline_id);
-                    if pipeline_is_top_level_pipeline {
+                    if pipeline_is_top_level_pipeline && !self.webview_is_navigating(webview_id) {
                         self.send_webdriver_load_status(
                             webview_id,
                             WebDriverLoadStatus::NavigationStop,
@@ -4507,7 +4507,9 @@ where
 
         self.close_pipeline(new_pipeline_id, DiscardBrowsingContext::No);
 
-        if change.browsing_context_id == BrowsingContextId::from(webview_id) {
+        if change.browsing_context_id == BrowsingContextId::from(webview_id) &&
+            !self.webview_is_navigating(webview_id)
+        {
             self.send_webdriver_load_status(webview_id, WebDriverLoadStatus::NavigationStop);
         }
 
@@ -4528,8 +4530,11 @@ where
     ) {
         debug!("Load finished in {pipeline_id:?} aborted={aborted}");
 
-        if !aborted && let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) {
-            pipeline.completely_loaded = true;
+        if let Some(pipeline) = self.pipelines.get_mut(&pipeline_id) {
+            pipeline.load_finished = true;
+            if !aborted {
+                pipeline.completely_loaded = true;
+            }
         }
 
         // We need to make sure the pipeline that has finished loading is the current
@@ -4539,14 +4544,16 @@ where
             .get(&BrowsingContextId::from(webview_id))
             .is_some_and(|ctx| ctx.pipeline_id == pipeline_id);
         if pipeline_is_top_level_pipeline {
-            self.send_webdriver_load_status(
-                webview_id,
-                if aborted {
-                    WebDriverLoadStatus::NavigationStop
-                } else {
-                    WebDriverLoadStatus::Complete
-                },
-            );
+            if !self.webview_is_navigating(webview_id) {
+                self.send_webdriver_load_status(
+                    webview_id,
+                    if aborted {
+                        WebDriverLoadStatus::NavigationStop
+                    } else {
+                        WebDriverLoadStatus::Complete
+                    },
+                );
+            }
         } else {
             self.handle_subframe_load_finished(pipeline_id, aborted);
         }
@@ -4836,7 +4843,7 @@ where
 
             // 1. A traversal started above (implies a pipeline is created which has load)
             // 2. A document that is still loading
-            // will clear theoutstanding status itself.
+            // will clear the outstanding status itself.
             // Otherwise do it manually.
             if !self.webview_is_navigating(webview_id) {
                 self.send_webdriver_load_status(webview_id, WebDriverLoadStatus::NavigationStop);
@@ -4844,8 +4851,8 @@ where
         }
     }
 
-    /// Whether a history traversal is still running,
-    /// or the top-level document is still loading.
+    /// Whether this webview will report the end of a navigation itself.
+    /// See [`ConstellationWebView::is_navigating`].
     fn webview_is_navigating(&self, webview_id: WebViewId) -> bool {
         let Some(webview) = self.webviews.get(&webview_id) else {
             return false;
