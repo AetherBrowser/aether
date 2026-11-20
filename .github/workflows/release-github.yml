@@ -108,7 +108,7 @@ jobs:
   publish-nightly-release:
     # We only auto-publish nightly releases, so we do not use this job for regular releases.
     if: |
-      always() 
+      always()
         && (github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch')
         && (inputs.regular_release || false) == false
     name: Publish GH Release
@@ -151,8 +151,8 @@ jobs:
       - build-android
       - build-linux
       - build-linux-arm64
-      - build-mac
-      - build-mac-arm64
+      - build-macos
+      - build-macos-arm64
       - build-ohos
       - build-win
 
@@ -218,8 +218,8 @@ jobs:
     needs: &upload-artifacts-needs
       - create-draft-release
       - build-win
-      - build-mac
-      - build-mac-arm64
+      - build-macos
+      - build-macos-arm64
       - build-linux
       - build-linux-arm64
       - build-android
@@ -230,9 +230,9 @@ jobs:
         include:
           - artifact_ids: ${{ needs.build-win.outputs.artifact_ids }}
             artifact_platform: windows-msvc
-          - artifact_ids: ${{ needs.build-mac.outputs.artifact_ids }}
+          - artifact_ids: ${{ needs.build-macos.outputs.artifact_ids }}
             artifact_platform: mac
-          - artifact_ids: ${{ needs.build-mac-arm64.outputs.artifact_ids }}
+          - artifact_ids: ${{ needs.build-macos-arm64.outputs.artifact_ids }}
             artifact_platform: mac-arm64
           - artifact_ids: ${{ needs.build-linux.outputs.artifact_ids }}
             artifact_platform: linux
@@ -306,24 +306,26 @@ jobs:
     steps: *upload-artifacts-steps
 
 
-  build-mac:
+  build-macos:
     # This job is only useful when run on upstream aether.
     needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-    name: Build production release (macOS)
-    uses: ./.github/workflows/mac.yml
+    name: Build production release (macOS x86_64)
+    uses: ./.github/workflows/macos.yml
     with:
+      arch: "x86_64"
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
       release-tag: ${{ needs.resolve-tag.outputs.name }}
 
-  build-mac-arm64:
+  build-macos-arm64:
     # This job is only useful when run on upstream aether.
     needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-    name: Build production release (macOS Arm64)
-    uses: ./.github/workflows/mac-arm64.yml
+    name: Build production release (macOS arm64)
+    uses: ./.github/workflows/macos.yml
     with:
+      arch: "arm64"
       profile: "production"
       force-github-hosted-runner: true  # <https://github.com/servo/servo/issues/33296>
       release-tag: ${{ needs.resolve-tag.outputs.name }}
@@ -343,7 +345,7 @@ jobs:
     # This job is only useful when run on upstream aether.
     needs: resolve-tag
     if: github.repository == 'AetherBrowser/aether' || github.event_name == 'workflow_dispatch'
-    name: Build production release (Linux Arm64)
+    name: Build production release (Linux arm64)
     uses: ./.github/workflows/linux-arm64.yml
     with:
       profile: "production"
