@@ -60,6 +60,11 @@ const BASE_OPTIONS: &[(&str, &str)] = &[
 ///   is otherwise only enabled for network streams, which `aether-media://` is not.
 /// - `demuxer-max-bytes` and `demuxer-max-back-bytes`: bound that cache, by default up to
 ///   150 MiB ahead and 50 MiB behind for each media element.
+///
+/// `audio-pitch-correction` keeps mpv's default (`yes`), as `preservesPitch` defaults to
+/// true: at a playback rate other than 1, mpv adds a `scaletempo2` filter. Benchmarks
+/// comparing backends must account for it: on a 128 kb/s MP3, the player used 1 to 3 % of a
+/// core at rates from 1 to 16, with or without the filter.
 const PLAYER_OPTIONS: &[(&str, &str)] = &[
     ("pause", "yes"),
     ("vid", "no"),
