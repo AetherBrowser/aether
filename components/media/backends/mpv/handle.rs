@@ -565,13 +565,6 @@ impl Drop for MpvHandle {
 ///
 /// render.h requires freeing the context before the instance is destroyed: the context
 /// keeps its instance alive for that.
-#[cfg_attr(
-    not(all(test, has_libmpv)),
-    expect(
-        dead_code,
-        reason = "Used by the video render thread, which is not wired yet"
-    )
-)]
 pub struct RenderContext {
     ctx: NonNull<ffi::mpv_render_context>,
     /// Called by libmpv until the context is freed, so released after it.
@@ -586,13 +579,6 @@ type UpdateCallback = Box<dyn Fn() + Send + Sync>;
 // ensures a context is only used by one thread at a time.
 unsafe impl Send for RenderContext {}
 
-#[cfg_attr(
-    not(all(test, has_libmpv)),
-    expect(
-        dead_code,
-        reason = "Used by the video render thread, which is not wired yet"
-    )
-)]
 impl RenderContext {
     /// Creates the software render context of `handle`. render.h allows one context per
     /// instance, and it must exist before video starts, so before `loadfile`: without it,
