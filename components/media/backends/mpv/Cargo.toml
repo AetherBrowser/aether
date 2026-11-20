@@ -17,6 +17,8 @@ path = "lib.rs"
 [dependencies]
 data-url = { workspace = true }
 log = { workspace = true }
+malloc_size_of = { workspace = true }
+malloc_size_of_derive = { workspace = true }
 servo-base = { workspace = true }
 servo-media = { workspace = true }
 servo-media-audio = { workspace = true }

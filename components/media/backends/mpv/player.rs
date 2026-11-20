@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use log::warn;
+use malloc_size_of_derive::MallocSizeOf;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_media::MediaInstanceError;
 use servo_media_player::{Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg};
@@ -33,21 +34,27 @@ const SEEK_ANSWER_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// first bytes of the media, so a media element that never loads costs no mpv threads.
 /// Operations that are not wired to libmpv yet report a `PlayerError::Backend` instead of
 /// silently succeeding.
+#[derive(MallocSizeOf)]
 pub struct MpvPlayer {
     id: usize,
     context_id: ClientContextId,
     /// The backend's instance table. Weak so a player never keeps its backend alive.
+    #[ignore_malloc_size_of = "Owned by the backend"]
     instances: Weak<Mutex<Instances>>,
     /// Options of the libmpv instance, read when it gets created.
+    #[ignore_malloc_size_of = "Shared by every player, and only static strings"]
     options: Arc<[(&'static str, &'static str)]>,
     /// Where the events of the libmpv instance go, once it exists.
+    #[ignore_malloc_size_of = "Owned by Servo"]
     sender: GenericCallback<PlayerEvent>,
     /// Where Servo pushes the media, read by libmpv as `aether-media://<id>`.
+    #[ignore_malloc_size_of = "The stream bridge does not report its queued bytes yet"]
     bridge: Arc<StreamBridge>,
     /// Whether libmpv was asked to load the media from the bridge.
     loading: Cell<bool>,
     /// Whether Servo can fetch the media from any offset, so that it can be seeked.
     seekable: Cell<bool>,
+    #[ignore_malloc_size_of = "libmpv allocates outside of the Rust heap"]
     handle: OnceCell<Instance>,
     /// Whether this player was playing when its page got suspended, so `resume` restarts
     /// it. A media paused by the page stays paused when the page is resumed.
