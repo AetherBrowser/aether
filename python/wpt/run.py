@@ -8,9 +8,9 @@ import json
 import multiprocessing
 import os
 import sys
+import tempfile
 import urllib.error
 import urllib.request
-import tempfile
 from collections.abc import Callable
 from typing import Any, List, cast
 
