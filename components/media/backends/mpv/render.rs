@@ -10,8 +10,9 @@
     expect(dead_code, reason = "Wired into MpvPlayer by the next task")
 )]
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 
 use log::warn;
@@ -42,48 +43,18 @@ impl VideoSize {
     }
 }
 
-/// Wakes the render thread up, or tells it to stop. Wake-ups that come before the thread
-/// waits again count as one.
-#[derive(Default)]
-struct Signal {
-    state: Mutex<SignalState>,
-    changed: Condvar,
-}
-
-#[derive(Default)]
-struct SignalState {
-    woken: bool,
-    stopping: bool,
-}
-
-impl Signal {
-    /// Called by libmpv's update callback, which must not block: the lock is only ever held
-    /// for a few instructions.
-    fn wake(&self) {
-        self.state.lock().unwrap().woken = true;
-        self.changed.notify_one();
-    }
-
-    fn stop(&self) {
-        self.state.lock().unwrap().stopping = true;
-        self.changed.notify_one();
-    }
-
-    /// Waits to be woken up. Returns false once the thread must stop.
-    fn wait(&self) -> bool {
-        let mut state = self.state.lock().unwrap();
-        while !state.woken && !state.stopping {
-            state = self.changed.wait(state).unwrap();
-        }
-        state.woken = false;
-        !state.stopping
-    }
+/// Wakes the render thread up. Never blocks, as libmpv's update callback must not: the
+/// channel holds at most one wake-up, so those that come before the thread waits again
+/// count as one.
+fn wake(sender: &SyncSender<()>) {
+    let _ = sender.try_send(());
 }
 
 /// A thread that renders the video of a libmpv instance and hands the frames to the media
 /// element. Stopped and joined on drop.
 pub(crate) struct RenderThread {
-    signal: Arc<Signal>,
+    wake: SyncSender<()>,
+    stopping: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -96,35 +67,39 @@ impl RenderThread {
         renderer: Weak<Mutex<dyn VideoFrameRenderer>>,
         sender: GenericCallback<PlayerEvent>,
     ) -> Result<RenderThread, MpvError> {
-        let signal = Arc::new(Signal::default());
-        // libmpv calls the update callback right away: the signal must already exist.
+        let (wake_sender, woken) = mpsc::sync_channel(1);
+        // libmpv calls the update callback right away, before the thread exists: the
+        // channel keeps that wake-up for it.
         let context = RenderContext::new(handle, {
-            let signal = signal.clone();
-            move || signal.wake()
+            let wake_sender = wake_sender.clone();
+            move || wake(&wake_sender)
         })?;
+        let stopping = Arc::new(AtomicBool::new(false));
         let thread = thread::Builder::new()
             .name("MpvRender".to_owned())
             .spawn({
-                let signal = signal.clone();
-                move || render_frames(context, &signal, &size, &renderer, &sender)
+                let stopping = stopping.clone();
+                move || render_frames(context, &woken, &stopping, &size, &renderer, &sender)
             })
             .expect("Thread spawning failed");
         Ok(RenderThread {
-            signal,
+            wake: wake_sender,
+            stopping,
             thread: Some(thread),
         })
     }
 
     /// Wakes the render thread up, e.g. so that it renders at a new size.
     pub(crate) fn waker(&self) -> impl Fn() + Send + Sync + 'static {
-        let signal = self.signal.clone();
-        move || signal.wake()
+        let sender = self.wake.clone();
+        move || wake(&sender)
     }
 }
 
 impl Drop for RenderThread {
     fn drop(&mut self) {
-        self.signal.stop();
+        self.stopping.store(true, Ordering::Release);
+        wake(&self.wake);
         if let Some(thread) = self.thread.take() &&
             thread.join().is_err()
         {
@@ -144,7 +119,8 @@ impl Buffer for FrameBuffer {
 
 fn render_frames(
     mut context: RenderContext,
-    signal: &Signal,
+    woken: &Receiver<()>,
+    stopping: &AtomicBool,
     size: &VideoSize,
     renderer: &Weak<Mutex<dyn VideoFrameRenderer>>,
     sender: &GenericCallback<PlayerEvent>,
@@ -152,7 +128,9 @@ fn render_frames(
     // A frame mpv announced while the size was still unknown is rendered once it is.
     let mut frame_due = false;
     let mut rendered_size = None;
-    while signal.wait() {
+    // The thread keeps a sender, in its render context's update callback: `recv` only
+    // returns once woken up.
+    while woken.recv().is_ok() && !stopping.load(Ordering::Acquire) {
         frame_due |= context.update();
         let Some((width, height)) = size.get() else {
             continue;
@@ -228,12 +206,11 @@ mod tests {
 
     #[test]
     fn wake_ups_before_a_wait_count_as_one() {
-        let signal = Signal::default();
-        signal.wake();
-        signal.wake();
-        assert!(signal.wait());
-        signal.stop();
-        assert!(!signal.wait());
+        let (sender, woken) = mpsc::sync_channel(1);
+        wake(&sender);
+        wake(&sender);
+        assert!(woken.try_recv().is_ok());
+        assert!(woken.try_recv().is_err());
     }
 
     /// Keeps the frames it is given.
