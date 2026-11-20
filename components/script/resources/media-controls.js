@@ -41,6 +41,9 @@
     }
   };
 
+  // Playback rates offered by the speed selector.
+  const PLAYBACK_RATES = [0.5, 1, 1.25, 1.5, 2];
+
   function generateMarkup(isAudioOnly) {
     return `
       <div class="controls">
@@ -56,6 +59,9 @@
           <button id="volume-switch"></button>
           <input id="volume-level" type="range" value="100" min="0" max="100" step="1"></input>
         </div>
+        <select id="playback-rate" aria-label="Playback speed" title="Playback speed">
+          ${PLAYBACK_RATES.map(rate => `<option value="${rate}">${rate}×</option>`).join("")}
+        </select>
         ${isAudioOnly ? "" : '<button id="fullscreen-switch" class="fullscreen"></button>'}
       </div>
     `;
@@ -150,6 +156,7 @@
 
       const elementNames = [
         "duration",
+        "playback-rate",
         "play-pause-button",
         "position-duration-box",
         "position-text",
@@ -230,7 +237,8 @@
         "emptied",
         "loadedmetadata",
         "error",
-        "suspend"
+        "suspend",
+        "ratechange"
       ];
       this.mediaEvents.forEach(event => {
         this.media.addEventListener(event, this);
@@ -239,7 +247,8 @@
       this.controlEvents = [
         { el: this.elements.playPauseButton, type: "click" },
         { el: this.elements.volumeSwitch, type: "click" },
-        { el: this.elements.volumeLevel, type: "input" }
+        { el: this.elements.volumeLevel, type: "input" },
+        { el: this.elements.playbackRate, type: "change" }
       ];
 
       if (!this.isAudioOnly) {
@@ -353,6 +362,33 @@
       if (this.elements.volumeLevel.value != volumeLevelValue) {
         this.elements.volumeLevel.value = volumeLevelValue;
       }
+
+      // Playback rate.
+      this.renderPlaybackRate();
+    }
+
+    // Shows the current playback rate in the selector. A rate set by a script that is
+    // not one of the offered ones gets its own option, removed once it is not used.
+    renderPlaybackRate() {
+      const select = this.elements.playbackRate;
+      const rate = String(this.media.playbackRate);
+      let custom = select.querySelector("option.custom");
+      if (PLAYBACK_RATES.map(String).includes(rate)) {
+        if (custom) {
+          custom.remove();
+        }
+      } else {
+        if (!custom) {
+          custom = document.createElement("option");
+          custom.className = "custom";
+          select.appendChild(custom);
+        }
+        custom.value = rate;
+        custom.textContent = `${rate}×`;
+      }
+      if (select.value != rate) {
+        select.value = rate;
+      }
     }
 
     handleEvent(event) {
@@ -390,6 +426,13 @@
               break;
           }
           break;
+        case "change":
+          switch (event.currentTarget) {
+            case this.elements.playbackRate:
+              this.changePlaybackRate();
+              break;
+          }
+          break;
         default:
           throw new Error(`Unknown event ${event.type}`);
       }
@@ -407,6 +450,7 @@
           this[event.type]();
           break;
         case "volumechange":
+        case "ratechange":
         case "timeupdate":
         case "resize":
           this.render();
@@ -457,6 +501,13 @@
       const volume = parseInt(this.elements.volumeLevel.value);
       if (!isNaN(volume)) {
         this.media.volume = volume / 100;
+      }
+    }
+
+    changePlaybackRate() {
+      const rate = parseFloat(this.elements.playbackRate.value);
+      if (!isNaN(rate)) {
+        this.media.playbackRate = rate;
       }
     }
   }
