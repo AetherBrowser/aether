@@ -13,6 +13,7 @@ mod events;
 mod ffi;
 mod handle;
 mod player;
+mod render;
 mod stream;
 
 use std::collections::HashMap;
