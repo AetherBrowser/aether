@@ -25,7 +25,7 @@ use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
     Button, FontDefinitions, Id, Key, Label, LayerId, Order, PaintCallback, Panel, WidgetInfo,
-    WidgetType, pos2,
+    WidgetType,
 };
 #[cfg(any(
     target_os = "windows",
@@ -974,14 +974,10 @@ impl Gui {
                 self.devtools_rect = egui::Rect::NOTHING;
             }
 
-            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx));
-
             // If the top parts of the GUI changed size, then update the size of the WebView and also
             // the size of its RenderingContext.
-            let available_rect = ctx.available_rect_before_wrap();
-
-            let scale_factor =
-                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
+            let webview_rect = ctx.available_rect_before_wrap();
+            headed_window.for_each_active_dialog(window, |dialog| dialog.update(ctx, webview_rect));
 
             // Some other widget may have claimed focus on this tick, so detect if the currently
             // focused egui widget is still a WebView.
@@ -998,6 +994,8 @@ impl Gui {
             // Create a WebViewWidget for each webview, not just the active one, so that every
             // webview gets an AccessKit graft node. This prevents any TreeUpdates from inactive
             // webviews from causing a panic in AccessKit.
+            let scale_factor =
+                Scale::<_, DeviceIndependentPixel, DevicePixel>::new(ctx.pixels_per_point());
             let active_webview = window.active_webview();
             for (_, webview) in window.webviews() {
                 let webview_active = active_webview.as_ref() == Some(&webview);
@@ -1014,7 +1012,7 @@ impl Gui {
                 let panel = WebViewWidget::new(
                     webview.clone(),
                     scale_factor,
-                    available_rect,
+                    webview_rect,
                     webview_contains_focus,
                     can_take_focus,
                 );
@@ -1025,7 +1023,7 @@ impl Gui {
                     self.webview_widget_focused = true;
                 }
             }
-            let size = Size2D::new(available_rect.width(), available_rect.height()) * scale_factor;
+            let size = Size2D::new(webview_rect.width(), webview_rect.height()) * scale_factor;
             if let Some(webview) = window.active_webview() &&
                 size != webview.size()
             {
@@ -1040,7 +1038,7 @@ impl Gui {
                     ctx.clone(),
                     LayerId::new(Order::Tooltip, Id::new("tooltip")),
                     "tooltip layer".into(),
-                    pos2(available_rect.max.x, available_rect.max.y),
+                    webview_rect.right_bottom(),
                 )
                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
             }
@@ -1049,7 +1047,7 @@ impl Gui {
 
             if let Some(render_to_parent) = rendering_context.render_to_parent_callback() {
                 ctx.layer_painter(LayerId::background()).add(PaintCallback {
-                    rect: available_rect,
+                    rect: webview_rect,
                     callback: Arc::new(CallbackFn::new(move |info, painter| {
                         let clip = info.viewport_in_pixels();
                         let rect_in_parent = Rect::new(
