@@ -30,11 +30,11 @@ pub(super) struct BackgroundLayer {
 }
 
 #[derive(Debug)]
-struct Layout1DResult {
-    repeat: bool,
-    bounds_origin: f32,
-    bounds_size: f32,
-    tile_spacing: f32,
+pub(super) struct Layout1DResult {
+    pub(super) repeat: bool,
+    pub(super) bounds_origin: f32,
+    pub(super) bounds_size: f32,
+    pub(super) tile_spacing: f32,
 }
 
 pub(crate) fn get_cyclic<T>(values: &[T], layer_index: usize) -> &T {
@@ -293,7 +293,7 @@ pub(super) fn layout_layer(
 
 /// Abstract over the horizontal or vertical dimension
 /// Coordinates (0, 0) for the purpose of this function are the positioning area’s origin.
-fn layout_1d(
+pub(super) fn layout_1d(
     tile_size: &mut f32,
     mut repeat: Repeat,
     position: &LengthPercentage,

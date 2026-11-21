@@ -58,6 +58,7 @@ use crate::context::{ImageResolver, ResolvedImage};
 use crate::display_list::background::BackgroundPainter;
 use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
+use crate::display_list::mask::MaskImage;
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler, TraversalState};
 use crate::fragment_tree::{
     BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle,
@@ -75,6 +76,7 @@ mod clip;
 mod conversions;
 mod gradient;
 mod hit_test;
+mod mask;
 mod paint_timing_handler;
 mod paint_traversal;
 mod painted_region;
@@ -1850,9 +1852,48 @@ impl<'a> BuilderForBoxFragment<'a> {
             let layer_index = b.background_image.0.len() - 1;
             let bounds = painter.painting_area(self, builder, layer_index);
             let common = painter.common_properties(self, builder, state, layer_index, bounds);
-            builder
-                .wr()
-                .push_rect(&common, bounds, rgba(background_color));
+            match builder.mask_image(
+                self.fragment.base.tag.map(|tag| tag.node),
+                painter.style,
+                self.border_rect,
+            ) {
+                MaskImage::None => {
+                    builder
+                        .wr()
+                        .push_rect(&common, bounds, rgba(background_color));
+                },
+                MaskImage::Pending | MaskImage::Transparent => {},
+                MaskImage::Ready {
+                    image_key,
+                    bounds: mask_bounds,
+                    tile_size,
+                    tile_spacing,
+                    repeat,
+                } => {
+                    let color = rgba(background_color);
+                    if repeat {
+                        builder.wr().push_repeating_image(
+                            &common,
+                            mask_bounds,
+                            tile_size,
+                            tile_spacing,
+                            wr::ImageRendering::Auto,
+                            wr::AlphaType::PremultipliedAlpha,
+                            image_key,
+                            color,
+                        );
+                    } else {
+                        builder.wr().push_image(
+                            &common,
+                            mask_bounds,
+                            wr::ImageRendering::Auto,
+                            wr::AlphaType::PremultipliedAlpha,
+                            image_key,
+                            color,
+                        );
+                    }
+                },
+            }
 
             // From <https://www.w3.org/TR/paint-timing/#sec-terminology>:
             // First paint ... includes non-default background paint and the enclosing box of an iframe.
