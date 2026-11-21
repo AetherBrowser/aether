@@ -255,6 +255,9 @@ impl ServoShellWindow {
         self.platform_window().rendering_context().present();
     }
 
+    /// Used on Android and OpenHarmony, where an empty webview is restored
+    /// unless a close was requested. Desktop goes through [`Self::should_close`].
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     pub(crate) fn is_close_scheduled(&self) -> bool {
         self.close_scheduled.get()
     }
