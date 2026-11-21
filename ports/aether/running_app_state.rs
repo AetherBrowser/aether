@@ -514,32 +514,41 @@ impl RunningAppState {
 
     /// Close any [`ServoShellWindow`] that doesn't have an open [`WebView`].
     ///
-    /// A window whose webview disappeared without a close request gets a new
-    /// startup page instead. Android drops that window and the next vsync
-    /// panics in `App::window()` because nothing is focused.
+    /// On Android and OpenHarmony, a window whose webview disappeared without a
+    /// close request gets a new startup page. Those platforms have a single
+    /// surface: dropping it makes the next vsync panic in `App::window()`.
+    /// Desktop still closes the window, so `window.close()` (the smoketest)
+    /// can exit the process.
     fn close_empty_windows(self: &Rc<Self>) {
-        let url = crate::window::new_window_url();
-        let windows_to_restore: Vec<_> = self
-            .windows()
-            .iter()
-            .filter(|window| window.webviews().is_empty() && !window.is_close_scheduled())
-            .cloned()
-            .collect();
-        for window in windows_to_restore {
-            window.create_and_activate_toplevel_webview(
-                self.clone(),
-                TopLevelWebViewCreationRequest::WithUrl(url.clone()),
-            );
-            if self.focused_window().is_none() {
-                self.set_window_has_focus(window, true);
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        {
+            let url = crate::window::new_window_url();
+            let windows_to_restore: Vec<_> = self
+                .windows()
+                .iter()
+                .filter(|window| window.webviews().is_empty() && !window.is_close_scheduled())
+                .cloned()
+                .collect();
+            for window in windows_to_restore {
+                window.create_and_activate_toplevel_webview(
+                    self.clone(),
+                    TopLevelWebViewCreationRequest::WithUrl(url.clone()),
+                );
+                if self.focused_window().is_none() {
+                    self.set_window_has_focus(window, true);
+                }
             }
         }
 
         let mut move_focus = false;
         self.windows.borrow_mut().retain(|window| {
-            // An empty webview is not a request to destroy the surface. Android
-            // has no other window, and the next `loadUri` would panic.
-            if !self.exit_scheduled.get() && !window.is_close_scheduled() {
+            // An empty webview is not a request to destroy the Android or
+            // OpenHarmony surface. Desktop treats it as a close.
+            #[cfg(any(target_os = "android", target_env = "ohos"))]
+            let keep_open = !self.exit_scheduled.get() && !window.is_close_scheduled();
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            let keep_open = !self.exit_scheduled.get() && !window.should_close();
+            if keep_open {
                 return true;
             }
 
