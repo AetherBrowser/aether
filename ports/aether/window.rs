@@ -263,7 +263,7 @@ impl ServoShellWindow {
     /// was requested explicitly. Desktop uses this so `window.close()` exits.
     #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
     pub(crate) fn should_close(&self) -> bool {
-        self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
+        self.webviews().is_empty() || self.close_scheduled.get()
     }
 
     pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
