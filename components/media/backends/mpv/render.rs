@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::{self, JoinHandle};
 
 use log::warn;
+use malloc_size_of_derive::MallocSizeOf;
 use servo_base::generic_channel::GenericCallback;
 use servo_media_player::PlayerEvent;
 use servo_media_player::video::{Buffer, VideoFrame, VideoFrameData, VideoFrameRenderer};
@@ -109,7 +110,10 @@ impl Drop for RenderThread {
 }
 
 /// The pixels of a frame, in BGRA as Servo expects them.
-struct FrameBuffer(Arc<Vec<u8>>);
+#[derive(MallocSizeOf)]
+struct FrameBuffer(
+    #[ignore_malloc_size_of = "Measured by Servo through the data of the frame"] Arc<Vec<u8>>,
+);
 
 impl Buffer for FrameBuffer {
     fn to_vec(&self) -> Option<VideoFrameData> {
@@ -214,7 +218,7 @@ mod tests {
     }
 
     /// Keeps the frames it is given.
-    #[derive(Default)]
+    #[derive(Default, MallocSizeOf)]
     struct Frames(Vec<VideoFrame>);
 
     impl VideoFrameRenderer for Frames {
