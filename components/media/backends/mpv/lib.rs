@@ -13,6 +13,7 @@ mod events;
 mod ffi;
 mod handle;
 mod player;
+mod render;
 mod stream;
 
 use std::collections::HashMap;
@@ -162,7 +163,7 @@ impl Backend for MpvBackend {
         id: &ClientContextId,
         _stream_type: StreamType,
         sender: GenericCallback<PlayerEvent>,
-        _video_renderer: Option<Arc<Mutex<dyn VideoFrameRenderer>>>,
+        video_renderer: Option<Arc<Mutex<dyn VideoFrameRenderer>>>,
         _audio_renderer: Option<Arc<Mutex<dyn AudioRenderer>>>,
         _gl_context: Box<dyn PlayerGLContext>,
     ) -> Arc<Mutex<dyn Player>> {
@@ -173,6 +174,7 @@ impl Backend for MpvBackend {
             Arc::downgrade(&self.instances),
             self.player_options.clone(),
             sender,
+            video_renderer.as_ref().map(Arc::downgrade),
         )));
         let instance: Arc<Mutex<dyn MediaInstance>> = player.clone();
         self.instances
