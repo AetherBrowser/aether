@@ -162,8 +162,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                     closeMenu()
                                     when (loadingState) {
                                         LoadingState.Loading -> onCancelMenuItemClicked(navigator)
-                                        LoadingState.Finished ->
-                                            onRefreshMenuItemClicked(navigator)
+                                        LoadingState.Finished -> onRefreshMenuItemClicked(navigator)
                                     }
                                 },
                                 onNewTab = {
