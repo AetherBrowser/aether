@@ -59,6 +59,7 @@ fun Servo(
     args: String?,
     initialUrl: String?,
     logStr: String?,
+    onLoadingStateChange: (LoadingState) -> Unit,
     client: Servo.Client,
     navigator: ServoNavigator,
     modifier: Modifier = Modifier,
@@ -78,6 +79,7 @@ fun Servo(
             navigator = navigator,
             onImeShow = { softKeyboardVisible = true },
             onImeHide = { softKeyboardVisible = false },
+            onLoadingStateChange = onLoadingStateChange,
         )
     }
 
@@ -169,6 +171,11 @@ fun Servo(
             }
         }
     }
+}
+
+enum class LoadingState {
+    Loading,
+    Finished,
 }
 
 @Stable
@@ -406,6 +413,7 @@ internal constructor(
     navigator: ServoNavigator,
     onImeShow: () -> Unit,
     onImeHide: () -> Unit,
+    onLoadingStateChange: (LoadingState) -> Unit,
 ) {
     private val jni = JNIServo()
     internal val glDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -418,6 +426,7 @@ internal constructor(
             navigator,
             onImeShow,
             onImeHide,
+            onLoadingStateChange,
         )
 
     init {
@@ -533,10 +542,6 @@ internal constructor(
     interface Client {
         fun onAlert(message: String)
 
-        fun onLoadStarted()
-
-        fun onLoadEnded()
-
         fun onTitleChanged(title: String)
 
         fun onUrlChanged(url: String)
@@ -550,6 +555,7 @@ internal constructor(
         private val navigator: ServoNavigator,
         private val onImeShow: () -> Unit,
         private val onImeHide: () -> Unit,
+        private val onLoadingStateChange: (LoadingState) -> Unit,
     ) : JNIServo.Callbacks, Client {
         var suspended: Boolean = false
 
@@ -572,11 +578,11 @@ internal constructor(
         }
 
         override fun onLoadStarted() {
-            scope.launch { client.onLoadStarted() }
+            scope.launch { onLoadingStateChange(LoadingState.Loading) }
         }
 
         override fun onLoadEnded() {
-            scope.launch { client.onLoadEnded() }
+            scope.launch { onLoadingStateChange(LoadingState.Finished) }
         }
 
         override fun onTitleChanged(title: String) {
