@@ -260,6 +260,10 @@ impl ServoShellWindow {
         self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
     }
 
+    pub(crate) fn is_close_scheduled(&self) -> bool {
+        self.close_scheduled.get()
+    }
+
     pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
         self.webview_collection.borrow().get(id).cloned()
     }
@@ -533,6 +537,11 @@ impl ServoShellWindow {
                     };
                     if let Some(active_webview) = self.active_webview() {
                         active_webview.load(url.into_url());
+                    } else {
+                        self.create_and_activate_toplevel_webview(
+                            state.clone(),
+                            TopLevelWebViewCreationRequest::WithUrl(url.into_url()),
+                        );
                     }
                 },
                 UserInterfaceCommand::GoInNewTab(location) => {

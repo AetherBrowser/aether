@@ -342,6 +342,10 @@ impl RunningAppState {
         creation_request: TopLevelWebViewCreationRequest,
     ) -> Rc<ServoShellWindow> {
         let window = Rc::new(ServoShellWindow::new(platform_window.clone()));
+        // A spin can run before the Android surface exists and mark the app as
+        // exiting because no window is open yet. The surface is the real start.
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        self.exit_scheduled.set(false);
         self.windows.borrow_mut().push(window.clone());
         window.create_and_activate_toplevel_webview(self.clone(), creation_request);
 
@@ -514,10 +518,33 @@ impl RunningAppState {
     }
 
     /// Close any [`ServoShellWindow`] that doesn't have an open [`WebView`].
-    fn close_empty_windows(&self) {
+    ///
+    /// A window whose webview disappeared without a close request gets a new
+    /// startup page instead. Android drops that window and the next vsync
+    /// panics in `App::window()` because nothing is focused.
+    fn close_empty_windows(self: &Rc<Self>) {
+        let url = crate::window::new_window_url();
+        let windows_to_restore: Vec<_> = self
+            .windows()
+            .iter()
+            .filter(|window| window.webviews().is_empty() && !window.is_close_scheduled())
+            .cloned()
+            .collect();
+        for window in windows_to_restore {
+            window.create_and_activate_toplevel_webview(
+                self.clone(),
+                TopLevelWebViewCreationRequest::WithUrl(url.clone()),
+            );
+            if self.focused_window().is_none() {
+                self.set_window_has_focus(window, true);
+            }
+        }
+
         let mut move_focus = false;
         self.windows.borrow_mut().retain(|window| {
-            if !self.exit_scheduled.get() && !window.should_close() {
+            // An empty webview is not a request to destroy the surface. Android
+            // has no other window, and the next `loadUri` would panic.
+            if !self.exit_scheduled.get() && !window.is_close_scheduled() {
                 return true;
             }
 
@@ -586,6 +613,9 @@ impl RunningAppState {
 
         // When no more windows are open, exit the application. Do not do this when
         // running WebDriver, which expects to keep running with no WebView open.
+        // On Android and OpenHarmony the surface is attached after the first spins,
+        // so an empty list is not a shutdown.
+        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
         if self.servoshell_preferences.webdriver_port.get().is_none() &&
             self.windows.borrow().is_empty()
         {
