@@ -66,6 +66,7 @@ pub struct MpvPlayer {
     /// The requested HTML volume, applied to libmpv once its instance exists.
     volume: Cell<f64>,
     /// Where the frames go: only `<video>` elements have one, and only they decode video.
+    #[ignore_malloc_size_of = "Owned by Servo"]
     video_renderer: Option<Weak<Mutex<dyn VideoFrameRenderer>>>,
 }
 
@@ -524,8 +525,8 @@ mod tests {
         player_with(&options())
     }
 
-    /// A player whose events are received by the test.
     /// Drops every frame.
+    #[derive(MallocSizeOf)]
     struct NoFrames;
 
     impl VideoFrameRenderer for NoFrames {
@@ -574,6 +575,7 @@ mod tests {
         );
     }
 
+    /// A player whose events are received by the test.
     fn player_with_events() -> (MpvPlayer, GenericReceiver<PlayerEvent>) {
         player_with_events_and_options(&options())
     }
