@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use servo::resources::{Resource, ResourceReaderMethods};
+use servo::resources::{Resource, ResourceBytes, ResourceReaderMethods};
 
 pub(crate) struct ResourceReaderImpl {
     resource_dir: OnceLock<PathBuf>,
@@ -24,16 +24,17 @@ pub(crate) fn set_resource_dir(resource_dir: PathBuf) {
 }
 
 impl ResourceReaderMethods for ResourceReaderImpl {
-    fn read(&self, res: Resource) -> Vec<u8> {
+    fn read(&self, res: Resource) -> ResourceBytes {
         let file_path = RESOURCE_READER
             .resource_dir
             .get()
             .expect("Attempted to read resources before reader initialized")
             .join("named_resources")
             .join(res.filename());
-        fs::read(&file_path).unwrap_or_else(|e| {
+        let bytes = fs::read(&file_path).unwrap_or_else(|e| {
             panic!("Failed to read resource file: {:?}: {:?}", file_path, e);
-        })
+        });
+        ResourceBytes::from_vec(bytes)
     }
 
     fn sandbox_access_files(&self) -> Vec<PathBuf> {
