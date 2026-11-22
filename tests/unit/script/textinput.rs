@@ -12,7 +12,7 @@ use script::test::DOMString;
 use script::test::text_input::{
     ClipboardProvider, EditingDirection, Lines, SelectionDirection, TextInput,
 };
-use servo_base::text::{Utf8CodeUnits, Utf16CodeUnits};
+use servo_base::text::{RangeAny, Utf8CodeUnits, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::{RopeIndex, RopeMovement};
 
 pub struct DummyClipboardContext {
@@ -691,4 +691,24 @@ fn test_backspace_in_textarea_at_beginning_of_line() {
     ));
     text_input.perform_editing_action(EditingAction::Backspace(EditingMotion::Grapheme));
     assert_eq!(text_input.get_content(), DOMString::from("first line"));
+}
+
+#[test]
+fn test_collapsed_selection_is_a_position_for_layout() {
+    // The placeholder of an empty field shares its selection, and must not look selected.
+    let text_input = make_text_input(Lines::Single, "");
+    assert_eq!(
+        text_input.sorted_selection_character_offsets_range(),
+        RangeAny::new(Some(Utf32CodeUnits(0)), Some(Utf32CodeUnits(0)))
+    );
+}
+
+#[test]
+fn test_selection_of_the_whole_text_is_open_ended_for_layout() {
+    let mut text_input = make_text_input(Lines::Single, "abc");
+    text_input.select_all();
+    assert_eq!(
+        text_input.sorted_selection_character_offsets_range(),
+        RangeAny::new(None, None)
+    );
 }
