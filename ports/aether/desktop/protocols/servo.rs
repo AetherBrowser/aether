@@ -12,6 +12,7 @@
 //! - about:processes
 //! - about:process-list
 //! - about:history
+//! - about:downloads
 //! - about:settings
 //! - about:home
 //! - about:about
@@ -73,6 +74,8 @@ impl ProtocolHandler for ServoProtocolHandler {
             "processes" => page_response(request, done_chan, context, "/processes.html"),
 
             "history" => page_response(request, done_chan, context, "/history.html"),
+
+            "downloads" => page_response(request, done_chan, context, "/downloads.html"),
 
             "settings" => page_response(request, done_chan, context, "/settings.html"),
 

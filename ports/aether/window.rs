@@ -41,6 +41,13 @@ pub(crate) fn history_url() -> Url {
     Url::parse(HISTORY_URL).expect("Should always be able to parse 'about:history' as URL")
 }
 
+/// The downloads page opened from the application menu.
+pub(crate) const DOWNLOADS_URL: &str = "about:downloads";
+
+pub(crate) fn downloads_url() -> Url {
+    Url::parse(DOWNLOADS_URL).expect("Should always be able to parse 'about:downloads' as URL")
+}
+
 /// The settings page opened from the application menu.
 pub(crate) const SETTINGS_URL: &str = "about:settings";
 

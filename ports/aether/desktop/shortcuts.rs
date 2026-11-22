@@ -37,6 +37,7 @@ pub(crate) enum BrowserAction {
     ToggleFullscreen,
     ExitDocumentFullscreen,
     History,
+    Downloads,
     Settings,
     Processes,
     ViewSource,

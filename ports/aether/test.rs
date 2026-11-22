@@ -384,6 +384,30 @@ fn test_view_source_url_refuses_unviewable_schemes() {
 }
 
 #[test]
+fn test_downloads_url_is_downloads_page() {
+    let downloads = crate::window::downloads_url();
+    assert_eq!(downloads.as_str(), crate::window::DOWNLOADS_URL);
+    assert_eq!(downloads.as_str(), "about:downloads");
+}
+
+#[test]
+fn test_location_bar_accepts_downloads_url() {
+    let url = location_bar_input_to_url(
+        crate::window::DOWNLOADS_URL,
+        "https://duckduckgo.com/html/?q=%s",
+    )
+    .expect("downloads URL should parse");
+    assert_eq!(url.as_str(), "about:downloads");
+}
+
+#[test]
+fn downloads_page_is_empty() {
+    let html = include_str!("../../resources/resource_protocol/downloads.html");
+    assert!(html.contains("<title>Downloads</title>"));
+    assert!(html.contains("<h2>Downloads</h2>"));
+}
+
+#[test]
 fn test_history_url_is_history_page() {
     let history = crate::window::history_url();
     assert_eq!(history.as_str(), crate::window::HISTORY_URL);
