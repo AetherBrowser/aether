@@ -421,9 +421,19 @@ impl App {
     }
 
     pub(crate) fn window(&self) -> Rc<ServoShellWindow> {
-        self.state
-            .focused_window()
-            .expect("There is always an active window")
+        if let Some(window) = self.state.focused_window() {
+            return window;
+        }
+        // The focused window can be cleared when its webview is closed between
+        // frames. The surface is still there; focus the newest one.
+        let window = self
+            .state
+            .windows()
+            .last()
+            .cloned()
+            .expect("There is always an active window");
+        self.state.set_window_has_focus(window.clone(), true);
+        window
     }
 
     pub(crate) fn active_or_newest_webview(&self) -> Option<WebView> {
@@ -722,6 +732,9 @@ impl App {
 
     // This function is deprecated and should be removed once android supports multi-window.
     pub fn notify_vsync_legacy(&self) {
+        if self.state.windows().is_empty() {
+            return;
+        }
         let platform_window = self.window().platform_window();
         let embedded_platform_window = platform_window
             .as_headed_window()

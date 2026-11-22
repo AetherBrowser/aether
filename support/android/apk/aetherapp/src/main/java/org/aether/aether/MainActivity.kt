@@ -10,7 +10,6 @@ import android.content.SharedPreferences
 import android.os.Bundle
 import android.system.ErrnoException
 import android.system.Os
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -62,13 +61,12 @@ import androidx.preference.PreferenceManager
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.servo.servoview.BrowserSettings
+import org.servo.servoview.LoadingState
 import org.servo.servoview.Servo
 import org.servo.servoview.ServoNavigator
 
 class MainActivity : ComponentActivity(), Servo.Client {
     private val urlTextFieldState = TextFieldState()
-    private var isRefreshing by mutableStateOf(false)
-    private lateinit var historyManager: HistoryManager
     private var currentUrl: String? = null
     private var currentTitle: String? = null
     private var alertMessage by mutableStateOf<String?>(null)
@@ -84,8 +82,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         val settings = Settings(sharedPreferences)
         val navigator = ServoNavigator()
         var experimentalModeEnabled by mutableStateOf(settings.experimental)
-
-        historyManager = HistoryManager(this)
 
         val historyActivityResultLauncher =
             registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -104,6 +100,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                 experimentalModeEnabled = Settings(sharedPreferences).experimental
             }
 
+            var loadingState by remember { mutableStateOf(LoadingState.Loading) }
             val servoFocusRequester = remember { FocusRequester() }
             var menuExpanded by remember { mutableStateOf(false) }
             var menuPage by remember { mutableStateOf(AppMenuPage.Root) }
@@ -128,7 +125,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                             },
                             modifier = Modifier.weight(1f).padding(end = 10.dp),
                         )
-                        if (isRefreshing) {
+                        if (loadingState == LoadingState.Loading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.padding(end = 10.dp).size(20.dp),
                             )
@@ -152,7 +149,7 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 onPageChange = { menuPage = it },
                                 canGoBack = navigator.canGoBack,
                                 canGoForward = navigator.canGoForward,
-                                isRefreshing = isRefreshing,
+                                isRefreshing = loadingState == LoadingState.Loading,
                                 onBack = {
                                     closeMenu()
                                     onHistoryBackMenuItemClicked(navigator)
@@ -163,8 +160,10 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                 },
                                 onRefresh = {
                                     closeMenu()
-                                    if (isRefreshing) onCancelMenuItemClicked(navigator)
-                                    else onRefreshMenuItemClicked(navigator)
+                                    when (loadingState) {
+                                        LoadingState.Loading -> onCancelMenuItemClicked(navigator)
+                                        LoadingState.Finished -> onRefreshMenuItemClicked(navigator)
+                                    }
                                 },
                                 onNewTab = {
                                     closeMenu()
@@ -199,10 +198,17 @@ class MainActivity : ComponentActivity(), Servo.Client {
                     initialUrl =
                         if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
                     logStr = intent.getStringExtra("servolog"),
+                    onLoadingStateChange = { loadingState = it },
                     client = this,
                     navigator = navigator,
                     modifier = Modifier.padding(innerPadding).focusRequester(servoFocusRequester),
                 )
+                val historyManager = remember { HistoryManager(this) }
+                if (loadingState == LoadingState.Finished) {
+                    currentUrl?.let { currentUrl ->
+                        historyManager.addEntry(currentUrl, currentTitle)
+                    }
+                }
                 BackHandler(enabled = menuExpanded || navigator.canGoBack) {
                     when {
                         menuExpanded && menuPage == AppMenuPage.MoreTools ->
@@ -265,25 +271,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
         alertMessage = message
     }
 
-    override fun onLoadStarted() {
-        // This doesn’t seem to actually happen when navigating
-        // back to a page that is already cached.
-        Log.i(TAG, "onLoadStarted: ")
-        isRefreshing = true
-    }
-
-    // INFO: This currently gets called multiple times on each load.
-    override fun onLoadEnded() {
-        Log.i(TAG, "onLoadEnded: ")
-        currentUrl?.let { currentUrl ->
-            // HistoryManager has a basic method of preventing clobbering
-            // by the fact that onLoadEnded gets called multiple times
-            // per page.
-            historyManager.addEntry(currentUrl, currentTitle)
-        }
-        isRefreshing = false
-    }
-
     override fun onTitleChanged(title: String) {
         currentTitle = title
     }
@@ -300,10 +287,6 @@ class MainActivity : ComponentActivity(), Servo.Client {
             "about:blank" -> ""
             else -> url
         }
-
-    companion object {
-        private const val TAG = "MainActivity"
-    }
 }
 
 /** Same pages as the desktop hamburger menu in `ports/aether/desktop/menu.rs`. */

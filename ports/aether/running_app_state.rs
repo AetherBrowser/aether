@@ -154,11 +154,6 @@ impl WebViewCollection {
         self.webviews.values()
     }
 
-    /// Returns true if the collection contains no webviews.
-    pub fn is_empty(&self) -> bool {
-        self.webviews.is_empty()
-    }
-
     pub(crate) fn activate_webview(&mut self, id_to_activate: WebViewId) {
         assert!(self.creation_order.contains(&id_to_activate));
 
@@ -342,6 +337,10 @@ impl RunningAppState {
         creation_request: TopLevelWebViewCreationRequest,
     ) -> Rc<ServoShellWindow> {
         let window = Rc::new(ServoShellWindow::new(platform_window.clone()));
+        // A spin can run before the Android surface exists and mark the app as
+        // exiting because no window is open yet. The surface is the real start.
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        self.exit_scheduled.set(false);
         self.windows.borrow_mut().push(window.clone());
         window.create_and_activate_toplevel_webview(self.clone(), creation_request);
 
@@ -514,10 +513,42 @@ impl RunningAppState {
     }
 
     /// Close any [`ServoShellWindow`] that doesn't have an open [`WebView`].
-    fn close_empty_windows(&self) {
+    ///
+    /// On Android and OpenHarmony, a window whose webview disappeared without a
+    /// close request gets a new startup page. Those platforms have a single
+    /// surface: dropping it makes the next vsync panic in `App::window()`.
+    /// Desktop still closes the window, so `window.close()` (the smoketest)
+    /// can exit the process.
+    fn close_empty_windows(self: &Rc<Self>) {
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        {
+            let url = crate::window::new_window_url();
+            let windows_to_restore: Vec<_> = self
+                .windows()
+                .iter()
+                .filter(|window| window.webviews().is_empty() && !window.is_close_scheduled())
+                .cloned()
+                .collect();
+            for window in windows_to_restore {
+                window.create_and_activate_toplevel_webview(
+                    self.clone(),
+                    TopLevelWebViewCreationRequest::WithUrl(url.clone()),
+                );
+                if self.focused_window().is_none() {
+                    self.set_window_has_focus(window, true);
+                }
+            }
+        }
+
         let mut move_focus = false;
         self.windows.borrow_mut().retain(|window| {
-            if !self.exit_scheduled.get() && !window.should_close() {
+            // An empty webview is not a request to destroy the Android or
+            // OpenHarmony surface. Desktop treats it as a close.
+            #[cfg(any(target_os = "android", target_env = "ohos"))]
+            let keep_open = !self.exit_scheduled.get() && !window.is_close_scheduled();
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            let keep_open = !self.exit_scheduled.get() && !window.should_close();
+            if keep_open {
                 return true;
             }
 
@@ -586,6 +617,9 @@ impl RunningAppState {
 
         // When no more windows are open, exit the application. Do not do this when
         // running WebDriver, which expects to keep running with no WebView open.
+        // On Android and OpenHarmony the surface is attached after the first spins,
+        // so an empty list is not a shutdown.
+        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
         if self.servoshell_preferences.webdriver_port.get().is_none() &&
             self.windows.borrow().is_empty()
         {

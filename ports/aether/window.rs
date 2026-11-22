@@ -41,6 +41,13 @@ pub(crate) fn history_url() -> Url {
     Url::parse(HISTORY_URL).expect("Should always be able to parse 'about:history' as URL")
 }
 
+/// The downloads page opened from the application menu.
+pub(crate) const DOWNLOADS_URL: &str = "about:downloads";
+
+pub(crate) fn downloads_url() -> Url {
+    Url::parse(DOWNLOADS_URL).expect("Should always be able to parse 'about:downloads' as URL")
+}
+
 /// The settings page opened from the application menu.
 pub(crate) const SETTINGS_URL: &str = "about:settings";
 
@@ -255,9 +262,18 @@ impl ServoShellWindow {
         self.platform_window().rendering_context().present();
     }
 
-    /// Whether or not this [`ServoShellWindow`] has any [`WebView`]s.
+    /// Used on Android and OpenHarmony, where an empty webview is restored
+    /// unless a close was requested. Desktop goes through [`Self::should_close`].
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    pub(crate) fn is_close_scheduled(&self) -> bool {
+        self.close_scheduled.get()
+    }
+
+    /// The window should go away when its last webview closed, or when a close
+    /// was requested explicitly. Desktop uses this so `window.close()` exits.
+    #[cfg_attr(any(target_os = "android", target_env = "ohos"), expect(dead_code))]
     pub(crate) fn should_close(&self) -> bool {
-        self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
+        self.webviews().is_empty() || self.close_scheduled.get()
     }
 
     pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
@@ -533,6 +549,11 @@ impl ServoShellWindow {
                     };
                     if let Some(active_webview) = self.active_webview() {
                         active_webview.load(url.into_url());
+                    } else {
+                        self.create_and_activate_toplevel_webview(
+                            state.clone(),
+                            TopLevelWebViewCreationRequest::WithUrl(url.into_url()),
+                        );
                     }
                 },
                 UserInterfaceCommand::GoInNewTab(location) => {

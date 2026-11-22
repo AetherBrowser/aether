@@ -17,7 +17,7 @@ use js::rust::wrappers2::{
     CheckRegExpSyntax, DateGetMsecSinceEpoch, ExecuteRegExpNoStatics, JS_ClearPendingException,
     NewDateObject, NewUCRegExpObject, ObjectIsDate, ObjectIsRegExp,
 };
-use js::rust::{HandleObject, MutableHandleObject};
+use js::rust::{HandleObject, MutableHandleObject, MutableHandleValue};
 use num_traits::ToPrimitive;
 use script_bindings::cell::{DomRefCell, Ref};
 use script_bindings::codegen::GenericBindings::SelectionBinding::SelectionMethods;
@@ -47,6 +47,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
+use crate::dom::bindings::utils::to_frozen_array;
 use crate::dom::document::Document;
 use crate::dom::document_embedder_controls::ControlElement;
 use crate::dom::element::attributes::storage::AttrRef;
@@ -55,6 +56,7 @@ use crate::dom::event::Event;
 use crate::dom::event::event::{EventBubbles, EventCancelable, EventComposed};
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::filelist::FileList;
+use crate::dom::filesystementry::FileSystemEntry;
 use crate::dom::html::form_controls::input_type::radio_input_type::perform_radio_group_validation;
 use crate::dom::html::form_controls::input_type::{
     InputActivationType, InputType, ValueChangeEvents,
@@ -931,8 +933,7 @@ impl HTMLInputElement {
     }
 
     fn may_have_embedder_control(&self) -> bool {
-        let el = self.upcast::<Element>();
-        matches!(*self.input_type(), InputType::Color(_)) && !el.disabled_state()
+        matches!(*self.input_type(), InputType::Color(_)) && !self.is_form_element_disabled()
     }
 
     /// Return a string that represents the contents of the element in its displayed shadow DOM.
@@ -1649,6 +1650,19 @@ impl HTMLInputElementMethods<crate::DomTypeHolder> for HTMLInputElement {
             .set_bool_attribute(cx, &LocalName::from("webkitdirectory"), value)
     }
 
+    /// <https://wicg.github.io/entries-api/#dom-htmlinputelement-webkitentries>
+    fn WebkitEntries(&self, cx: &mut JSContext, retval: MutableHandleValue) {
+        // Browsers only populate this from a drag-and-drop operation, and leave
+        // it empty when `webkitdirectory` is set.
+        // Right now we don't have DnD yet.
+        // Above behaviour is now the Baseline 2025, tested with Firefox/Chrome.
+        // https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/webkitEntries
+        // https://wicg.github.io/entries-api/#issue-452f97f6
+        // https://wicg.github.io/entries-api/#issue-4cc238bb
+        let entries: Vec<DomRoot<FileSystemEntry>> = Vec::new();
+        to_frozen_array(cx, &entries, retval);
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#dom-input-indeterminate>
     fn Indeterminate(&self) -> bool {
         self.indeterminateness.get()
@@ -2103,7 +2117,7 @@ impl HTMLInputElement {
     pub(crate) fn is_mutable(&self) -> bool {
         // https://html.spec.whatwg.org/multipage/#the-input-element:concept-fe-mutable
         // https://html.spec.whatwg.org/multipage/#the-readonly-attribute:concept-fe-mutable
-        !(self.upcast::<Element>().disabled_state() || self.ReadOnly())
+        !(self.is_form_element_disabled() || self.ReadOnly())
     }
 
     /// <https://html.spec.whatwg.org/multipage/#the-input-element:concept-form-reset-control>:
@@ -2433,6 +2447,28 @@ impl HTMLInputElement {
             );
         }
     }
+
+    /// <https://html.spec.whatwg.org/multipage/#concept-fe-disabled>
+    /// <https://html.spec.whatwg.org/multipage/#concept-element-disabled>
+    pub(crate) fn is_form_element_disabled(&self) -> bool {
+        // For input elements, the form element disabled concept is aligned with the disabled state.
+        self.upcast::<Element>()
+            .state()
+            .contains(ElementState::DISABLED)
+    }
+
+    pub(crate) fn disabled_state_changed(&self, cx: &mut JSContext) {
+        if self.input_type().is_textual() {
+            let read_write = !(self.ReadOnly() || self.is_form_element_disabled());
+            self.upcast::<Element>()
+                .set_read_write_state(cx.no_gc(), read_write);
+        }
+
+        if matches!(*self.input_type(), InputType::File(_)) && self.upcast::<Node>().is_connected()
+        {
+            self.input_type().as_specific().update_shadow_tree(cx, self);
+        }
+    }
 }
 
 impl VirtualMethods for HTMLInputElement {
@@ -2453,13 +2489,6 @@ impl VirtualMethods for HTMLInputElement {
             .attribute_mutated(cx, attr, mutation);
 
         match *attr.local_name() {
-            local_name!("disabled") => {
-                let element = self.upcast::<Element>();
-                if self.input_type().is_textual() {
-                    let read_write = !(self.ReadOnly() || element.disabled_state());
-                    element.set_read_write_state(cx.no_gc(), read_write);
-                }
-            },
             local_name!("checked") => {
                 if !self.checked_changed.get() {
                     let checked_state = match mutation {
@@ -2505,7 +2534,7 @@ impl VirtualMethods for HTMLInputElement {
                             .set(self.input_type().is_textual_or_password());
 
                         if self.input_type().is_textual() {
-                            let read_write = !(self.ReadOnly() || element.disabled_state());
+                            let read_write = !(self.ReadOnly() || self.is_form_element_disabled());
                             element.set_read_write_state(cx.no_gc(), read_write);
                         } else {
                             element.set_read_write_state(cx.no_gc(), false);
@@ -2578,7 +2607,7 @@ impl VirtualMethods for HTMLInputElement {
                             .set(self.input_type().is_textual_or_password());
 
                         let element = self.upcast::<Element>();
-                        let read_write = !(self.ReadOnly() || element.disabled_state());
+                        let read_write = !(self.ReadOnly() || self.is_form_element_disabled());
                         element.set_read_write_state(cx.no_gc(), read_write);
                     },
                 }
@@ -2657,7 +2686,7 @@ impl VirtualMethods for HTMLInputElement {
                             el.set_read_write_state(cx.no_gc(), false);
                         },
                         AttributeMutation::Removed => {
-                            el.set_read_write_state(cx.no_gc(), !el.disabled_state());
+                            el.set_read_write_state(cx.no_gc(), !self.is_form_element_disabled());
                         },
                     }
                 }
@@ -2857,7 +2886,7 @@ impl Validatable for HTMLInputElement {
         match *self.input_type() {
             InputType::Hidden(_) | InputType::Button(_) | InputType::Reset(_) => false,
             _ => {
-                !(self.upcast::<Element>().disabled_state() ||
+                !(self.is_form_element_disabled() ||
                     self.ReadOnly() ||
                     is_barred_by_datalist_ancestor(no_gc, self.upcast()))
             },
