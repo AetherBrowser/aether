@@ -48,6 +48,15 @@ pub(crate) fn downloads_url() -> Url {
     Url::parse(DOWNLOADS_URL).expect("Should always be able to parse 'about:downloads' as URL")
 }
 
+/// The bookmarks page opened from the application menu.
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+pub(crate) const BOOKMARKS_URL: &str = "about:bookmarks";
+
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+pub(crate) fn bookmarks_url() -> Url {
+    Url::parse(BOOKMARKS_URL).expect("Should always be able to parse 'about:bookmarks' as URL")
+}
+
 /// The settings page opened from the application menu.
 pub(crate) const SETTINGS_URL: &str = "about:settings";
 

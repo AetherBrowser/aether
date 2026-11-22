@@ -495,6 +495,38 @@ fn history_page_has_its_settings_and_a_delete_dialog() {
 }
 
 #[test]
+fn bookmarks_page_has_its_folders_list_and_dialogs() {
+    let html = include_str!("../../resources/resource_protocol/bookmarks.html");
+    assert!(html.contains("<title>Bookmarks</title>"));
+    assert!(html.contains("about:bookmarks-data"));
+    assert!(html.contains("id=\"folders\""));
+    assert!(html.contains("id=\"items\""));
+    assert!(html.contains("<dialog id=\"edit-dialog\""));
+    assert!(html.contains("<dialog id=\"move-dialog\""));
+    assert!(html.contains("<dialog id=\"delete-dialog\""));
+    assert!(html.contains("setPointerCapture"));
+}
+
+#[test]
+fn bookmarks_page_draws_the_icons_of_the_resources() {
+    let html = include_str!("../../resources/resource_protocol/bookmarks.html");
+    for svg in [
+        include_str!("../../resources/icons/bookmark.svg"),
+        include_str!("../../resources/icons/folder.svg"),
+        include_str!("../../resources/icons/globe.svg"),
+        include_str!("../../resources/icons/dots-vertical.svg"),
+    ] {
+        let shapes = svg
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<path") || line.starts_with("<circle"));
+        for shape in shapes {
+            assert!(html.contains(shape), "{shape}");
+        }
+    }
+}
+
+#[test]
 fn new_tab_page_follows_home_content_preferences() {
     let html = include_str!("../../resources/resource_protocol/newtab.html");
     let css = include_str!("../../resources/resource_protocol/newtab.css");

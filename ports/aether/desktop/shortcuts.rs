@@ -38,6 +38,7 @@ pub(crate) enum BrowserAction {
     ExitDocumentFullscreen,
     History,
     Downloads,
+    Bookmarks,
     Settings,
     Processes,
     ViewSource,
@@ -161,6 +162,7 @@ const PLATFORM_SHORTCUTS: &[Shortcut] = &[
     page_first(Modifiers::META, Char(']'), Forward),
     page_first(Modifiers::META.union(SHIFT), Char('h'), Home),
     page_first(Modifiers::META, Char('y'), History),
+    page_first(Modifiers::META.union(Modifiers::ALT), Char('b'), Bookmarks),
     page_first(Modifiers::META, Char(','), Settings),
     page_first(Modifiers::META.union(Modifiers::ALT), Char('u'), ViewSource),
     page_first(
@@ -183,6 +185,7 @@ const PLATFORM_SHORTCUTS: &[Shortcut] = &[
     page_first(NONE, Named(NamedKey::F6), FocusLocationBar),
     page_first(CONTROL, Char('e'), FocusLocationBar),
     page_first(CONTROL, Char('h'), History),
+    page_first(CONTROL_SHIFT, Char('o'), Bookmarks),
     page_first(SHIFT, Named(NamedKey::Escape), Processes),
     page_first(CONTROL, Char('u'), ViewSource),
     page_first(CONTROL_SHIFT, Char('i'), ToggleDeveloperTools),

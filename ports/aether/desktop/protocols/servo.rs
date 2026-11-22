@@ -19,6 +19,8 @@
 //! - about:search-engines
 //! - about:content-filter
 //! - about:history-data
+//! - about:bookmarks
+//! - about:bookmarks-data
 
 use std::future::Future;
 use std::pin::Pin;
@@ -31,6 +33,7 @@ use servo::protocol_handler::{
     ResourceFetchTiming, Response, ResponseBody,
 };
 
+use crate::bookmarks_page::BookmarksPage;
 use crate::desktop::protocols::processes::ProcessSampler;
 use crate::desktop::protocols::resource::ResourceProtocolHandler;
 use crate::history::HistoryPage;
@@ -39,13 +42,15 @@ use crate::prefs::EXPERIMENTAL_PREFS;
 pub struct ServoProtocolHandler {
     process_sampler: Mutex<ProcessSampler>,
     history_page: Mutex<HistoryPage>,
+    bookmarks_page: BookmarksPage,
 }
 
 impl ServoProtocolHandler {
-    pub fn new(history_page: HistoryPage) -> Self {
+    pub fn new(history_page: HistoryPage, bookmarks_page: BookmarksPage) -> Self {
         Self {
             process_sampler: Mutex::new(ProcessSampler::default()),
             history_page: Mutex::new(history_page),
+            bookmarks_page,
         }
     }
 }
@@ -76,6 +81,8 @@ impl ProtocolHandler for ServoProtocolHandler {
             "history" => page_response(request, done_chan, context, "/history.html"),
 
             "downloads" => page_response(request, done_chan, context, "/downloads.html"),
+
+            "bookmarks" => page_response(request, done_chan, context, "/bookmarks.html"),
 
             "settings" => page_response(request, done_chan, context, "/settings.html"),
 
@@ -127,6 +134,14 @@ impl ProtocolHandler for ServoProtocolHandler {
                     Err(poisoned) => poisoned.into_inner().handle_request(url.query()),
                 };
                 json_response_when_ready(request, body)
+            },
+
+            "bookmarks-data" => {
+                if internal_endpoint_is_hidden(request) || !request_is_from_bookmarks_page(request)
+                {
+                    return forbidden_response();
+                }
+                json_response_when_ready(request, self.bookmarks_page.handle_request(url.query()))
             },
 
             "process-list" => {
@@ -199,6 +214,17 @@ fn is_history_page_url(url: &url::Url) -> bool {
     url.scheme() == "about" && url.path() == "history"
 }
 
+fn request_is_from_bookmarks_page(request: &Request) -> bool {
+    request
+        .source_document_url
+        .as_ref()
+        .is_some_and(|url| is_bookmarks_page_url(url.as_url()))
+}
+
+fn is_bookmarks_page_url(url: &url::Url) -> bool {
+    url.scheme() == "about" && url.path() == "bookmarks"
+}
+
 /// Loads an internal page, which web pages cannot show in a frame.
 fn page_response(
     request: &mut Request,
@@ -264,7 +290,7 @@ fn json_response_when_ready(
 mod tests {
     use url::Url;
 
-    use super::{is_history_page_url, is_settings_page_url};
+    use super::{is_bookmarks_page_url, is_history_page_url, is_settings_page_url};
 
     #[test]
     fn settings_page_url_is_the_settings_path() {
@@ -276,6 +302,19 @@ mod tests {
 
         let file = Url::parse("file:///tmp/page.html").unwrap();
         assert!(!is_settings_page_url(&file));
+    }
+
+    #[test]
+    fn bookmarks_page_url_is_the_bookmarks_path() {
+        assert!(is_bookmarks_page_url(
+            &Url::parse("about:bookmarks#edit=3").unwrap()
+        ));
+        assert!(!is_bookmarks_page_url(
+            &Url::parse("about:bookmarks-data").unwrap()
+        ));
+        assert!(!is_bookmarks_page_url(
+            &Url::parse("https://example.com/bookmarks").unwrap()
+        ));
     }
 
     #[test]

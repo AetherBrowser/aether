@@ -12,6 +12,8 @@ mod backtrace;
 mod bookmarks;
 mod content_filter;
 #[cfg(not(target_env = "ohos"))]
+mod bookmarks_page;
+#[cfg(not(target_env = "ohos"))]
 mod crash_handler;
 #[cfg(not(any(target_os = "android", target_env = "ohos")))]
 pub(crate) mod desktop;

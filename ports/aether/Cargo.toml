@@ -86,6 +86,7 @@ webxr = ["servo/webxr"]
 [dependencies]
 accesskit = { workspace = true }
 aether-places = { workspace = true }
+base64 = { workspace = true }
 bpaf = { workspace = true, features = ["derive"] }
 cfg-if = { workspace = true }
 crossbeam-channel = { workspace = true }
