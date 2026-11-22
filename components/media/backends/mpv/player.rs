@@ -602,27 +602,34 @@ mod tests {
 
     /// `seconds` of a 440 Hz sine as an 8 kHz mono WAV: 16 kB per second.
     fn sine_wav(seconds: u32) -> Vec<u8> {
-        const RATE: u32 = 8000;
-        let samples = (0..RATE * seconds).map(|i| {
-            let time = f64::from(i) / f64::from(RATE);
+        sine_wav_with(seconds, 8000, 1)
+    }
+
+    /// `seconds` of a 440 Hz sine as a 16-bit WAV of `rate` Hz and `channels` channels.
+    fn sine_wav_with(seconds: u32, rate: u32, channels: u16) -> Vec<u8> {
+        let samples = (0..rate * seconds).map(|i| {
+            let time = f64::from(i) / f64::from(rate);
             ((time * 440.0 * std::f64::consts::TAU).sin() * 8000.0) as i16
         });
-        let data_size = RATE * seconds * 2;
+        let frame_size = 2 * u32::from(channels);
+        let data_size = rate * seconds * frame_size;
         let mut wav = Vec::with_capacity(44 + data_size as usize);
         wav.extend_from_slice(b"RIFF");
         wav.extend_from_slice(&(36 + data_size).to_le_bytes());
         wav.extend_from_slice(b"WAVEfmt ");
         wav.extend_from_slice(&16u32.to_le_bytes());
         wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
-        wav.extend_from_slice(&1u16.to_le_bytes()); // Mono
-        wav.extend_from_slice(&RATE.to_le_bytes());
-        wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // Bytes per second
-        wav.extend_from_slice(&2u16.to_le_bytes()); // Bytes per frame
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * frame_size).to_le_bytes()); // Bytes per second
+        wav.extend_from_slice(&(frame_size as u16).to_le_bytes()); // Bytes per frame
         wav.extend_from_slice(&16u16.to_le_bytes()); // Bits per sample
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&data_size.to_le_bytes());
         for sample in samples {
-            wav.extend_from_slice(&sample.to_le_bytes());
+            for _ in 0..channels {
+                wav.extend_from_slice(&sample.to_le_bytes());
+            }
         }
         wav
     }
@@ -1477,12 +1484,69 @@ mod tests {
     fn a_media_larger_than_the_buffers_plays_to_its_end() {
         // 50 minutes, about 48 MB: more than libmpv's cache (32 MiB) and the 8 MB the bridge
         // then holds, past which it asks Servo to stop with `EnoughData`.
-        let data = Arc::new(sine_wav(3000));
         let mut options = options();
         // Decode as fast as possible: the media is long enough for libmpv to report its
         // property changes.
         options.push(("ao-null-untimed", "yes"));
-        let (player, events) = player_with_events_and_options(&options);
+        plays_through_the_water_marks(sine_wav(3000), &options, 1.0, Duration::from_secs(60));
+    }
+
+    /// 16 s of a 192 kHz stereo WAV, about 12 MB: more than the 8 MB past which the bridge
+    /// sends `EnoughData`, drained 768 kB per second of playback.
+    fn high_rate_test_file() -> Vec<u8> {
+        sine_wav_with(16, 192_000, 2)
+    }
+
+    /// The player options with a small libmpv cache, so that libmpv reads the bridge
+    /// soon after `EnoughData` instead of from its cache.
+    fn small_cache_options() -> Vec<(&'static str, &'static str)> {
+        let mut options = options();
+        options.push(("demuxer-max-bytes", "1MiB"));
+        options.push(("demuxer-max-back-bytes", "1MiB"));
+        options
+    }
+
+    /// In real time: a fast playback rate drains the bridge that much faster, and the
+    /// fetch must be resumed in time for playback to go on at that rate.
+    fn plays_in_time_at(playback_rate: f64) {
+        let duration = 16.0 / playback_rate;
+        let elapsed = plays_through_the_water_marks(
+            high_rate_test_file(),
+            &small_cache_options(),
+            playback_rate,
+            Duration::from_secs_f64(duration + 10.0),
+        )
+        .as_secs_f64();
+        // Not much slower than the media at that rate: the rate is applied, and playback
+        // never waited long for data. It ends a bit early, as libmpv reports the end once
+        // the audio output buffered the last samples, which holds more media at a fast rate.
+        assert!(
+            elapsed > duration * 0.25 && elapsed < duration * 1.5 + 2.0,
+            "playing 16 s at ×{playback_rate} took {elapsed:.1} s, not about {duration:.1} s"
+        );
+    }
+
+    #[test]
+    fn the_fetch_keeps_up_at_4x() {
+        plays_in_time_at(4.0);
+    }
+
+    #[test]
+    fn the_fetch_keeps_up_at_16x() {
+        plays_in_time_at(16.0);
+    }
+
+    /// Plays `data` to its end at `playback_rate`, reacting to the bridge's water marks as
+    /// Servo does, and checks that the fetch was stopped then resumed. Returns how long
+    /// playback took.
+    fn plays_through_the_water_marks(
+        data: Vec<u8>,
+        options: &[(&'static str, &'static str)],
+        playback_rate: f64,
+        timeout: Duration,
+    ) -> Duration {
+        let data = Arc::new(data);
+        let (player, events) = player_with_events_and_options(options);
         let player = Arc::new(Mutex::new(player));
         let bridge = Arc::downgrade(&player.lock().unwrap().bridge);
         let fetches = Arc::new(AtomicUsize::new(0));
@@ -1544,14 +1608,18 @@ mod tests {
             player.push_data(data[..FIRST_PUSH].to_vec()).unwrap();
             // A fast network: it fills the bridge before libmpv drains it.
             fetch(bridge, data.clone(), FIRST_PUSH, fetches, Duration::ZERO);
+            player.set_playback_rate(playback_rate).unwrap();
             player.play().unwrap();
         }
-        end.recv_timeout(Duration::from_secs(60))
+        let start = Instant::now();
+        end.recv_timeout(timeout)
             .expect("playback should reach the end of the media");
+        let elapsed = start.elapsed();
         assert!(
             resumed.load(Ordering::SeqCst) > 0,
             "the fetch should have been stopped, then resumed"
         );
+        elapsed
     }
 
     /// Where the format tests find their media.
