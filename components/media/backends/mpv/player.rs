@@ -125,13 +125,15 @@ impl MpvPlayer {
         handle
             .add_stream_protocol(self.bridge.clone())
             .map_err(backend_error)?;
-        // Only `<video>` elements get a renderer. Its render context must exist before the
-        // media is loaded, which happens on the first `push_data`.
+        // The event thread publishes the size of the video, which the render thread renders
+        // at. Only `<video>` elements get a renderer. Its render context must exist before
+        // the media is loaded, which happens on the first `push_data`.
+        let video_size = Arc::new(VideoSize::default());
         let render = match &self.video_renderer {
             Some(renderer) => Some(
                 RenderThread::spawn(
                     handle.clone(),
-                    Arc::new(VideoSize::default()),
+                    video_size.clone(),
                     renderer.clone(),
                     self.sender.clone(),
                 )
@@ -139,7 +141,14 @@ impl MpvPlayer {
             ),
             None => None,
         };
-        let events = EventThread::spawn(&handle, self.sender.clone()).map_err(backend_error)?;
+        // Wakes the render thread up when the size changes, so that it renders the current
+        // frame again at the new size.
+        let wake_renderer: Box<dyn Fn() + Send> = match &render {
+            Some(render) => Box::new(render.waker()),
+            None => Box::new(|| {}),
+        };
+        let events = EventThread::spawn(&handle, self.sender.clone(), video_size, wake_renderer)
+            .map_err(backend_error)?;
         Ok(self.handle.get_or_init(|| Instance {
             _render: render,
             _events: events,
@@ -573,6 +582,47 @@ mod tests {
             player.handle().unwrap().get_node("options/vid"),
             Ok(Node::String("auto".to_owned()))
         );
+    }
+
+    /// Keeps the size of each frame it is given.
+    #[derive(Default, MallocSizeOf)]
+    struct FrameSizes(Vec<(i32, i32)>);
+
+    impl VideoFrameRenderer for FrameSizes {
+        fn render(&mut self, frame: servo_media_player::video::VideoFrame) {
+            self.0.push((frame.get_width(), frame.get_height()));
+        }
+    }
+
+    #[test]
+    fn video_frames_follow_the_size_of_the_video() {
+        let sizes = Arc::new(Mutex::new(FrameSizes::default()));
+        let renderer: Arc<Mutex<dyn VideoFrameRenderer>> = sizes.clone();
+        let (sender, events) = GenericCallback::new_blocking().unwrap();
+        let player = MpvPlayer::new(
+            0,
+            ClientContextId::build(1, 1),
+            Weak::new(),
+            Arc::from(options()),
+            sender,
+            Some(Arc::downgrade(&renderer)),
+        );
+        let data = std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(WPT)
+                .join("media/400x300-red-resize-200x150-green.webm"),
+        )
+        .unwrap();
+        // Through the path Servo uses: `push_data`, the bridge, then libmpv.
+        let servo = FakeServo::load(&player, events, data, true);
+        assert_eq!((servo.metadata.width, servo.metadata.height), (400, 300));
+
+        player.play().unwrap();
+        // The video goes from 400x300 to 200x150 after about a second.
+        wait_until("a frame at the new size", || {
+            sizes.lock().unwrap().0.contains(&(200, 150))
+        });
+        assert_eq!(sizes.lock().unwrap().0.first(), Some(&(400, 300)));
     }
 
     /// A player whose events are received by the test.

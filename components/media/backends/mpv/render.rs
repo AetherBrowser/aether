@@ -24,13 +24,6 @@ use crate::handle::{MpvError, MpvHandle, RenderContext};
 pub(crate) struct VideoSize(AtomicU64);
 
 impl VideoSize {
-    #[cfg_attr(
-        not(all(test, has_libmpv)),
-        expect(
-            dead_code,
-            reason = "Called by the event thread once it observes the video size"
-        )
-    )]
     pub(crate) fn set(&self, width: u32, height: u32) {
         self.0.store(
             (u64::from(width) << 32) | u64::from(height),
@@ -93,13 +86,6 @@ impl RenderThread {
     }
 
     /// Wakes the render thread up, e.g. so that it renders at a new size.
-    #[cfg_attr(
-        not(all(test, has_libmpv)),
-        expect(
-            dead_code,
-            reason = "Called by the event thread once it observes the video size"
-        )
-    )]
     pub(crate) fn waker(&self) -> impl Fn() + Send + Sync + 'static {
         let sender = self.wake.clone();
         move || wake(&sender)
