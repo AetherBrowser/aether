@@ -11,9 +11,7 @@ use std::time::Duration;
 use log::warn;
 use servo_base::generic_channel::{self, GenericCallback, GenericReceiver, TryReceiveError};
 use servo_media::MediaInstanceError;
-use servo_media_player::{
-    PlaybackState, Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg,
-};
+use servo_media_player::{PlaybackState, Player, PlayerError, PlayerEvent, SeekLock, SeekLockMsg};
 use servo_media_streams::registry::MediaStreamId;
 use servo_media_traits::{ClientContextId, MediaInstance};
 
@@ -116,7 +114,10 @@ impl MpvPlayer {
         // A rate of 0 needs no speed: libmpv starts paused, and `play` keeps it paused.
         if self.playback_rate.get() != DEFAULT_PLAYBACK_RATE && self.playback_rate.get() > 0.0 {
             handle
-                .set_double("speed", playback_rate_to_mpv_speed(self.playback_rate.get()))
+                .set_double(
+                    "speed",
+                    playback_rate_to_mpv_speed(self.playback_rate.get()),
+                )
                 .map_err(backend_error)?;
         }
         handle
