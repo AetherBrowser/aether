@@ -44,6 +44,7 @@
   function generateMarkup(isAudioOnly) {
     return `
       <button id="play-pause-button" class="button playPauseButton" paused="true"></button>
+      ${isAudioOnly ? "" : '<button id="stop-button" class="button stopButton" aria-label="Stop"></button>'}
       <div id="scrubber-stack" class="scrubberStack">
         <div class="progressStack">
           <progress id="buffer-bar" class="bufferBar" value="0" max="100"></progress>
@@ -159,6 +160,10 @@
         "mute-button",
         "volume-level"
       ];
+      // Audio controls are narrower: only videos have a stop button.
+      if (!this.isAudioOnly) {
+        elementNames.push("stop-button");
+      }
 
       // Import elements.
       this.elements = {};
@@ -238,6 +243,9 @@
         { el: this.elements.scrubber, type: "input" },
         { el: this.elements.volumeLevel, type: "input" }
       ];
+      if (!this.isAudioOnly) {
+        this.controlEvents.push({ el: this.elements.stopButton, type: "click" });
+      }
 
       this.controlEvents.forEach(({ el, type }) => {
         el.addEventListener(type, this);
@@ -390,6 +398,9 @@
             case this.elements.playPauseButton:
               this.playOrPause();
               break;
+            case this.elements.stopButton:
+              this.stopPlayback();
+              break;
             case this.elements.muteButton:
               this.toggleMuted();
               break;
@@ -449,6 +460,12 @@
         default:
           throw new Error(`Invalid state ${this.state}`);
       }
+    }
+
+    // Not named stop(): every state transition becomes a method of the same name.
+    stopPlayback() {
+      this.media.pause();
+      this.media.currentTime = 0;
     }
 
     toggleMuted() {
