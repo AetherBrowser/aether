@@ -41,9 +41,12 @@ pub(crate) struct EventThread {
 }
 
 impl EventThread {
+    /// `paused_for_zero_rate` tells whether the player paused libmpv for a playback rate
+    /// of 0: that pause is not reported.
     pub(crate) fn spawn(
         handle: &Arc<MpvHandle>,
         sender: GenericCallback<PlayerEvent>,
+        paused_for_zero_rate: Arc<AtomicBool>,
     ) -> Result<EventThread, MpvError> {
         let queue = handle
             .events()
@@ -56,7 +59,7 @@ impl EventThread {
             .name("MpvEvents".to_owned())
             .spawn({
                 let stopping = stopping.clone();
-                move || forward_events(queue, sender, &stopping)
+                move || forward_events(queue, sender, &stopping, paused_for_zero_rate)
             })
             .expect("Thread spawning failed");
         Ok(EventThread {
@@ -83,8 +86,12 @@ fn forward_events(
     mut queue: EventQueue,
     sender: GenericCallback<PlayerEvent>,
     stopping: &AtomicBool,
+    paused_for_zero_rate: Arc<AtomicBool>,
 ) {
-    let mut translator = EventTranslator::default();
+    let mut translator = EventTranslator {
+        paused_for_zero_rate,
+        ..Default::default()
+    };
     loop {
         let event = queue.wait(-1.0);
         if stopping.load(Ordering::Acquire) || event == Event::Shutdown {
@@ -116,6 +123,9 @@ struct EventTranslator {
     last_position_update: Option<Instant>,
     /// Whether `EndOfStream` was sent since playback last reached the end.
     ended: bool,
+    /// Set by the player while libmpv is paused for a playback rate of 0: the media
+    /// element still plays, so the pause is not a state change.
+    paused_for_zero_rate: Arc<AtomicBool>,
 }
 
 impl EventTranslator {
@@ -208,6 +218,7 @@ impl EventTranslator {
             return None;
         }
         match (name, value) {
+            ("pause", _) if self.paused_for_zero_rate.load(Ordering::Acquire) => None,
             ("pause", Node::Flag(paused)) => {
                 Some(PlayerEvent::StateChanged(playback_state(paused)))
             },
@@ -318,6 +329,16 @@ mod tests {
             change(&mut translator, "pause", Node::Flag(false)),
             Some(PlayerEvent::StateChanged(PlaybackState::Playing))
         ));
+    }
+
+    #[test]
+    fn pauses_for_a_zero_playback_rate_are_not_reported() {
+        let mut translator = loaded();
+        translator
+            .paused_for_zero_rate
+            .store(true, Ordering::Release);
+        assert!(change(&mut translator, "pause", Node::Flag(true)).is_none());
+        assert!(change(&mut translator, "pause", Node::Flag(false)).is_none());
     }
 
     #[test]
