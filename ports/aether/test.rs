@@ -403,6 +403,7 @@ fn test_location_bar_accepts_downloads_url() {
 #[test]
 fn downloads_page_is_empty() {
     let html = include_str!("../../resources/resource_protocol/downloads.html");
+    assert!(html.contains("href=\"about:newtab\""));
     assert!(html.contains("<title>Downloads</title>"));
     assert!(html.contains("<h2>Downloads</h2>"));
 }
@@ -465,6 +466,7 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("id=\"new-tabs\""));
     assert!(html.contains("id=\"show-search\""));
     assert!(html.contains("Aether logo"));
+    assert!(html.contains("href=\"about:newtab\""));
     assert!(html.contains("about:home"));
     assert!(html.contains("id=\"homepage-url-error\""));
     assert!(html.contains("addEventListener(\"blur\", commitHomepageUrl)"));
@@ -486,6 +488,7 @@ fn settings_page_has_a_search_section() {
 #[test]
 fn history_page_has_its_settings_and_a_delete_dialog() {
     let html = include_str!("../../resources/resource_protocol/history.html");
+    assert!(html.contains("href=\"about:newtab\""));
     assert!(html.contains("<title>History</title>"));
     assert!(html.contains("about:history-data"));
     assert!(html.contains("Keep history for"));
