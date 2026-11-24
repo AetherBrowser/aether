@@ -10,6 +10,8 @@ mod test;
 #[cfg(not(target_os = "android"))]
 mod backtrace;
 mod bookmarks;
+#[cfg(not(target_env = "ohos"))]
+mod bookmarks_page;
 mod content_filter;
 #[cfg(not(target_env = "ohos"))]
 mod crash_handler;

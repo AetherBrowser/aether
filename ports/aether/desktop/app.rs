@@ -20,6 +20,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 use super::event_loop::AppEvent;
+use crate::bookmarks_page::BookmarksPage;
 use crate::desktop::event_loop::ServoShellEventLoop;
 use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
@@ -102,7 +103,10 @@ impl App {
         );
         let _ = protocol_registry.register(
             "about",
-            protocols::servo::ServoProtocolHandler::new(history_page),
+            protocols::servo::ServoProtocolHandler::new(
+                history_page,
+                BookmarksPage::new(places.bookmarks_editor(), true),
+            ),
         );
         let _ = protocol_registry.register(
             "resource",
