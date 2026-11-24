@@ -224,6 +224,12 @@
             <label for="blocklist">Sites and URLs</label>
             <textarea id="blocklist" spellcheck="false" placeholder="ads.example" disabled></textarea>
             <button type="button" class="primary" id="save-blocklist" disabled>Save</button>
+            <h3>Filter lists</h3>
+            <p class="hint">
+              Copy the list files into the <code>filter-lists</code> folder of this profile.
+              A checked list is applied when that file is there.
+            </p>
+            <div id="filter-lists"></div>
           </div>
         </section>
         <section class="card" id="download" hidden>
@@ -451,10 +457,15 @@
       let savedBlocklist = "";
       let checkboxGeneration = 0;
 
+      const filterLists = document.getElementById("filter-lists");
+
       function setNetworkEditable(editable) {
         filterEnabled.disabled = !editable;
         blocklist.disabled = !editable;
         saveBlocklist.disabled = !editable;
+        for (const box of filterLists.querySelectorAll("input")) {
+          box.disabled = !editable;
+        }
       }
 
       function renderNetwork(data, replaceList, replaceEnabled) {
@@ -465,6 +476,24 @@
         if (replaceList) {
           savedBlocklist = data.blocklist || "";
           blocklist.value = savedBlocklist;
+          filterLists.replaceChildren();
+          for (const list of data.lists || []) {
+            const label = document.createElement("label");
+            label.className = "check";
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            box.dataset.list = list.id;
+            box.checked = !!list.enabled;
+            box.disabled = !networkReady;
+            box.addEventListener("change", function () {
+              saveNetwork(false, true);
+            });
+            label.append(box, document.createTextNode(" " + list.name));
+            if (!list.present) {
+              label.append(document.createTextNode(" (file missing)"));
+            }
+            filterLists.append(label);
+          }
         }
       }
 
@@ -506,16 +535,27 @@
         }
       }
 
-      async function saveNetwork(includeList) {
+      function checkedLists() {
+        return Array.from(filterLists.querySelectorAll("input"))
+          .filter((box) => box.checked)
+          .map((box) => box.dataset.list)
+          .join(",");
+      }
+
+      async function saveNetwork(includeList, includeLists) {
         if (!networkReady) {
           return;
         }
         const listAtStart = blocklist.value;
         const generation = checkboxGeneration;
         const enabledAtStart = filterEnabled.checked;
+        const listsAtStart = checkedLists();
         let query = "enabled=" + enabledAtStart;
         if (includeList) {
           query += "&blocklist=" + encodeURIComponent(listAtStart);
+        }
+        if (includeLists) {
+          query += "&lists=" + encodeURIComponent(listsAtStart);
         }
         try {
           const response = await fetch("about:content-filter?" + query);
@@ -529,8 +569,13 @@
           }
           networkError.textContent = "";
           const editedSince = blocklist.value !== listAtStart;
+          const listsMoved = includeLists && checkedLists() !== listsAtStart;
           const checkboxMoved = generation !== checkboxGeneration;
-          renderNetwork(data, includeList && !editedSince, !checkboxMoved && filterEnabled.checked === enabledAtStart);
+          renderNetwork(
+            data,
+            (includeList && !editedSince) || (includeLists && !listsMoved),
+            !checkboxMoved && filterEnabled.checked === enabledAtStart,
+          );
           if (includeList && !editedSince) {
             savedBlocklist = data.blocklist || "";
           }
@@ -545,10 +590,10 @@
       filterEnabled.addEventListener("change", function () {
         checkboxGeneration += 1;
         filterEnabled.indeterminate = false;
-        saveNetwork(false);
+        saveNetwork(false, false);
       });
       document.getElementById("save-blocklist").addEventListener("click", function () {
-        saveNetwork(true);
+        saveNetwork(true, false);
       });
 
       async function loadAbout() {

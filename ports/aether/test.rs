@@ -508,6 +508,8 @@ fn settings_page_has_a_search_section() {
     assert!(html.contains("id=\"filter-enabled\""));
     assert!(html.contains("about:content-filter"));
     assert!(html.contains("id=\"save-blocklist\""));
+    assert!(html.contains("id=\"filter-lists\""));
+    assert!(html.contains("filter-lists"));
 }
 
 #[test]

@@ -9,7 +9,8 @@
 //! - `content_filter.json` for tracking protection settings:
 //!   - `privacy.trackingprotection.enabled`
 //!   - `urlclassifier.trackingWhitelistTable` — hosts that are never blocked
-//!   - `urlclassifier.trackingTable` — extra filter files, beside `blocklist.txt`
+//!   - `urlclassifier.trackingTable` — extra filter files, beside `blocklist.txt`.
+//!     Predefined lists are files under `filter-lists/`, copied in by hand.
 //!
 //! `servo:settings#network` writes those files. The resource thread reads them
 //! when a request is about to be sent, and again when either file changes.
