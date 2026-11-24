@@ -15,8 +15,8 @@ use log::{error, warn};
 use tokio::sync::oneshot;
 use url::Url;
 
-use crate::PlacesStore;
 use crate::database::PlacesCommand;
+use crate::{PlacesStore, bookmarked_urls};
 
 const EXPIRATION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -249,9 +249,10 @@ impl Drop for PlacesService {
 
 fn read_bookmarks(store: &PlacesStore) -> Option<Vec<Url>> {
     store
-        .bookmarked_urls()
+        .bookmark_tree()
         .inspect_err(|error| warn!("Could not read the bookmarks: {error}"))
         .ok()
+        .map(|tree| bookmarked_urls(&tree))
 }
 
 fn run(

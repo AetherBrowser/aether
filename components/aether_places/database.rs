@@ -39,6 +39,24 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         date_added INTEGER NOT NULL,
         guid TEXT NOT NULL UNIQUE
     );",
+    // Version 4: a tree of folders and bookmarks, ordered within each folder. The table is rebuilt
+    // because a folder has no place.
+    "CREATE TABLE new_bookmarks (
+        id INTEGER PRIMARY KEY,
+        place_id INTEGER UNIQUE REFERENCES places(id),
+        parent_id INTEGER REFERENCES new_bookmarks(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        title TEXT,
+        date_added INTEGER NOT NULL,
+        guid TEXT NOT NULL UNIQUE,
+        icon BLOB
+    );
+    INSERT INTO new_bookmarks (id, place_id, position, title, date_added, guid)
+        SELECT id, place_id, row_number() OVER (ORDER BY date_added, id) - 1, title, date_added, guid
+        FROM bookmarks;
+    DROP TABLE bookmarks;
+    ALTER TABLE new_bookmarks RENAME TO bookmarks;
+    CREATE INDEX bookmarks_parent_index ON bookmarks(parent_id, position);",
 ];
 
 pub(crate) enum PlacesCommand {
@@ -48,7 +66,7 @@ pub(crate) enum PlacesCommand {
         visit_date: SystemTime,
         title: Option<String>,
     },
-    /// Stores `title` as the last title of `url`, if `url` has a place.
+    /// Stores `title` as the last title of `url`, if `url` was visited.
     SetTitle { url: Url, title: String },
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
     /// is `None`.
