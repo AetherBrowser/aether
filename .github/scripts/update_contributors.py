@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Refresh the fork-only contributor table between the file markers."""
 
-from collections import Counter
-from datetime import datetime, timezone
 import json
 import os
 import re
 import sys
 import urllib.request
+from collections import Counter
+from datetime import datetime, timezone
+from typing import Any
 
 REPO = "AetherBrowser/aether"
 UPSTREAM_REPO = "servo/servo"
@@ -15,7 +16,7 @@ CONTRIBUTORS_FILE_PATH = os.environ.get("CONTRIBUTORS_FILE_PATH", "CONTRIBUTING.
 TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 
-def gh_get(url):
+def gh_get(url: str) -> Any:
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2026-03-10",
@@ -27,7 +28,7 @@ def gh_get(url):
         return json.loads(resp.read().decode())
 
 
-def build_table(rows, avatars, start_rank=1):
+def build_table(rows: list[tuple[str, int]], avatars: dict[str, str], start_rank: int = 1) -> str:
     lines = [
         "| Rank | Contributor | Commits |",
         "| :---: | :--- | :---: |",
@@ -36,24 +37,20 @@ def build_table(rows, avatars, start_rank=1):
         rank = start_rank + offset
         avatar_url = avatars.get(login, "https://github.com/identicons/jasonlong.png")
         avatar = f'<img src="{avatar_url}&s=32" width="24" height="24" align="absmiddle" />'
-        user_cell = f'{avatar} [**@{login}**](https://github.com/{login})'
-        badge = f'![Commits](https://img.shields.io/badge/commits-{total}-blue?style=flat-square)'
+        user_cell = f"{avatar} [**@{login}**](https://github.com/{login})"
+        badge = f"![Commits](https://img.shields.io/badge/commits-{total}-blue?style=flat-square)"
         lines.append(f"| #{rank} | {user_cell} | {badge} |")
     return "\n".join(lines)
 
 
-def main():
-    comp = gh_get(
-        f"https://api.github.com/repos/{REPO}/compare/servo:main...AetherBrowser:main"
-    )
+def main() -> int:
+    comp = gh_get(f"https://api.github.com/repos/{REPO}/compare/servo:main...AetherBrowser:main")
     target_total = comp.get("ahead_by", 0)
     print(f"Objective : {target_total} commits on this fork")
 
     upstream_shas = set()
     for page in range(1, 15):
-        up_commits = gh_get(
-            f"https://api.github.com/repos/{UPSTREAM_REPO}/commits?sha=main&per_page=100&page={page}"
-        )
+        up_commits = gh_get(f"https://api.github.com/repos/{UPSTREAM_REPO}/commits?sha=main&per_page=100&page={page}")
         if not up_commits:
             break
         for commit in up_commits:
@@ -65,9 +62,7 @@ def main():
     page = 1
 
     while fork_commits_found < target_total:
-        commits = gh_get(
-            f"https://api.github.com/repos/{REPO}/commits?sha=main&per_page=100&page={page}"
-        )
+        commits = gh_get(f"https://api.github.com/repos/{REPO}/commits?sha=main&per_page=100&page={page}")
         if not commits:
             break
 
