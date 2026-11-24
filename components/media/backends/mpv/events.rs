@@ -16,14 +16,17 @@ use servo_media_player::metadata::Metadata;
 use servo_media_player::{PlaybackState, PlayerEvent};
 
 use crate::handle::{EndFileReason, Event, EventQueue, MpvError, MpvHandle, Node};
+use crate::render::VideoSize;
 
-/// The properties whose changes are turned into `PlayerEvent`s.
+/// The properties whose changes are turned into `PlayerEvent`s, or, for `video-params`,
+/// into the size the video is rendered at.
 const OBSERVED_PROPERTIES: &[&str] = &[
     "time-pos",
     "duration",
     "pause",
     "idle-active",
     "eof-reached",
+    "video-params",
 ];
 
 /// mpv reports `time-pos` on every frame: only forward it this often, like the GStreamer
@@ -41,9 +44,14 @@ pub(crate) struct EventThread {
 }
 
 impl EventThread {
+    /// The display size of the video is published in `video_size`, for the render thread,
+    /// which may not read mpv's properties itself. `wake_renderer` is called after each
+    /// change, so that the next frame is rendered at the new size. It must not block.
     pub(crate) fn spawn(
         handle: &Arc<MpvHandle>,
         sender: GenericCallback<PlayerEvent>,
+        video_size: Arc<VideoSize>,
+        wake_renderer: impl Fn() + Send + 'static,
     ) -> Result<EventThread, MpvError> {
         let queue = handle
             .events()
@@ -56,7 +64,7 @@ impl EventThread {
             .name("MpvEvents".to_owned())
             .spawn({
                 let stopping = stopping.clone();
-                move || forward_events(queue, sender, &stopping)
+                move || forward_events(queue, sender, &stopping, &video_size, &wake_renderer)
             })
             .expect("Thread spawning failed");
         Ok(EventThread {
@@ -83,6 +91,8 @@ fn forward_events(
     mut queue: EventQueue,
     sender: GenericCallback<PlayerEvent>,
     stopping: &AtomicBool,
+    video_size: &VideoSize,
+    wake_renderer: &dyn Fn(),
 ) {
     let mut translator = EventTranslator::default();
     loop {
@@ -90,9 +100,63 @@ fn forward_events(
         if stopping.load(Ordering::Acquire) || event == Event::Shutdown {
             return;
         }
+        // Without video parameters, e.g. once the file is unloaded, the size is unknown
+        // again and the render thread stops rendering.
+        if let Event::PropertyChange { name, value } = &event &&
+            name == "video-params"
+        {
+            let (width, height) = display_size(value).unwrap_or((0, 0));
+            video_size.set(width, height);
+            wake_renderer();
+        }
         for player_event in translator.translate(event, queue.handle(), Instant::now()) {
             let _ = sender.send(player_event);
         }
+    }
+}
+
+/// The display size in `video-params`: the size of the decoded frames, corrected for the
+/// aspect ratio of their pixels.
+fn display_size(params: &Node) -> Option<(u32, u32)> {
+    let dimension = |key| match params.get(key) {
+        Some(Node::Int64(value)) => u32::try_from(*value).ok(),
+        _ => None,
+    };
+    Some((dimension("dw")?, dimension("dh")?))
+}
+
+/// The display size of the video track mpv plays, or else of the first one, from what the
+/// demuxer reports: mpv's `width` and `height` are 0 with `vid=no`, and before the first
+/// decoded frame they are the size of the container, without the aspect correction.
+fn video_track_display_size(tracks: &[Node]) -> Option<(u32, u32)> {
+    let is_video = |track: &&Node| track.get("type").and_then(Node::as_str) == Some("video");
+    let track = tracks
+        .iter()
+        .filter(is_video)
+        .find(|track| track.get("selected") == Some(&Node::Flag(true)))
+        .or_else(|| tracks.iter().find(is_video))?;
+    let dimension = |key| match track.get(key) {
+        Some(Node::Int64(value)) => u32::try_from(*value).ok().filter(|value| *value > 0),
+        _ => None,
+    };
+    let pixel_aspect = match track.get("demux-par") {
+        Some(Node::Double(ratio)) if ratio.is_finite() && *ratio > 0.0 => *ratio,
+        _ => 1.0,
+    };
+    Some(correct_aspect(
+        dimension("demux-w")?,
+        dimension("demux-h")?,
+        pixel_aspect,
+    ))
+}
+
+/// Applies a pixel aspect ratio as mpv does for `video-params/dw` and `dh`: wide pixels
+/// make the video wider, tall ones make it taller.
+fn correct_aspect(width: u32, height: u32, pixel_aspect: f64) -> (u32, u32) {
+    if pixel_aspect > 1.0 {
+        ((f64::from(width) * pixel_aspect).round() as u32, height)
+    } else {
+        (width, (f64::from(height) / pixel_aspect).round() as u32)
     }
 }
 
@@ -241,40 +305,42 @@ impl EventTranslator {
 }
 
 /// The metadata of the file loaded by `handle`.
+///
+/// Servo only reads the first metadata of a media, while its `readyState` is still
+/// `HAVE_NOTHING`: the size of the video must already be right.
 fn metadata(handle: &MpvHandle) -> Metadata {
     let string = |name| match handle.get_node(name) {
         Ok(Node::String(value)) => Some(value),
         _ => None,
     };
-    let dimension = |name| match handle.get_node(name) {
-        Ok(Node::Int64(value)) => u32::try_from(value).unwrap_or(0),
-        _ => 0,
-    };
     let duration = match handle.get_node("duration") {
         Ok(Node::Double(duration)) => Duration::try_from_secs_f64(duration).ok(),
         _ => None,
     };
+    let tracks = match handle.get_node("track-list") {
+        Ok(Node::Array(tracks)) => tracks,
+        _ => vec![],
+    };
 
     let mut audio_tracks = vec![];
     let mut video_tracks = vec![];
-    if let Ok(Node::Array(tracks)) = handle.get_node("track-list") {
-        for track in &tracks {
-            let name = match track.get("id") {
-                Some(Node::Int64(id)) => id.to_string(),
-                _ => String::new(),
-            };
-            match track.get("type").and_then(Node::as_str) {
-                Some("audio") => audio_tracks.push(name),
-                Some("video") => video_tracks.push(name),
-                _ => {},
-            }
+    for track in &tracks {
+        let name = match track.get("id") {
+            Some(Node::Int64(id)) => id.to_string(),
+            _ => String::new(),
+        };
+        match track.get("type").and_then(Node::as_str) {
+            Some("audio") => audio_tracks.push(name),
+            Some("video") => video_tracks.push(name),
+            _ => {},
         }
     }
+    let (width, height) = video_track_display_size(&tracks).unwrap_or((0, 0));
 
     Metadata {
         duration,
-        width: dimension("width"),
-        height: dimension("height"),
+        width,
+        height,
         format: string("file-format").unwrap_or_default(),
         is_seekable: matches!(handle.get_node("seekable"), Ok(Node::Flag(true))),
         video_tracks,
@@ -422,5 +488,184 @@ mod tests {
             [PlayerEvent::Error(error)] if error == "MPV backend: boom"
         ));
         assert!(end(EndFileReason::Other).is_empty());
+    }
+
+    fn map(entries: &[(&str, Node)]) -> Node {
+        Node::Map(
+            entries
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                .collect(),
+        )
+    }
+
+    fn video_track(width: i64, height: i64, extra: &[(&str, Node)]) -> Node {
+        let mut entries = vec![
+            ("type", Node::String("video".to_owned())),
+            ("demux-w", Node::Int64(width)),
+            ("demux-h", Node::Int64(height)),
+        ];
+        entries.extend(extra.iter().cloned());
+        map(&entries)
+    }
+
+    #[test]
+    fn pixel_aspect_ratios_are_applied_as_mpv_does() {
+        assert_eq!(correct_aspect(400, 300, 1.0), (400, 300));
+        // Anamorphic PAL DVD: 720x576 with 16:11 pixels is 1047x576.
+        assert_eq!(correct_aspect(720, 576, 16.0 / 11.0), (1047, 576));
+        // Tall pixels make the video taller instead of narrower.
+        assert_eq!(correct_aspect(400, 300, 0.5), (400, 600));
+    }
+
+    #[test]
+    fn the_display_size_is_read_from_video_params() {
+        let params = map(&[("dw", Node::Int64(1047)), ("dh", Node::Int64(576))]);
+        assert_eq!(display_size(&params), Some((1047, 576)));
+        assert_eq!(display_size(&Node::None), None);
+        assert_eq!(display_size(&map(&[("dw", Node::Int64(-1))])), None);
+    }
+
+    #[test]
+    fn the_metadata_size_is_the_corrected_size_of_the_selected_video_track() {
+        let audio = map(&[("type", Node::String("audio".to_owned()))]);
+        let first = video_track(400, 300, &[]);
+        let selected = video_track(
+            720,
+            576,
+            &[
+                ("selected", Node::Flag(true)),
+                ("demux-par", Node::Double(16.0 / 11.0)),
+            ],
+        );
+        assert_eq!(
+            video_track_display_size(&[audio.clone(), first.clone(), selected]),
+            Some((1047, 576))
+        );
+        // With `vid=no`, no video track is selected.
+        assert_eq!(
+            video_track_display_size(&[audio.clone(), first]),
+            Some((400, 300))
+        );
+        assert_eq!(video_track_display_size(&[audio]), None);
+        assert_eq!(video_track_display_size(&[video_track(0, 300, &[])]), None);
+    }
+
+    #[cfg(has_libmpv)]
+    fn wpt_media(name: &str) -> String {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../../tests/wpt/tests/media")
+            .join(name)
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    #[cfg(has_libmpv)]
+    fn the_first_metadata_has_the_size_of_the_video() {
+        // The real options, with `vid=no`: mpv's `width` and `height` are 0 there. A video
+        // without audio would not load at all.
+        let options: Vec<_> = crate::BASE_OPTIONS
+            .iter()
+            .chain(crate::PLAYER_OPTIONS)
+            .chain(&[("ao", "null")])
+            .copied()
+            .collect();
+        let handle = Arc::new(MpvHandle::new(&options).unwrap());
+        // Like Servo, which reads the metadata sent on `FILE_LOADED`. Unbounded, like
+        // Servo's: the test stops reading, and a full channel would block the event thread,
+        // then dropping it.
+        let (events_sender, events) = std::sync::mpsc::channel();
+        let sender = GenericCallback::new(move |event| {
+            if let Ok(event) = event {
+                let _ = events_sender.send(event);
+            }
+        })
+        .unwrap();
+        let _events = EventThread::spawn(&handle, sender, Arc::default(), || {}).unwrap();
+        handle
+            .command(&["loadfile", &wpt_media("A4.webm")])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let metadata = loop {
+            let timeout = deadline.saturating_duration_since(Instant::now());
+            match events.recv_timeout(timeout) {
+                Ok(PlayerEvent::MetadataUpdated(metadata)) => break metadata,
+                Ok(_) => {},
+                Err(_) => panic!("timed out waiting for the metadata"),
+            }
+        };
+        assert_eq!((metadata.width, metadata.height), (320, 240));
+    }
+
+    #[test]
+    #[cfg(has_libmpv)]
+    fn the_render_thread_follows_the_size_of_the_video() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Mutex, mpsc};
+
+        use malloc_size_of_derive::MallocSizeOf;
+        use servo_media_player::video::{VideoFrame, VideoFrameRenderer};
+
+        use crate::render::RenderThread;
+
+        #[derive(MallocSizeOf)]
+        struct Discard;
+
+        impl VideoFrameRenderer for Discard {
+            fn render(&mut self, _frame: VideoFrame) {}
+        }
+
+        let handle = Arc::new(
+            MpvHandle::new(&[("ao", "null"), ("vo", "libmpv"), ("keep-open", "yes")]).unwrap(),
+        );
+        let ignore = || GenericCallback::new(|_| {}).unwrap();
+        let size = Arc::new(VideoSize::default());
+        let renderer: Arc<Mutex<dyn VideoFrameRenderer>> = Arc::new(Mutex::new(Discard));
+        // The render context must exist before the media is loaded.
+        let render = RenderThread::spawn(
+            handle.clone(),
+            size.clone(),
+            Arc::downgrade(&renderer),
+            ignore(),
+        )
+        .unwrap();
+        // Records each size the render thread is woken up for.
+        let (woken, wake_ups) = mpsc::channel();
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let _events = EventThread::spawn(&handle, ignore(), size.clone(), {
+            let (size, wake_count, waker) = (size.clone(), wake_count.clone(), render.waker());
+            move || {
+                wake_count.fetch_add(1, Ordering::SeqCst);
+                let _ = woken.send(size.get());
+                waker();
+            }
+        })
+        .unwrap();
+
+        handle
+            .command(&[
+                "loadfile",
+                &wpt_media("400x300-red-resize-200x150-green.webm"),
+            ])
+            .unwrap();
+        let wait_for = |expected| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let timeout = deadline.saturating_duration_since(Instant::now());
+                match wake_ups.recv_timeout(timeout) {
+                    Ok(size) if size == Some(expected) => return,
+                    Ok(_) => {},
+                    Err(_) => panic!("the render thread was not woken up for {expected:?}"),
+                }
+            }
+        };
+        wait_for((400, 300));
+        // The video goes from 400x300 to 200x150 after about a second.
+        handle.set_flag("pause", false).unwrap();
+        wait_for((200, 150));
+        assert_eq!(size.get(), Some((200, 150)));
+        assert!(wake_count.load(Ordering::SeqCst) >= 2);
     }
 }
