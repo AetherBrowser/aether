@@ -292,6 +292,11 @@ impl PlacesService {
         });
     }
 
+    /// Stores the PNG `icon` of `url`, if `url` is bookmarked.
+    pub fn set_bookmark_icon(&self, url: Url, icon: Vec<u8>) {
+        self.send(PlacesCommand::SetBookmarkIcon { url, icon });
+    }
+
     fn send(&self, command: PlacesCommand) {
         self.send_request(PlacesRequest {
             command,
@@ -425,18 +430,20 @@ fn write(
         .into_iter()
         .map(|request| request.command)
         .collect();
-    if let Err(error) = store.apply(&commands) {
+    let icon_changed = store.apply(&commands).unwrap_or_else(|error| {
         warn!(
             "Could not write {} changes to the places database: {error}",
             commands.len()
         );
-    }
+        false
+    });
     // The revision is the newest bookmark change of this attempt. The read includes that attempt
-    // only if it succeeded, and the interface keeps the changes it sent afterwards.
-    if let Some(revision) = revision &&
+    // only if it succeeded, and the interface keeps the changes it sent afterwards. A visit of a
+    // bookmarked page sends its icon again, which only needs a read when it changed.
+    if (icon_changed || commands.iter().any(PlacesCommand::toggles_bookmark)) &&
         let Some(tree) = read_bookmarks(store)
     {
-        publisher.publish(tree, Some(revision));
+        publisher.publish(tree, revision);
     }
 }
 
@@ -722,6 +729,42 @@ mod tests {
         assert_eq!(saved.urls, [page]);
         assert_eq!(saved.revision, 7);
         assert_eq!(saved.tree[0].title.as_deref(), Some("Servo"));
+    }
+
+    #[test]
+    fn a_new_icon_sends_the_new_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 7);
+        flush(&service);
+        next_bookmarks(&service, &notifications);
+
+        service.set_bookmark_icon(page, vec![1, 2]);
+
+        let saved = next_bookmarks(&service, &notifications);
+        assert_eq!(saved.tree[0].icon, Some(vec![1, 2]));
+        assert_eq!(saved.revision, 7);
+    }
+
+    #[test]
+    fn the_same_icon_again_does_not_send_the_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 7);
+        service.set_bookmark_icon(page.clone(), vec![1, 2]);
+        flush(&service);
+        while notifications.try_recv().is_ok() {}
+
+        service.set_bookmark_icon(page, vec![1, 2]);
+        flush(&service);
+
+        assert!(notifications.try_recv().is_err());
     }
 
     #[test]

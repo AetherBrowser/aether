@@ -126,14 +126,16 @@ mod tests {
                 url: url.clone(),
                 visit_date,
                 title: title.map(str::to_owned),
-            }])
+            }])?;
+            Ok(())
         }
 
         fn set_title(&mut self, url: &Url, title: &str) -> rusqlite::Result<()> {
             self.apply(&[PlacesCommand::SetTitle {
                 url: url.clone(),
                 title: title.to_owned(),
-            }])
+            }])?;
+            Ok(())
         }
 
         fn replace_visit(
@@ -148,7 +150,8 @@ mod tests {
                 visit_date,
                 new_url: new_url.cloned(),
                 title: title.map(str::to_owned),
-            }])
+            }])?;
+            Ok(())
         }
     }
 

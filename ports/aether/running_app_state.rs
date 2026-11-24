@@ -40,7 +40,7 @@ use servo::{
 };
 use url::Url;
 
-use crate::bookmarks::{Bookmarks, can_bookmark};
+use crate::bookmarks::{Bookmarks, can_bookmark, icon_png};
 #[cfg(all(
     feature = "gamepad",
     not(any(target_os = "android", target_env = "ohos"))
@@ -484,12 +484,29 @@ impl RunningAppState {
         };
         let (added, revision) = bookmarks.toggle(&url);
         if added {
-            self.places
-                .add_bookmark(url, webview.page_title(), SystemTime::now(), revision);
+            self.places.add_bookmark(
+                url.clone(),
+                webview.page_title(),
+                SystemTime::now(),
+                revision,
+            );
+            if let Some(icon) = webview.favicon().and_then(|favicon| icon_png(&favicon)) {
+                self.places.set_bookmark_icon(url, icon);
+            }
         } else {
             self.places.remove_bookmark(url, revision);
         }
         self.refresh_bookmark_stars();
+    }
+
+    /// Saves the icon of the page shown in `webview`, if that page is bookmarked.
+    fn save_bookmark_icon(&self, webview: &WebView) {
+        if let Some(url) = webview.url() &&
+            self.bookmark_state(&url) == Some(true) &&
+            let Some(icon) = webview.favicon().and_then(|favicon| icon_png(&favicon))
+        {
+            self.places.set_bookmark_icon(url, icon);
+        }
     }
 
     fn update_bookmarks(&self) {
@@ -1033,6 +1050,7 @@ impl WebViewDelegate for RunningAppState {
     }
 
     fn notify_favicon_changed(&self, webview: WebView) {
+        self.save_bookmark_icon(&webview);
         self.window_for_webview(&webview)
             .notify_favicon_changed(webview);
     }

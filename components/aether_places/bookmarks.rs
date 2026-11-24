@@ -180,6 +180,20 @@ pub(crate) fn remove_bookmark(connection: &Connection, url: &Url) -> rusqlite::R
     delete_place_if_unused(connection, &url)
 }
 
+/// Stores `icon` for the bookmark of `url`, and returns whether it was a new icon.
+pub(crate) fn set_bookmark_icon(
+    connection: &Connection,
+    url: &Url,
+    icon: &[u8],
+) -> rusqlite::Result<bool> {
+    let changed = connection.execute(
+        "UPDATE bookmarks SET icon = ?2
+         WHERE place_id = (SELECT id FROM places WHERE url = ?1) AND icon IS NOT ?2",
+        params![stored_url(url), icon],
+    )?;
+    Ok(changed > 0)
+}
+
 /// The place of the item `id`, which is `None` for a folder.
 fn place_of(connection: &Connection, id: i64) -> Result<Option<i64>, BookmarkError> {
     connection
@@ -1066,6 +1080,59 @@ mod tests {
         );
 
         assert_eq!(outline(&store), ["Folder/", "  page"]);
+    }
+
+    #[test]
+    fn a_bookmark_keeps_the_last_icon_of_its_page() {
+        let mut store = PlacesStore::open_in_memory().unwrap();
+        let page = url("https://page.example/");
+        add(&mut store, &page, None, date(1));
+
+        for icon in [vec![1], vec![2, 3]] {
+            store
+                .apply(&[PlacesCommand::SetBookmarkIcon {
+                    url: page.clone(),
+                    icon,
+                }])
+                .unwrap();
+        }
+
+        assert_eq!(store.bookmark_tree().unwrap()[0].icon, Some(vec![2, 3]));
+    }
+
+    #[test]
+    fn only_a_new_icon_changes_the_bookmarks() {
+        let mut store = PlacesStore::open_in_memory().unwrap();
+        let page = url("https://page.example/");
+        add(&mut store, &page, None, date(1));
+        let mut set_icon = |icon: Vec<u8>| {
+            store
+                .apply(&[PlacesCommand::SetBookmarkIcon {
+                    url: page.clone(),
+                    icon,
+                }])
+                .unwrap()
+        };
+
+        assert!(set_icon(vec![1]));
+        assert!(!set_icon(vec![1]));
+        assert!(set_icon(vec![2]));
+    }
+
+    #[test]
+    fn the_icon_of_a_page_that_is_not_bookmarked_is_not_stored() {
+        let mut store = PlacesStore::open_in_memory().unwrap();
+        let page = url("https://page.example/");
+        visit(&mut store, &page, date(1));
+
+        store
+            .apply(&[PlacesCommand::SetBookmarkIcon {
+                url: page,
+                icon: vec![1],
+            }])
+            .unwrap();
+
+        assert!(store.bookmark_tree().unwrap().is_empty());
     }
 
     #[test]
