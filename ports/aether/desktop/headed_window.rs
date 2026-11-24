@@ -53,8 +53,8 @@ use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
 use crate::window::{
     LINE_HEIGHT, LINE_WIDTH, MIN_WINDOW_INNER_SIZE, PlatformWindow, ServoShellWindow,
-    ServoShellWindowId, TopLevelWebViewCreationRequest, downloads_url, history_url, new_tab_url,
-    new_window_url, processes_url, settings_url, view_source_url,
+    ServoShellWindowId, TopLevelWebViewCreationRequest, bookmarks_url, downloads_url, history_url,
+    new_tab_url, new_window_url, processes_url, settings_url, view_source_url,
 };
 
 pub(crate) const INITIAL_WINDOW_TITLE: &str = "Servo";
@@ -467,6 +467,7 @@ impl HeadedWindow {
             BrowserAction::ToggleFullscreen => self.set_window_fullscreen(!self.get_fullscreen()),
             BrowserAction::ExitDocumentFullscreen => webview.exit_fullscreen(),
             BrowserAction::History => window.activate_or_open_tab(history_url()),
+            BrowserAction::Bookmarks => window.activate_or_open_tab(bookmarks_url()),
             BrowserAction::Downloads => window.activate_or_open_tab(downloads_url()),
             BrowserAction::Settings => window.activate_or_open_tab(settings_url()),
             BrowserAction::Processes => window.activate_or_open_tab(processes_url()),
