@@ -183,6 +183,9 @@ impl AppMenu {
         if let Some(action) = Self::action_item(ui, "History", BrowserAction::History, true) {
             return Some(action);
         }
+        if let Some(action) = Self::action_item(ui, "Bookmarks", BrowserAction::Bookmarks, true) {
+            return Some(action);
+        }
         if let Some(action) = Self::action_item(ui, "Downloads", BrowserAction::Downloads, true) {
             return Some(action);
         }

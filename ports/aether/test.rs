@@ -409,6 +409,31 @@ fn downloads_page_is_empty() {
 }
 
 #[test]
+fn test_bookmarks_url_is_bookmarks_page() {
+    let bookmarks = crate::window::bookmarks_url();
+    assert_eq!(bookmarks.as_str(), crate::window::BOOKMARKS_URL);
+    assert_eq!(bookmarks.as_str(), "about:bookmarks");
+}
+
+#[test]
+fn test_location_bar_accepts_bookmarks_url() {
+    let url = location_bar_input_to_url(
+        crate::window::BOOKMARKS_URL,
+        "https://duckduckgo.com/html/?q=%s",
+    )
+    .expect("bookmarks URL should parse");
+    assert_eq!(url.as_str(), "about:bookmarks");
+}
+
+#[test]
+fn bookmarks_page_is_the_bookmarks_configuration() {
+    let html = include_str!("../../resources/resource_protocol/bookmarks.html");
+    assert!(html.contains("href=\"about:newtab\""));
+    assert!(html.contains("<title>Bookmarks</title>"));
+    assert!(html.contains("<h2>Bookmarks</h2>"));
+}
+
+#[test]
 fn test_history_url_is_history_page() {
     let history = crate::window::history_url();
     assert_eq!(history.as_str(), crate::window::HISTORY_URL);

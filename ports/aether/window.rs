@@ -34,6 +34,13 @@ pub(crate) fn new_window_url() -> Url {
     crate::home::new_window_url()
 }
 
+/// The bookmarks page opened from the application menu.
+pub(crate) const BOOKMARKS_URL: &str = "about:bookmarks";
+
+pub(crate) fn bookmarks_url() -> Url {
+    Url::parse(BOOKMARKS_URL).expect("Should always be able to parse 'about:bookmarks' as URL")
+}
+
 /// The history page opened from the application menu.
 pub(crate) const HISTORY_URL: &str = "about:history";
 
