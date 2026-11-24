@@ -4,26 +4,21 @@
 [![Coverage](https://codecov.io/gh/AetherBrowser/aether/branch/master/graph/badge.svg)](https://codecov.io/gh/AetherBrowser/aether)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-blue.svg)](https://github.com/AetherBrowser/aether/LICENSE)
 
-Servo is a prototype web browser engine written in the
+Aether is a web browser engine written in the
 [Rust](https://github.com/rust-lang/rust) language. It is currently developed on
-64-bit macOS, 64-bit Linux, 64-bit Windows, 64-bit OpenHarmony, and Android.
+64-bit macOS, 64-bit Linux, 64-bit Windows, (64-bit OpenHarmony), and Android.
 
-Servo welcomes contribution from everyone. Check out:
+Aether welcomes contribution from everyone. Check out:
 
-- The [Servo Book](https://book.servo.org) for documentation
-- [servo.org](https://servo.org/) for news and guides
-
-Coordination of Servo development happens:
-- Here in the Github Issues
-- On the [Servo Zulip](https://servo.zulipchat.com/)
-- In video calls advertised in the [Servo Project](https://github.com/servo/project/issues) repo.
+- The [Aether Book](https://book.aetherbrowser.org) for documentation
+- [aetherbrowser.org](https://aetherbrowser.org/) for news and guides
 
 ## Getting started
 
-For more detailed build instructions, see the Servo Book under [Getting the Code] and [Building Servo].
+For more detailed build instructions, see the Aether Book under [Getting the Code] and [Building Aether].
 
-[Getting the Code]: https://book.servo.org/building/getting-the-code.html
-[Building Servo]: https://book.servo.org/building/building.html
+[Getting the Code]: https://book.aetherbrowser.org/building/getting-the-code.html
+[Building Aether]: https://book.aetherbrowser.org/building/building.html
 
 ### macOS
 
@@ -32,7 +27,7 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
 - Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+- Build aether: `./mach build`
 
 ### Linux
 
@@ -45,7 +40,7 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
 - Install `rustup`: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `./mach bootstrap`
-- Build servoshell: `./mach build`
+- Build aether: `./mach build`
 
 ### Windows
 
@@ -58,7 +53,7 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   - **C++ ATL for latest v143 build tools (x86 & x64)** (`Microsoft.VisualStudio.Component.VC.ATL`)
 - Restart your shell to make sure `cargo` is available
 - Install the other dependencies: `.\mach bootstrap`
-- Build servoshell: `.\mach build`
+- Build aether: `.\mach build`
 
 ### Android
 
@@ -82,7 +77,7 @@ For more detailed build instructions, see the Servo Book under [Getting the Code
   ```
 - Follow the instructions above for the platform you are building on
 
-### OpenHarmony
+### OpenHarmony (not officially maintained)
 
 - Follow the instructions above for the platform you are building on to prepare the environment.
 - Depending on the target distribution (e.g. `HarmonyOS NEXT` vs pure `OpenHarmony`) the build configuration will differ slightly.
