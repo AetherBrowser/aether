@@ -1378,7 +1378,9 @@ impl Document {
     pub(crate) fn set_quirks_mode(&self, new_mode: QuirksMode) {
         let old_mode = self.quirks_mode.replace(new_mode);
 
-        if old_mode != new_mode {
+        // Only pass the quirks mode on to layout when we are dealing with the `Window`'s
+        // main `Document`, not those created with other DOM APIs.
+        if old_mode != new_mode && self.has_browsing_context() {
             self.window.layout_mut().set_quirks_mode(new_mode);
         }
     }
@@ -3380,6 +3382,9 @@ impl Document {
             return true;
         }
         if self.has_pending_scroll_events() {
+            return true;
+        }
+        if self.overlay_handler().has_pending_fullscreen_events() {
             return true;
         }
         if self.window().has_unhandled_resize_event() {
@@ -7474,11 +7479,16 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
     /// <https://fullscreen.spec.whatwg.org/#dom-document-fullscreenenabled>
     fn FullscreenEnabled(&self) -> bool {
-        self.overlay_handler().get_allow_fullscreen()
+        // > The fullscreenEnabled getter steps are to return true if this is allowed to use the
+        // > "fullscreen" feature and fullscreen is supported, and false otherwise.
+        self.overlay_handler().is_allowed_to_use_fullscreen() &&
+            self.overlay_handler().fullscreen_is_supported()
     }
 
     /// <https://fullscreen.spec.whatwg.org/#dom-document-fullscreen>
     fn Fullscreen(&self) -> bool {
+        // > The fullscreen getter steps are to return false if this’s fullscreen element is null,
+        // > and true otherwise.
         self.overlay_handler().fullscreen_element().is_some()
     }
 
@@ -7492,6 +7502,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
     /// <https://fullscreen.spec.whatwg.org/#dom-document-exitfullscreen>
     fn ExitFullscreen(&self, cx: &mut CurrentRealm) -> RootedPromise {
+        // > The exitFullscreen() method steps are to return the result of running exit fullscreen
+        // > on this.
         self.overlay_handler().exit_fullscreen(cx)
     }
 

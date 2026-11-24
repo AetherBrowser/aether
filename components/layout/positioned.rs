@@ -27,13 +27,14 @@ use crate::dom_traversal::{Contents, NodeAndStyleInfo};
 use crate::formatting_contexts::IndependentFormattingContext;
 use crate::fragment_tree::{
     BoxFragment, Fragment, FragmentFlags, HoistedSharedFragment, LayoutRootFragment,
+    PhysicalBoxSides,
 };
 use crate::geom::{
     AuOrAuto, LogicalRect, LogicalSides, LogicalSides1D, LogicalVec2, PhysicalPoint, PhysicalRect,
     PhysicalSize, PhysicalVec,
 };
 use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBoxBase};
-use crate::sizing::{LazySize, Size, SizeConstraint, Sizes};
+use crate::sizing::{LazySize, Size, SizeConstraint, Sizes, compute_ratio_dependent_block_size};
 use crate::style_ext::{Clamp, ComputedValuesExt, ContentBoxSizesAndPBM, DisplayInside};
 
 #[derive(Debug, MallocSizeOf)]
@@ -726,6 +727,9 @@ impl IndependentFormattingContext {
                 block_stretch_size,
                 || block_content_size,
                 is_table,
+                // TODO: Resolve the ratio-dependent block size here, so that the contents can
+                // resolve block percentages against it.
+                || None, /* ratio_dependent_block_size */
             ))
         } else {
             block_axis_solver.computed_sizes.resolve_extrinsic(
@@ -750,6 +754,7 @@ impl IndependentFormattingContext {
             inline_stretch_size,
             get_inline_content_size,
             is_table,
+            || None, /* ratio_dependent_block_size */
         );
 
         let containing_block_for_children = ContainingBlock {
@@ -766,6 +771,7 @@ impl IndependentFormattingContext {
             Au::zero,
             block_stretch_size,
             is_table,
+            compute_ratio_dependent_block_size(preferred_aspect_ratio, inline_size),
         );
 
         let containing_block = &containing_block.into();
@@ -846,9 +852,7 @@ impl IndependentFormattingContext {
             style,
             fragments,
             physical_adjusted_content_rect,
-            pbm.padding.to_physical(containing_block_writing_mode),
-            pbm.border.to_physical(containing_block_writing_mode),
-            margin.to_physical(containing_block_writing_mode),
+            PhysicalBoxSides::from_pbm(&pbm, margin, containing_block_writing_mode),
             specific_layout_info,
         );
 

@@ -2227,7 +2227,8 @@ class AttrDefiner(PropertyDefiner):
             if ((self.crossorigin and not attr.getExtendedAttribute("CrossOriginWritable"))
                 or (attr.readonly
                     and not attr.getExtendedAttribute("PutForwards")
-                    and not attr.getExtendedAttribute("Replaceable"))):
+                    and not attr.getExtendedAttribute("Replaceable")
+                    and not attr.getExtendedAttribute("LegacyLenientSetter"))):
                 return "JSNativeWrapper { op: None, info: ptr::null() }"
 
             if self.static:
@@ -5210,6 +5211,16 @@ JS_DefineProperty(cx, HandleObject::from_raw(obj), {name}, HandleValue::from_raw
 
 
 
+class CGSpecializedLenientSetter(CGSpecializedSetter):
+    """
+    A class for generating the code for an IDL [LegacyLenientSetter] attribute
+    setter, which ignores the assigned value.
+    """
+    def definition_body(self) -> CGThing:
+        assert self.attr.readonly
+        return CGGeneric("true")
+
+
 class CGMemberJITInfo(CGThing):
     """
     A class for generating the JITInfo for a property that points to
@@ -5338,7 +5349,8 @@ impl<D: DomTypes> BindingTables<D> {{
                                         slotIndex,
                                         [self.member.type], None)
             if (not self.member.readonly or self.member.getExtendedAttribute("PutForwards")
-                    or self.member.getExtendedAttribute("Replaceable")):
+                    or self.member.getExtendedAttribute("Replaceable")
+                    or self.member.getExtendedAttribute("LegacyLenientSetter")):
                 setterinfo = f"{internalMemberName}_setterinfo"
                 setter = f"set_{internalMemberName}"
                 # Setters are always fallible, since they have to do a typed unwrap.
@@ -7702,6 +7714,8 @@ class CGDescriptor(CGThing):
                     cgThings.append(CGSpecializedForwardingSetter(descriptor, m))
                 elif m.getExtendedAttribute("Replaceable"):
                     cgThings.append(CGSpecializedReplaceableSetter(descriptor, m))
+                elif m.getExtendedAttribute("LegacyLenientSetter"):
+                    cgThings.append(CGSpecializedLenientSetter(descriptor, m))
 
                 if (not m.isStatic() and not descriptor.interface.isCallback()):
                     cgThings.append(CGMemberJITInfo(descriptor, m))
@@ -9885,16 +9899,15 @@ impl Clone for TopTypeId {
     def ContentEventHandlerNames(config: Configuration) -> CGThing:
         """Generate the sorted list of content event handler attribute names
         by inspecting WebIDL definitions for interfaces that inherit from
-        HTMLElement or SVGElement."""
+        Element."""
 
         handler_names: set[str] = set()
 
         for descriptor in config.getDescriptors(isCallback=False, isIteratorInterface=False):
-            # Only include interfaces that inherit from HTMLElement or
-            # SVGElement, to avoid non-content event handlers like
-            # Document.onreadystatechange or XMLHttpRequest handlers.
-            chain = descriptor.prototypeChain
-            if "HTMLElement" not in chain and "SVGElement" not in chain:
+            # Only include Element and interfaces that inherit from it, to avoid
+            # non-content event handlers like Document.onreadystatechange or
+            # XMLHttpRequest handlers.
+            if "Element" not in descriptor.prototypeChain:
                 continue
 
             for member in descriptor.interface.members:

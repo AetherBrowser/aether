@@ -18,6 +18,7 @@ use app_units::Au;
 use atomic_refcell::{AtomicRef, AtomicRefCell};
 use cssparser::match_ignore_ascii_case;
 use dom_struct::dom_struct;
+use embedder_traits::EmbedderMsg;
 use euclid::Rect;
 use hashlink::LruCache;
 use html5ever::serialize::TraversalScope;
@@ -78,7 +79,6 @@ use xml5ever::serialize::TraversalScope::{
 
 use crate::conversions::Convert;
 use crate::css::stylesheet_loader::StylesheetOwner;
-use crate::dom::RootedPromise;
 use crate::dom::accessors::AttrStrRef;
 use crate::dom::activation::Activatable;
 use crate::dom::animation::Animation;
@@ -88,12 +88,13 @@ use crate::dom::bindings::cell::AtomicSafeBorrowMut;
 use crate::dom::bindings::codegen::Bindings::AttrBinding::AttrMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::ElementBinding::{
-    ElementMethods, GetHTMLOptions, ScrollIntoViewContainer, ScrollLogicalPosition, ShadowRootInit,
+    ElementMethods, FullscreenOptions, GetHTMLOptions, ScrollIntoViewContainer,
+    ScrollLogicalPosition, ShadowRootInit,
 };
 use crate::dom::bindings::codegen::Bindings::EventHandlerBinding::EventHandlerNonNull;
 use crate::dom::bindings::codegen::Bindings::FunctionBinding::Function;
 use crate::dom::bindings::codegen::Bindings::HTMLTemplateElementBinding::HTMLTemplateElementMethods;
-use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::NodeBinding::{GetRootNodeOptions, NodeMethods};
 use crate::dom::bindings::codegen::Bindings::SanitizerBinding::{
     SetHTMLOptions, SetHTMLUnsafeOptions,
 };
@@ -116,6 +117,7 @@ use crate::dom::bindings::domname::{
 use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
 use crate::dom::bindings::inheritance::{Castable, ElementTypeId, HTMLElementTypeId, NodeTypeId};
 use crate::dom::bindings::num::Finite;
+use crate::dom::bindings::refcounted::{Trusted, TrustedPromise};
 use crate::dom::bindings::root::{Dom, DomRoot, LayoutDom, MutNullableDom, ToLayout};
 use crate::dom::bindings::str::DOMString;
 use crate::dom::csp::{CspReporting, InlineCheckType, SourcePosition};
@@ -169,6 +171,7 @@ use crate::dom::html::htmltablesectionelement::HTMLTableSectionElement;
 use crate::dom::html::htmltemplateelement::HTMLTemplateElement;
 use crate::dom::html::htmltextareaelement::HTMLTextAreaElement;
 use crate::dom::html::htmlvideoelement::HTMLVideoElement;
+use crate::dom::html::interactive::htmldialogelement::HTMLDialogElement;
 use crate::dom::html::internals::elementinternals::ElementInternals;
 use crate::dom::intersectionobserver::{IntersectionObserver, IntersectionObserverRegistration};
 use crate::dom::iterators::ShadowIncluding;
@@ -194,6 +197,7 @@ use crate::dom::validation::Validatable;
 use crate::dom::validitystate::ValidationFlags;
 use crate::dom::window::Window;
 use crate::dom::window::scrolling_box::{ScrollAxisState, ScrollingBox};
+use crate::dom::{Promise, RootedPromise};
 use crate::event_loop::script_thread::ScriptThread;
 use crate::layout_dom::ServoDangerousStyleElement;
 use crate::realms::enter_auto_realm;
@@ -1130,11 +1134,11 @@ impl Element {
         // > following are true, and false otherwise:
         // > - element is connected.
         // > - element’s node document is allowed to use the "fullscreen" feature.
-        // > element namespace is not the HTML namespace, or element's popover visibility state is hidden.
+        // > - element namespace is not the HTML namespace, or element's popover visibility state is hidden.
         self.is_connected() &&
             self.owner_document()
                 .overlay_handler()
-                .get_allow_fullscreen() &&
+                .is_allowed_to_use_fullscreen() &&
             (*self.namespace() != ns!(html) || !self.popover_visibility_state_showing())
     }
 }
@@ -3188,6 +3192,101 @@ impl Element {
             None => Cow::Borrowed(&*self.local_name),
         }
     }
+
+    /// <https://html.spec.whatwg.org/multipage/#explicitly-set-attr-element>
+    fn explicitly_set_attr_element(&self, attr: &LocalName) -> Option<DomRoot<Element>> {
+        self.rare_data()
+            .as_ref()?
+            .explicitly_set_attr_elements
+            .get(attr)
+            .map(|element| element.as_rooted())
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#attr-associated-element>
+    ///
+    /// For now, we only handle the Element type, although the spec is written with types inheriting
+    /// from Element in mind.
+    pub(crate) fn get_attr_associated_element(
+        &self,
+        cx: &mut JSContext,
+        attr: &LocalName,
+    ) -> Option<DomRoot<Element>> {
+        // Step 1. Let element be the result of running reflectedTarget's get the element.
+        // Step 2. Let contentAttributeValue be the result of running reflectedTarget's get the content attribute.
+        let content_attribute_value = self.get_attribute_string_value(attr);
+
+        // Step 3. If reflectedTarget's explicitly set attr-element is not null:
+        if let Some(explicitly_set_attr_element) = self.explicitly_set_attr_element(attr) {
+            // Step 3.1. If reflectedTarget's explicitly set attr-element is a descendant of any of
+            // element's shadow-including ancestors, then return reflectedTarget's explicitly set
+            // attr-element.
+            let explicitly_set_attr_element_node = explicitly_set_attr_element.upcast::<Node>();
+            if self
+                .upcast::<Node>()
+                .inclusive_ancestors(ShadowIncluding::Yes)
+                .skip(1)
+                .any(|ancestor| ancestor.is_ancestor_of(explicitly_set_attr_element_node))
+            {
+                return Some(explicitly_set_attr_element);
+            }
+
+            // Step 3.2. Return null.
+            return None;
+        }
+        // Step 4. Otherwise, if contentAttributeValue is not null, return the first element
+        // candidate, in tree order, that meets the following criteria:
+        // - candidate's root is the same as element's root;
+        // - candidate's ID is contentAttributeValue; and
+        // FIXME: - candidate implements T.
+        // If no such element exists, then return null.
+        else if let Some(content_attribute_value) = content_attribute_value {
+            let value = Atom::from(content_attribute_value);
+            return self
+                .upcast::<Node>()
+                .GetRootNode(&GetRootNodeOptions::empty())
+                .traverse_preorder_unrooted(cx.no_gc(), ShadowIncluding::No)
+                .find_map(|element| {
+                    let element = UnrootedDom::downcast::<Element>(element)?;
+                    (element.get_id().as_ref() == Some(&value)).then(|| element.as_rooted())
+                });
+        }
+
+        // 5. Return null.
+        None
+    }
+
+    /// <https://html.spec.whatwg.org/multipage/#reflecting-content-attributes-in-idl-attributes:element>
+    /// > The setter steps are:
+    pub(crate) fn set_attr_associated_element(
+        &self,
+        cx: &mut JSContext,
+        attr: &LocalName,
+        value: Option<&Element>,
+    ) {
+        // Step 1. If the given value is null:
+        let Some(value) = value else {
+            // Step 1.1. Set this's explicitly set attr-element to null.
+            self.ensure_rare_data(cx.no_gc())
+                .explicitly_set_attr_elements
+                .remove(attr);
+
+            // Step 1.2. Run this's delete the content attribute.
+            self.remove_attribute(cx, &ns!(), attr);
+
+            // Step 1.3. Return.
+            return;
+        };
+
+        // Step 2. Run this's set the content attribute with the empty string.
+        self.set_string_attribute(cx, attr, DOMString::new());
+
+        // Step 3. Set this's explicitly set attr-element to a weak reference to the given value.
+        //
+        // FIXME: weak reference
+        self.ensure_rare_data(cx.no_gc())
+            .explicitly_set_attr_elements
+            .insert(attr.clone(), Dom::from_ref(value));
+    }
 }
 
 impl ElementMethods<crate::DomTypeHolder> for Element {
@@ -4432,10 +4531,184 @@ impl ElementMethods<crate::DomTypeHolder> for Element {
     }
 
     /// <https://fullscreen.spec.whatwg.org/#dom-element-requestfullscreen>
-    fn RequestFullscreen(&self, cx: &mut CurrentRealm) -> RootedPromise {
-        let doc = self.owner_document();
-        doc.overlay_handler().enter_fullscreen(cx, self)
+    fn RequestFullscreen(
+        &self,
+        cx: &mut CurrentRealm,
+        _options: &FullscreenOptions,
+    ) -> RootedPromise {
+        // Step 1. Let pendingDoc be this’s node document.
+        let pending_doc = self.owner_document();
+
+        // Step 2. Let promise be a new promise.
+        let promise = Promise::new_in_realm(cx);
+
+        // Step 3. If pendingDoc is not fully active, then reject promise with a TypeError
+        // exception and return promise.
+        if !pending_doc.is_fully_active() {
+            promise.reject_error(cx, Error::Type(c"Document is not fully active".to_owned()));
+            return promise;
+        }
+
+        // Step 4. Let error be false.
+        let mut error = false;
+
+        // Step 5. If any of the following conditions are false, then set error to true:
+        // > - This’s namespace is the HTML namespace or this is an SVG svg or MathML math element.
+        // > - This is not a dialog element.
+        // > - The fullscreen element ready check for this returns true.
+        // > - Fullscreen is supported.
+        // > - This’s relevant global object has transient activation or the algorithm is triggered
+        // > - by a user generated orientation change.
+        //
+        // This is the same as not all of the conditions being true.
+        // FIXME: Triggered by a user generated orientation change.
+        if !((*self.namespace() == ns!(html) ||
+            (*self.namespace() == ns!(svg) && *self.local_name() == local_name!("svg")) ||
+            (*self.namespace() == ns!(mathml) && *self.local_name() == local_name!("math"))) &&
+            !self.is::<HTMLDialogElement>() &&
+            self.fullscreen_element_ready_check() &&
+            pending_doc.overlay_handler().fullscreen_is_supported() &&
+            self.owner_window().has_transient_activation())
+        {
+            error = true;
+        }
+
+        // Step 6. If error is false, then consume user activation given pendingDoc’s relevant
+        // global object.
+        if !error {
+            pending_doc.window().consume_user_activation();
+        }
+
+        // Step 7. Return promise, and run the remaining steps in parallel.
+        let this = Trusted::new(self);
+        let trusted_pending_doc = Trusted::new(&*pending_doc);
+        let trusted_promise = TrustedPromise::from(&promise);
+        self.owner_global()
+            .task_manager()
+            .dom_manipulation_task_source()
+            .queue(task!(request_fullscreen_steps: move |cx| {
+                let this = this.root();
+                let pending_doc = trusted_pending_doc.root();
+                let promise = trusted_promise.root(cx);
+                let mut error = error;
+
+                // Step 8. If error is false, then resize pendingDoc’s node navigable’s top-level
+                // traversable’s active document’s viewport’s dimensions, optionally taking into
+                // account options["navigationUI"]:
+                //
+                // FIXME: Take options["navigationUI"] into account.
+                if !error {
+                    pending_doc.send_to_embedder(EmbedderMsg::NotifyFullscreenStateChanged(
+                        pending_doc.webview_id(),
+                        true,
+                    ));
+                }
+
+                // Step 9. If any of the following conditions are false, then set error to true:
+                // > - This’s node document is pendingDoc.
+                // > - The fullscreen element ready check for this returns true.
+                if this.owner_document() != pending_doc || !this.fullscreen_element_ready_check() {
+                    error = true;
+                }
+
+                // Step 10. If error is true:
+                if error {
+                    // Step 10.1. Append (fullscreenerror, this) to pendingDoc’s list of pending
+                    // fullscreen events.
+                    pending_doc
+                        .overlay_handler()
+                        .append_to_list_of_pending_fullscreen_events(
+                            cx.no_gc(),
+                            atom!("fullscreenerror"),
+                            &this,
+                        );
+
+                    // Step 10.2. Reject promise with a TypeError exception and terminate these
+                    // steps.
+                    promise.reject_error(cx, Error::Type(c"Fullscreen request failed".to_owned()));
+                    return;
+                }
+
+                // Step 11. Let fullscreenElements be an ordered set initially consisting of this.
+                let mut fullscreen_elements = vec![this.clone()];
+
+                // Step 12. While true:
+                loop {
+                    // Step 12.1. Let last be the last item of fullscreenElements.
+                    let last = fullscreen_elements
+                        .last()
+                        .expect("fullscreenElements has an initial element");
+
+                    // Step 12.2. Let container be last’s node navigable’s container.
+                    // Step 12.3. If container is null, then break.
+                    // FIXME: Support cross-origin container
+                    let Some(container) = last
+                        .owner_document()
+                        .window()
+                        .window_proxy()
+                        .frame_element()
+                        .map(DomRoot::from_ref)
+                    else {
+                        break;
+                    };
+
+                    // Step 12.4. Append container to fullscreenElements.
+                    fullscreen_elements.push(container);
+                }
+
+                // Step 13. For each element in fullscreenElements:
+                for element in fullscreen_elements {
+                    // Step 13.1. Let doc be element’s node document.
+                    let doc = element.owner_document();
+
+                    // Step 13.2. If element is doc’s fullscreen element, continue.
+                    if doc.overlay_handler().fullscreen_element().as_ref() == Some(&element) {
+                        continue;
+                    }
+
+                    // Step 13.3. If element is this and this is an iframe element, then set
+                    // element’s iframe fullscreen flag.
+                    if element == this &&
+                        let Some(iframe) = element.downcast::<HTMLIFrameElement>()
+                    {
+                        iframe.set_iframe_fullscreen_flag(true);
+                    }
+
+                    // Step 13.4. Fullscreen element within doc.
+                    doc.overlay_handler().fullscreen_an_element(cx, &element);
+
+                    // Step 13.5. Append (fullscreenchange, element) to doc’s list of pending
+                    // fullscreen events.
+                    doc.overlay_handler()
+                        .append_to_list_of_pending_fullscreen_events(
+                            cx.no_gc(),
+                            atom!("fullscreenchange"),
+                            &element,
+                        );
+                }
+
+                // Step 14. Depending on the value of options["keyboardLock"]:
+                // > "browser": Set this’s keyboard lock flag.
+                // > "none": Unset this’s keyboard lock flag.
+                //
+                // FIXME: Set or unset keyboard lock flag.
+
+                // Step 15. Resolve promise with undefined.
+                promise.resolve_native(cx, &());
+            }));
+
+        promise
     }
+
+    // https://fullscreen.spec.whatwg.org/#handler-document-onfullscreenchange
+    event_handler!(
+        fullscreenchange,
+        GetOnfullscreenchange,
+        SetOnfullscreenchange
+    );
+
+    // https://fullscreen.spec.whatwg.org/#handler-document-onfullscreenerror
+    event_handler!(fullscreenerror, GetOnfullscreenerror, SetOnfullscreenerror);
 
     /// <https://w3c.github.io/pointerevents/#dom-element-setpointercapture>
     fn SetPointerCapture(&self, pointer_id: i32) -> ErrorResult {
@@ -5019,6 +5292,18 @@ impl VirtualMethods for Element {
         self.super_type()
             .unwrap()
             .attribute_mutated(cx, attr, mutation);
+
+        // <https://html.spec.whatwg.org/multipage/#dom-trees:explicitly-set-attr-element>
+        // 1. If namespace is not null, then return.
+        // 4. If element has an explicitly set localName-element, then set it to null.
+        if *attr.namespace() == ns!() &&
+            let Some(rare_data) = self.rare_data_mut().as_mut()
+        {
+            rare_data
+                .explicitly_set_attr_elements
+                .remove(attr.local_name());
+        }
+
         let node = self.upcast::<Node>();
         match *attr.local_name() {
             // https://html.spec.whatwg.org/multipage/#event-handler-attributes:event-handler-content-attributes-3
@@ -5284,11 +5569,7 @@ impl VirtualMethods for Element {
             return;
         }
 
-        let document = self.owner_document_unrooted(cx.no_gc());
-        let fullscreen = document.overlay_handler().fullscreen_element();
-        if fullscreen.as_deref() == Some(self) {
-            self.owner_document().overlay_handler().exit_fullscreen(cx);
-        }
+        self.fullscreen_removing_steps(cx);
 
         self.unregister_current_id_and_name_attribute(cx);
 
@@ -5633,6 +5914,43 @@ impl Element {
         self.set_state(no_gc, ElementState::URLTARGET, value)
     }
 
+    /// <https://fullscreen.spec.whatwg.org/#removing-steps>
+    pub(crate) fn fullscreen_removing_steps(&self, cx: &mut JSContext) {
+        // Step 1. Let document be removedNode’s node document.
+        let document = self.owner_document();
+
+        // Step 2. Let nodes be removedNode’s shadow-including inclusive descendants that have
+        // their fullscreen flag set, in shadow-including tree order.
+        let nodes: Vec<DomRoot<Element>> = self
+            .upcast::<Node>()
+            .traverse_preorder(ShadowIncluding::Yes)
+            .filter_map(DomRoot::downcast::<Element>)
+            .filter(|element| element.fullscreen_flag())
+            .collect();
+
+        // Step 3. For each node in nodes:
+        for node in nodes {
+            // Step 3.1. If node is document’s fullscreen element, exit fullscreen document.
+            if document.overlay_handler().fullscreen_element().as_deref() == Some(&*node) {
+                let _ = document.overlay_handler().exit_fullscreen(cx);
+            }
+            // Step 3.2. Otherwise, unfullscreen node.
+            else {
+                document
+                    .overlay_handler()
+                    .unfullscreen_an_element(cx.no_gc(), &node);
+            }
+
+            // Step 3.3. If document’s top layer contains node, remove from the top layer
+            // immediately given node.
+            if document.overlay_handler().top_layer_contains(&node) {
+                document
+                    .overlay_handler()
+                    .remove_an_element_from_the_top_layer_immediately(&node, cx.no_gc());
+            }
+        }
+    }
+
     /// <https://html.spec.whatwg.org/multipage/#topmost-popover-ancestor>
     ///
     /// `self` is the spec's newPopoverOrTopLayerElement.
@@ -5716,6 +6034,12 @@ impl Element {
         self.set_state(no_gc, ElementState::POPOVER_OPEN, value);
     }
 
+    /// <https://fullscreen.spec.whatwg.org/#fullscreen-flag>
+    pub(crate) fn fullscreen_flag(&self) -> bool {
+        self.state().contains(ElementState::FULLSCREEN)
+    }
+
+    /// <https://fullscreen.spec.whatwg.org/#fullscreen-flag>
     pub(crate) fn set_fullscreen_state(&self, no_gc: &NoGC, value: bool) {
         self.set_state(no_gc, ElementState::FULLSCREEN, value)
     }

@@ -60,6 +60,7 @@ fun Servo(
     initialUrl: String?,
     logStr: String?,
     onLoadingStateChange: (LoadingState) -> Unit,
+    onTitleChange: (String) -> Unit,
     client: Servo.Client,
     navigator: ServoNavigator,
     modifier: Modifier = Modifier,
@@ -80,6 +81,7 @@ fun Servo(
             onImeShow = { softKeyboardVisible = true },
             onImeHide = { softKeyboardVisible = false },
             onLoadingStateChange = onLoadingStateChange,
+            onTitleChange = onTitleChange,
         )
     }
 
@@ -414,6 +416,7 @@ internal constructor(
     onImeShow: () -> Unit,
     onImeHide: () -> Unit,
     onLoadingStateChange: (LoadingState) -> Unit,
+    onTitleChange: (String) -> Unit,
 ) {
     private val jni = JNIServo()
     internal val glDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
@@ -427,6 +430,7 @@ internal constructor(
             onImeShow,
             onImeHide,
             onLoadingStateChange,
+            onTitleChange,
         )
 
     init {
@@ -542,8 +546,6 @@ internal constructor(
     interface Client {
         fun onAlert(message: String)
 
-        fun onTitleChanged(title: String)
-
         fun onUrlChanged(url: String)
     }
 
@@ -556,6 +558,7 @@ internal constructor(
         private val onImeShow: () -> Unit,
         private val onImeHide: () -> Unit,
         private val onLoadingStateChange: (LoadingState) -> Unit,
+        private val onTitleChange: (String) -> Unit,
     ) : JNIServo.Callbacks, Client {
         var suspended: Boolean = false
 
@@ -586,7 +589,7 @@ internal constructor(
         }
 
         override fun onTitleChanged(title: String) {
-            scope.launch { client.onTitleChanged(title) }
+            scope.launch { onTitleChange(title) }
         }
 
         override fun onUrlChanged(url: String) {

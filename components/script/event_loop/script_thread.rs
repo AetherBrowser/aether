@@ -1294,8 +1294,8 @@ impl ScriptThread {
                 // > global object as the timestamp [WEBANIMATIONS]
                 document.update_animations_and_send_events(cx);
 
-                // TODO(#31866): Implement "run the fullscreen steps" from
-                // https://fullscreen.spec.whatwg.org/multipage/#run-the-fullscreen-steps.
+                // > 12. For each doc of docs, run the fullscreen steps for doc.
+                document.overlay_handler().run_the_fullscreen_steps(cx);
 
                 // TODO(#31868): Implement the "context lost steps" from
                 // https://html.spec.whatwg.org/multipage/#context-lost-steps.
@@ -1489,10 +1489,6 @@ impl ScriptThread {
                     // An event came-in from a document that is not fully-active, it has been stored by the task-queue.
                     // Continue without adding it to "sequential".
                 },
-                MixedMessage::FromConstellation(ScriptThreadMessage::ExitFullScreen(id)) => self
-                    .profile_event(ScriptThreadEventCategory::ExitFullscreen, Some(id), || {
-                        self.handle_exit_fullscreen(cx, id);
-                    }),
                 _ => {
                     sequential.push(event);
                 },
@@ -1613,6 +1609,9 @@ impl ScriptThread {
         match *msg {
             MixedMessage::FromConstellation(ref inner_msg) => match *inner_msg {
                 ScriptThreadMessage::SendInputEvent(..) => ScriptThreadEventCategory::InputEvent,
+                ScriptThreadMessage::ExitFullScreen(..) => {
+                    ScriptThreadEventCategory::ExitFullscreen
+                },
                 _ => ScriptThreadEventCategory::ConstellationMsg,
             },
             #[cfg(feature = "devtools")]
@@ -1996,6 +1995,9 @@ impl ScriptThread {
             ScriptThreadMessage::PaintMetric(pipeline_id, event) => {
                 self.handle_paint_metric(cx, pipeline_id, event)
             },
+            ScriptThreadMessage::ExitFullScreen(pipeline_id) => {
+                self.handle_exit_fullscreen(cx, pipeline_id)
+            },
             ScriptThreadMessage::MediaSessionAction(pipeline_id, action) => {
                 self.handle_media_session_action(cx, pipeline_id, action)
             },
@@ -2015,7 +2017,6 @@ impl ScriptThread {
                 }
             },
             msg @ ScriptThreadMessage::SpawnPipeline(..) |
-            msg @ ScriptThreadMessage::ExitFullScreen(..) |
             msg @ ScriptThreadMessage::ExitScriptThread => {
                 panic!("should have handled {:?} already", msg)
             },

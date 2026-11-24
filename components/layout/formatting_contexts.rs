@@ -31,7 +31,7 @@ use crate::sizing::{
     self, ComputeInlineContentSizes, ContentSizes, InlineContentSizesResult, LazySize,
     SizeConstraint,
 };
-use crate::style_ext::{AspectRatio, Display, DisplayInside, LayoutStyle};
+use crate::style_ext::{AspectRatio, ComputedValuesExt, Display, DisplayInside, LayoutStyle};
 use crate::table::Table;
 use crate::taffy::TaffyContainer;
 use crate::{ArcRefCell, PropagatedBoxTreeData};
@@ -89,10 +89,20 @@ impl IndependentFormattingContextContents {
 
 /// The baselines of a layout or a [`crate::fragment_tree::BoxFragment`]. Some layout
 /// uses the first and some layout uses the last.
-#[derive(Clone, Copy, Debug, Default, MallocSizeOf)]
+#[derive(Clone, Copy, Default, MallocSizeOf)]
 pub(crate) struct Baselines {
     pub first: Option<Au>,
     pub last: Option<Au>,
+}
+
+impl std::fmt::Debug for Baselines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let as_string =
+            |value: Option<Au>| value.map_or_else(|| "-".into(), |value| format!("{value:?}"));
+        let first = as_string(self.first);
+        let last = as_string(self.last);
+        write!(f, "{first}/{last}")
+    }
 }
 
 impl Baselines {
@@ -642,8 +652,18 @@ impl IndependentFormattingContext {
             IndependentFormattingContextContents::Replaced(replaced, _) => {
                 replaced.preferred_aspect_ratio(self.style(), padding_border_sums)
             },
-            // TODO: support preferred aspect ratios on non-replaced boxes.
-            _ => None,
+            // `aspect-ratio` doesn't apply to internal table boxes.
+            // Note: Widgets ignore `display`, so check whether this actually is a
+            // table cell in layout instead of checking the computed `display`.
+            IndependentFormattingContextContents::Flow(bfc) if bfc.is_table_cell => None,
+            // Aspect ratio on tables is underspecified.
+            // https://github.com/w3c/csswg-drafts/issues/11419
+            IndependentFormattingContextContents::Table(_) => None,
+            IndependentFormattingContextContents::Flow(_) |
+            IndependentFormattingContextContents::Flex(_) |
+            IndependentFormattingContextContents::Grid(_) => self
+                .style()
+                .preferred_aspect_ratio_for_non_replaced(padding_border_sums),
         }
     }
 

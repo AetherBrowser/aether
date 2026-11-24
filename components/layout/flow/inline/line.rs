@@ -26,7 +26,7 @@ use crate::containing_block::{ContainingBlock, ContainingBlockSize};
 use crate::flow::inline::text_run::{FontAndScriptInfo, SharedTextRunData};
 use crate::fragment_tree::{
     BaseFragment, BaseFragmentInfo, BoxFragment, Fragment, FragmentAndLogicalRect,
-    FragmentChildren, FragmentFlags, TextFragment,
+    FragmentChildren, FragmentFlags, PhysicalBoxSides, TextFragment,
 };
 use crate::geom::{LogicalRect, LogicalSides, LogicalVec2, PhysicalRect};
 use crate::positioned::{
@@ -509,9 +509,7 @@ impl LineItemLayout<'_, '_> {
             // Previously all the fragment's children were positioned relative to the linebox,
             // but they need to be made relative to this fragment.
             content_rect.as_physical_deprecated(containing_block),
-            padding.to_physical(containing_block_writing_mode),
-            border.to_physical(containing_block_writing_mode),
-            margin.to_physical(containing_block_writing_mode),
+            PhysicalBoxSides::from_logical(padding, border, margin, containing_block_writing_mode),
             None, /* specific_layout_info */
         );
         if self.for_block_level {
@@ -683,16 +681,14 @@ impl LineItemLayout<'_, '_> {
             }
         };
 
-        if let Some(mut positioning_context) = atomic.positioning_context {
-            positioning_context.adjust_static_position_of_hoisted_fragments(
-                &content_rect,
-                containing_block.style.writing_mode,
-                PositioningContextLength::zero(),
-            );
-
-            self.current_positioning_context_mut()
-                .append(positioning_context);
-        }
+        let mut positioning_context = atomic.positioning_context;
+        positioning_context.adjust_static_position_of_hoisted_fragments(
+            &content_rect,
+            containing_block.style.writing_mode,
+            PositioningContextLength::zero(),
+        );
+        self.current_positioning_context_mut()
+            .append(positioning_context);
 
         self.current_state.inline_advance += atomic.size.inline;
 
@@ -954,7 +950,7 @@ impl TextRunLineItem {
 pub(super) struct AtomicLineItem {
     pub fragment: Arc<BoxFragment>,
     pub size: LogicalVec2<Au>,
-    pub positioning_context: Option<PositioningContext>,
+    pub positioning_context: PositioningContext,
 
     /// The block offset of this items' baseline relative to the baseline of the line.
     /// This will be zero for boxes with `vertical-align: top` and `vertical-align:
