@@ -27,6 +27,7 @@ pub struct BookmarkNode {
 }
 
 /// A change of the tree. A `None` parent is the root, which is the bookmarks bar.
+#[derive(Debug, PartialEq)]
 pub enum BookmarkEdit {
     CreateFolder {
         parent: Option<i64>,

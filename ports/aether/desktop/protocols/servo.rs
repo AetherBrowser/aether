@@ -21,6 +21,7 @@
 //! - about:content-filter
 //! - about:history-data
 //! - about:bookmarks-data
+//! - about:bookmarks-bar
 
 use std::future::Future;
 use std::pin::Pin;
@@ -34,6 +35,7 @@ use servo::protocol_handler::{
 };
 
 use crate::bookmarks_page::BookmarksPage;
+use crate::desktop::bookmarks_bar::BarVisibilitySetting;
 use crate::desktop::protocols::processes::ProcessSampler;
 use crate::desktop::protocols::resource::ResourceProtocolHandler;
 use crate::history::HistoryPage;
@@ -43,14 +45,20 @@ pub struct ServoProtocolHandler {
     process_sampler: Mutex<ProcessSampler>,
     history_page: Mutex<HistoryPage>,
     bookmarks_page: BookmarksPage,
+    bookmarks_bar: BarVisibilitySetting,
 }
 
 impl ServoProtocolHandler {
-    pub fn new(history_page: HistoryPage, bookmarks_page: BookmarksPage) -> Self {
+    pub(crate) fn new(
+        history_page: HistoryPage,
+        bookmarks_page: BookmarksPage,
+        bookmarks_bar: BarVisibilitySetting,
+    ) -> Self {
         Self {
             process_sampler: Mutex::new(ProcessSampler::default()),
             history_page: Mutex::new(history_page),
             bookmarks_page,
+            bookmarks_bar,
         }
     }
 }
@@ -142,6 +150,16 @@ impl ProtocolHandler for ServoProtocolHandler {
                     return forbidden_response();
                 }
                 json_response_when_ready(request, self.bookmarks_page.handle_request(url.query()))
+            },
+
+            "bookmarks-bar" => {
+                if internal_endpoint_is_hidden(request) ||
+                    !(request_is_from_bookmarks_page(request) ||
+                        request_is_from_settings_page(request))
+                {
+                    return forbidden_response();
+                }
+                json_response(request, self.bookmarks_bar.handle_request(url.query()))
             },
 
             "process-list" => {

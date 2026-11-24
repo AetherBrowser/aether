@@ -73,6 +73,15 @@
         background: var(--surface);
       }
 
+      #settings {
+        margin-bottom: 24px;
+      }
+
+      #settings label {
+        display: block;
+        margin-bottom: 6px;
+      }
+
       .list-header {
         display: flex;
         align-items: center;
@@ -324,6 +333,15 @@
       <main>
         <div class="content">
           <input id="search" type="search" placeholder="Search bookmarks" aria-label="Search bookmarks" />
+          <div id="settings" class="card" hidden>
+            <h2>Settings</h2>
+            <label for="bar-visibility">Bookmarks bar</label>
+            <select id="bar-visibility">
+              <option value="always">Always show</option>
+              <option value="newtab">Only show on new tab</option>
+              <option value="never">Never show</option>
+            </select>
+          </div>
           <div class="list-header">
             <p id="path"></p>
             <button type="button" class="secondary" id="new-folder">New folder</button>
@@ -411,6 +429,8 @@
       const moveDialog = byId("move-dialog");
       const moveFolder = byId("move-folder");
       const deleteDialog = byId("delete-dialog");
+      const settings = byId("settings");
+      const barVisibility = byId("bar-visibility");
 
       let tree = [];
       let canOpenTabs = false;
@@ -916,10 +936,24 @@
         };
       }
 
+      // Only the desktop browser has a bookmarks bar, and answers this request.
+      async function requestBar(parameters) {
+        const query = parameters ? `?${new URLSearchParams(parameters)}` : "";
+        try {
+          const response = await fetch(`about:bookmarks-bar${query}`);
+          const data = await response.json();
+          if (data.visibility) {
+            barVisibility.value = data.visibility;
+            settings.hidden = false;
+          }
+        } catch (error) {}
+      }
+
       const style = getComputedStyle(document.documentElement);
       const accent = style.getPropertyValue("--accent").trim();
       const onAccent = style.getPropertyValue("--on-accent").trim() || "#ffffff";
       byId("title").prepend(svgIcon("bookmark", accent || ICON_COLOR));
+      barVisibility.addEventListener("change", () => requestBar({ visibility: barVisibility.value }));
       byId("new-folder").addEventListener("click", showNewFolderDialog);
       byId("edit-save").addEventListener("click", submitEdit);
       byId("move-save").addEventListener("click", () => confirmMove());
@@ -978,8 +1012,9 @@
         return press || !menu.hidden || !backdrop.hidden;
       }
 
-      // Shows the changes made from the star or the bookmarks bar since the last request.
+      // Shows the changes made from the star, the bookmarks bar or the settings since the last request.
       function refresh() {
+        requestBar();
         if (!isBusy()) {
           request().then((error) => showMessage(error, Boolean(error)));
         }
@@ -988,23 +1023,33 @@
       window.addEventListener("focus", refresh);
       document.addEventListener("visibilitychange", refresh);
 
+      // Opens what the bookmarks bar asks for. Web pages can link here too, so a link only opens a
+      // dialog and never changes the bookmarks by itself.
       function followHash() {
         const [name, value] = location.hash.slice(1).split("=");
         const node = findNode(Number(value));
-        if (!node) {
-          return;
-        }
-        if (name === "edit") {
+        if (name === "new-folder") {
+          search.value = "";
+          currentFolder = ROOT;
+          render();
+          showNewFolderDialog();
+        } else if (name === "edit" && node) {
           showEditDialog(node);
-        } else if (name === "folder" && isFolder(node)) {
+        } else if (name === "delete" && node && isFolder(node)) {
+          showDeleteDialog(node);
+        } else if (name === "folder" && node && isFolder(node)) {
           search.value = "";
           currentFolder = node.id;
           render();
+        } else {
+          return;
         }
+        history.replaceState(null, "", location.href.split("#")[0]);
       }
 
       window.addEventListener("hashchange", followHash);
 
+      requestBar();
       request().then((error) => {
         showMessage(error, Boolean(error));
         followHash();

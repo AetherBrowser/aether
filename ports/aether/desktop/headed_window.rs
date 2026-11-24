@@ -45,6 +45,7 @@ use {
 use super::geometry::{winit_position_to_euclid_point, winit_size_to_euclid_size};
 use super::keyutils::{keyboard_event_from_winit, keyboard_modifiers_from_winit_modifiers};
 use crate::desktop::accelerated_gl_media::setup_gl_accelerated_media;
+use crate::desktop::bookmarks_bar::BookmarksBarAction;
 use crate::desktop::dialog::Dialog;
 use crate::desktop::event_loop::{AppEvent, RepaintEventLoopWaker};
 use crate::desktop::gui::Gui;
@@ -103,6 +104,35 @@ pub struct HeadedWindow {
     visible_input_method: Cell<Option<EmbedderControlId>>,
     /// The position of the mouse cursor after the most recent `MouseMove` event.
     last_mouse_position: Cell<Option<Point2D<f32, DeviceIndependentPixel>>>,
+}
+
+fn perform_bookmarks_bar_action(
+    state: &RunningAppState,
+    window: &ServoShellWindow,
+    action: BookmarksBarAction,
+) {
+    let open_page_at = |fragment: String| {
+        let mut url = bookmarks_url();
+        url.set_fragment(Some(&fragment));
+        window.activate_or_open_tab(url);
+    };
+    match action {
+        BookmarksBarAction::Open(url) => {
+            window.queue_user_interface_command(UserInterfaceCommand::Go(url.into()))
+        },
+        BookmarksBarAction::OpenInNewTab(url) => {
+            window.queue_user_interface_command(UserInterfaceCommand::GoInNewTab(url.into()))
+        },
+        BookmarksBarAction::Edit(id) => open_page_at(format!("edit={id}")),
+        BookmarksBarAction::Apply(edit) => state.edit_bookmarks(edit),
+        BookmarksBarAction::ConfirmDelete(id) => open_page_at(format!("delete={id}")),
+        BookmarksBarAction::NewFolder => open_page_at("new-folder".to_owned()),
+        BookmarksBarAction::Manage(Some(id)) => open_page_at(format!("folder={id}")),
+        BookmarksBarAction::Manage(None) => window.activate_or_open_tab(bookmarks_url()),
+        BookmarksBarAction::SetVisibility(visibility) => {
+            state.set_bookmarks_bar_visibility(visibility)
+        },
+    }
 }
 
 impl HeadedWindow {
@@ -468,6 +498,7 @@ impl HeadedWindow {
             BrowserAction::ExitDocumentFullscreen => webview.exit_fullscreen(),
             BrowserAction::History => window.activate_or_open_tab(history_url()),
             BrowserAction::Bookmarks => window.activate_or_open_tab(bookmarks_url()),
+            BrowserAction::ToggleBookmarksBar => state.toggle_bookmarks_bar(webview.url().as_ref()),
             BrowserAction::Downloads => window.activate_or_open_tab(downloads_url()),
             BrowserAction::Settings => window.activate_or_open_tab(settings_url()),
             BrowserAction::Processes => window.activate_or_open_tab(processes_url()),
@@ -618,6 +649,10 @@ impl HeadedWindow {
         if let Some(action) = app_menu_action {
             self.perform_browser_action(&state, &window, action);
         }
+        let bookmarks_bar_action = self.gui.borrow_mut().take_bookmarks_bar_action();
+        if let Some(action) = bookmarks_bar_action {
+            perform_bookmarks_bar_action(&state, &window, action);
+        }
 
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse_position.set(Some(
@@ -632,8 +667,9 @@ impl HeadedWindow {
             {
                 return true;
             }
-            // The app menu overlays the page, so it must receive pointer events while open.
-            if self.gui.borrow().is_app_menu_open() {
+            // The app menu overlays the page, so it must receive pointer events while open, and
+            // an item dragged from the bookmarks bar must get its release over the page.
+            if self.gui.borrow().is_menu_open() || self.gui.borrow().is_dragging() {
                 return true;
             }
             // Otherwise, if the cursor is over the egui interface, forward the event.
@@ -646,7 +682,7 @@ impl HeadedWindow {
             event: ref key_event,
             ..
         } = event &&
-            (self.gui.borrow().has_keyboard_focus() || self.gui.borrow().is_app_menu_open()) &&
+            (self.gui.borrow().has_keyboard_focus() || self.gui.borrow().is_menu_open()) &&
             self.handle_browser_interface_key_bindings(&state, &window, key_event)
         {
             return;
@@ -695,7 +731,7 @@ impl HeadedWindow {
             },
             WindowEvent::KeyboardInput { .. }
                 if self.gui.borrow().webview_widget_focused() &&
-                    !self.gui.borrow().is_app_menu_open() =>
+                    !self.gui.borrow().is_menu_open() =>
             {
                 // Keyboard events should go to the WebView unless some other GUI
                 // component has keyboard focus.
@@ -740,12 +776,12 @@ impl HeadedWindow {
                 }
                 // Clicks, hover, and Escape while the menu is open must not reach the page.
                 // Cursor moves are still delivered to egui above so menu rows can highlight.
-                if self.gui.borrow().is_app_menu_open() {
+                if self.gui.borrow().is_menu_open() {
                     match event {
                         WindowEvent::MouseInput { .. } => consumed = true,
                         WindowEvent::CursorMoved { .. }
                             if self.last_mouse_position.get().is_some_and(|point| {
-                                self.gui.borrow().app_menu_contains_pointer(point)
+                                self.gui.borrow().menu_contains_pointer(point)
                             }) =>
                         {
                             consumed = true;

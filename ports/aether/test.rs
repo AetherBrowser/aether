@@ -535,6 +535,24 @@ fn bookmarks_page_has_its_folders_list_and_dialogs() {
 }
 
 #[test]
+fn bookmarks_and_settings_pages_offer_the_same_bookmarks_bar_choices() {
+    let choices = [
+        r#"<option value="always">Always show</option>"#,
+        r#"<option value="newtab">Only show on new tab</option>"#,
+        r#"<option value="never">Never show</option>"#,
+    ];
+    for html in [
+        include_str!("../../resources/resource_protocol/bookmarks.html"),
+        include_str!("../../resources/resource_protocol/settings.html"),
+    ] {
+        assert!(html.contains("about:bookmarks-bar"));
+        for choice in choices {
+            assert!(html.contains(choice), "{choice}");
+        }
+    }
+}
+
+#[test]
 fn bookmarks_page_draws_the_icons_of_the_resources() {
     let html = include_str!("../../resources/resource_protocol/bookmarks.html");
     for svg in [

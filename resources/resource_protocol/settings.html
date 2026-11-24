@@ -15,6 +15,7 @@
       #home .card,
       #search .card,
       #network .card,
+      #appearance .card,
       #about .card {
         margin-top: 16px;
       }
@@ -41,13 +42,15 @@
       #search-error,
       #home-error,
       #homepage-url-error,
-      #network-error {
+      #network-error,
+      #appearance-error {
         margin: 0;
         color: var(--error);
       }
 
       #home-error:empty,
-      #search-error:empty {
+      #search-error:empty,
+      #appearance-error:empty {
         display: none;
       }
 
@@ -229,8 +232,17 @@
         <section class="card" id="download" hidden>
           <h2>Downloads</h2>
         </section>
-        <section class="card" id="appearance" hidden>
+        <section id="appearance" hidden>
           <h2>Appearance</h2>
+          <p id="appearance-error" role="alert"></p>
+          <div class="card">
+            <label for="bookmarks-bar">Bookmarks bar</label>
+            <select id="bookmarks-bar">
+              <option value="always">Always show</option>
+              <option value="newtab">Only show on new tab</option>
+              <option value="never">Never show</option>
+            </select>
+          </div>
         </section>
         <section id="about" hidden>
           <h2>About</h2>
@@ -438,6 +450,34 @@
         applyHome("showLogo=" + showLogo.checked);
       });
 
+      const bookmarksBar = document.getElementById("bookmarks-bar");
+      const appearanceError = document.getElementById("appearance-error");
+
+      // The bookmarks bar can also be changed from itself and from the bookmarks page.
+      async function applyAppearance(query) {
+        const url = query ? "about:bookmarks-bar?" + query : "about:bookmarks-bar";
+        try {
+          const response = await fetch(url);
+          const data = await response.json();
+          appearanceError.textContent = data.error || "";
+          if (data.visibility) {
+            bookmarksBar.value = data.visibility;
+          }
+        } catch (error) {
+          appearanceError.textContent = "Could not update the bookmarks bar.";
+        }
+      }
+
+      bookmarksBar.addEventListener("change", () => {
+        applyAppearance("visibility=" + encodeURIComponent(bookmarksBar.value));
+      });
+
+      window.addEventListener("focus", () => {
+        if (location.hash === "#appearance") {
+          applyAppearance();
+        }
+      });
+
       const searchPane = document.getElementById("search");
       const aboutPane = document.getElementById("about");
       const aboutError = document.getElementById("about-error");
@@ -583,6 +623,9 @@
           } else {
             link.removeAttribute("aria-current");
           }
+        }
+        if (current === "appearance") {
+          applyAppearance();
         }
         if (current === "home" && !homePane.dataset.loaded) {
           homePane.dataset.loaded = "1";
