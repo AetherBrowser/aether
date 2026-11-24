@@ -173,6 +173,10 @@ class MainActivity : ComponentActivity(), Servo.Client {
                                     closeMenu()
                                     onHistoryMenuItemClicked(historyActivityResultLauncher)
                                 },
+                                onBookmarks = {
+                                    closeMenu()
+                                    navigator.navigate("about:bookmarks")
+                                },
                                 onSettings = {
                                     closeMenu()
                                     onSettingsMenuItemClicked()
@@ -309,6 +313,7 @@ private fun AppMenu(
     onRefresh: () -> Unit,
     onNewTab: () -> Unit,
     onHistory: () -> Unit,
+    onBookmarks: () -> Unit,
     onSettings: () -> Unit,
     experimental: Boolean,
     onExperimentalChange: (Boolean) -> Unit,
@@ -350,6 +355,7 @@ private fun AppMenu(
                 // One WebView per activity; a second window is not supported yet.
                 AppMenuItem(stringResource(R.string.new_window), enabled = false, onClick = {})
                 AppMenuItem(stringResource(R.string.history_title), onClick = onHistory)
+                AppMenuItem(stringResource(R.string.bookmarks_title), onClick = onBookmarks)
                 AppMenuItem(stringResource(R.string.settings_title), onClick = onSettings)
                 AppMenuItem(
                     label = stringResource(R.string.settings_experimental_title),

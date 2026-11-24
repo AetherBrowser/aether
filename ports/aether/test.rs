@@ -553,6 +553,22 @@ fn bookmarks_page_draws_the_icons_of_the_resources() {
     }
 }
 
+/// Android embeds the files of its pages instead of reading the resources directory.
+#[test]
+fn android_serves_the_style_sheets_of_the_bookmarks_page() {
+    let html = include_str!("../../resources/resource_protocol/bookmarks.html");
+    let android = include_str!("egl/protocols.rs");
+    let sheets: Vec<_> = html
+        .split("<link rel=\"stylesheet\" href=\"resource:///")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(!sheets.is_empty());
+    for sheet in sheets {
+        assert!(android.contains(&format!("\"{sheet}\"")), "{sheet}");
+    }
+}
+
 #[test]
 fn new_tab_page_follows_home_content_preferences() {
     let html = include_str!("../../resources/resource_protocol/newtab.html");

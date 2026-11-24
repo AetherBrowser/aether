@@ -21,6 +21,7 @@ use servo::{
 use url::Url;
 
 use super::protocols;
+use crate::bookmarks_page::BookmarksPage;
 use crate::egl::host_trait::HostTrait;
 use crate::history::open_places;
 use crate::prefs::ServoShellPreferences;
@@ -328,7 +329,13 @@ impl App {
         crate::content_filter::install_content_filter(init.opts.config_dir.clone());
         let (places, _) = open_places(&init.opts, init.event_loop_waker.clone());
         let mut protocol_registry = ProtocolRegistry::default();
-        let _ = protocol_registry.register("about", protocols::ServoProtocolHandler);
+        let _ = protocol_registry.register(
+            "about",
+            protocols::ServoProtocolHandler::new(BookmarksPage::new(
+                places.bookmarks_editor(),
+                false,
+            )),
+        );
         let _ = protocol_registry.register("resource", protocols::ResourceProtocolHandler);
         let mut servo_builder = ServoBuilder::default()
             .opts(init.opts)
