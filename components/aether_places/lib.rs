@@ -20,4 +20,7 @@ mod service;
 
 pub use bookmarks::{BookmarkEdit, BookmarkError, BookmarkNode, bookmarked_urls};
 pub use database::{PlacesStore, without_credentials};
-pub use service::{CleanerReply, HistoryCleaner, PlacesService, SavedBookmarks};
+pub use service::{
+    BookmarksEditor, BookmarksReply, CleanerReply, HistoryCleaner, PlacesReply, PlacesService,
+    SavedBookmarks,
+};
