@@ -186,6 +186,7 @@ const PLATFORM_SHORTCUTS: &[Shortcut] = &[
     page_first(CONTROL, Char('e'), FocusLocationBar),
     page_first(CONTROL, Char('h'), History),
     page_first(CONTROL_SHIFT, Char('o'), Bookmarks),
+    page_first(CONTROL_SHIFT, Char('y'), Downloads),
     page_first(SHIFT, Named(NamedKey::Escape), Processes),
     page_first(CONTROL, Char('u'), ViewSource),
     page_first(CONTROL_SHIFT, Char('i'), ToggleDeveloperTools),
