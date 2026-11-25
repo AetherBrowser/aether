@@ -34,6 +34,7 @@ euclid = { workspace = true }
 font-types = { workspace = true }
 fonts_traits = { workspace = true }
 fontsan = { workspace = true }
+hashlink = { workspace = true }
 # FIXME (#34517): macOS only needs this when building servo without `--features media-gstreamer`
 harfbuzz-sys = { workspace = true, optional = true, default-features = false, features = ["bundled"] }
 harfrust = { workspace = true, optional = true }
@@ -98,6 +99,9 @@ freetype-sys = { workspace = true, features = ["bundled"] }
 dwrote = { workspace = true }
 harfbuzz-sys = { workspace = true, optional = true, features = ["directwrite"] }
 winapi = { workspace = true }
+
+[dev-dependencies]
+servo-fonts = { path = ".", features = ["harfrust"] }
 
 [lints]
 workspace = true
