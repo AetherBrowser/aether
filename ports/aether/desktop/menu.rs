@@ -180,6 +180,7 @@ impl AppMenu {
         if let Some(action) = Self::action_item(ui, "New Window", BrowserAction::NewWindow, true) {
             return Some(action);
         }
+        ui.separator();
         if let Some(action) = Self::action_item(ui, "History", BrowserAction::History, true) {
             return Some(action);
         }
@@ -189,6 +190,7 @@ impl AppMenu {
         if let Some(action) = Self::action_item(ui, "Downloads", BrowserAction::Downloads, true) {
             return Some(action);
         }
+        ui.separator();
         if let Some(action) = Self::action_item(ui, "Settings", BrowserAction::Settings, true) {
             return Some(action);
         }
