@@ -356,6 +356,9 @@ pub(crate) struct SharedTextRunData {
     /// selection.
     // TODO: make this more compact with a pair of `AtomicUsize`?
     pub selection: AtomicRefCell<Option<RangeAny<Utf32CodeUnits>>>,
+    /// Find-in-page ranges in this `TextRun`, in the same DOM offsets as `selection`.
+    /// Painted under the glyphs so the letters stay readable.
+    pub find_highlights: AtomicRefCell<Vec<RangeAny<Utf32CodeUnits>>>,
     /// Whether a caret should be painted when the selection is an empty range (start == end)
     pub paints_caret: AtomicBool,
     /// Whether a caret placeholder should be added for empty text runs or for empty

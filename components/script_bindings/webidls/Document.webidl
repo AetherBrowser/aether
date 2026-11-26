@@ -234,6 +234,8 @@ partial interface Document {
 partial interface Document {
   [Throws]
   ShadowRoot servoGetMediaControls(DOMString id);
+  // Aether find-in-page. Painted under the glyphs, the same way selection is.
+  undefined aetherSetFindHighlights(sequence<Range> ranges);
 };
 
 // https://html.spec.whatwg.org/multipage/#dom-document-nameditem-filter

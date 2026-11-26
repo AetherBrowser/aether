@@ -2,9 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use atomic_refcell::AtomicRefCell;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
+use servo_base::text::{RangeAny, Utf32CodeUnits};
 
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
@@ -25,13 +27,26 @@ use crate::dom::window::Window;
 #[dom_struct]
 pub(crate) struct Text {
     characterdata: CharacterData,
+    /// Find-in-page ranges, in UTF-32 offsets of this node's data.
+    /// Read again when layout rebuilds the text run.
+    #[no_trace]
+    find_highlights: AtomicRefCell<Vec<RangeAny<Utf32CodeUnits>>>,
 }
 
 impl Text {
     pub(crate) fn new_inherited(text: DOMString, document: &Document) -> Text {
         Text {
             characterdata: CharacterData::new_inherited(text, document),
+            find_highlights: AtomicRefCell::new(Vec::new()),
         }
+    }
+
+    pub(crate) fn set_find_highlights(&self, highlights: Vec<RangeAny<Utf32CodeUnits>>) {
+        *self.find_highlights.borrow_mut() = highlights;
+    }
+
+    pub(crate) fn find_highlights(&self) -> Vec<RangeAny<Utf32CodeUnits>> {
+        self.find_highlights.borrow().clone()
     }
 
     pub(crate) fn new(

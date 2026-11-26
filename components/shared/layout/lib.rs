@@ -100,6 +100,12 @@ pub trait GenericLayoutDataTrait: Any + MallocSizeOfTrait + Send + Sync + 'stati
         new_paints_caret: bool,
     ) -> bool;
 
+    /// Returns whether find-in-page ranges were set on an existing text run.
+    /// Ranges use the same offsets as [`Self::set_text_run_selection`].
+    fn set_text_run_find_highlights(&self, _highlights: &[RangeAny<Utf32CodeUnits>]) -> bool {
+        false
+    }
+
     /// Set whether or not this node is selected when it is an element. Returns `true`
     /// if anything changed that requires a new display list.
     fn set_element_selection(&self, selected: bool) -> bool;

@@ -87,6 +87,7 @@ impl<'dom> ModernContainerJob<'dom> {
                         flex_text_run.text,
                         &flex_text_run.info,
                         flex_text_run.info.node.text_node_selection(),
+                        flex_text_run.info.node.text_node_find_highlights(),
                     );
                 }
 

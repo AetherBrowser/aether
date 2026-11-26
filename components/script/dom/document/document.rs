@@ -70,6 +70,7 @@ use script_bindings::trace::CustomTraceable;
 use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
+use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::generic_channel::GenericSend;
 use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId, WebViewId};
 use servo_base::{Epoch, generic_channel};
@@ -112,6 +113,7 @@ use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFram
 use crate::dom::bindings::codegen::Bindings::IntersectionObserverBinding::IntersectionObserverMethods;
 #[cfg(any(feature = "webxr", feature = "gamepad"))]
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::Navigator_Binding::NavigatorMethods;
+use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::NodeFilterBinding::NodeFilter;
 use crate::dom::bindings::codegen::Bindings::PerformanceBinding::PerformanceMethods;
@@ -141,6 +143,7 @@ use crate::dom::bindings::trace::{HashMapTracedValues, NoTrace};
 use crate::dom::bindings::weakref::DOMTracker;
 use crate::dom::bindings::xmlname::matches_name_production;
 use crate::dom::cdatasection::CDATASection;
+use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::css::cssstylesheet::CSSStyleSheet;
@@ -621,6 +624,8 @@ pub(crate) struct Document {
     /// where `id` needs to match any of the registered ShadowRoots
     /// hosting the media controls UI.
     media_controls: DomRefCell<HashMap<String, Dom<ShadowRoot>>>,
+    /// Text nodes that currently carry find-in-page highlights, so the next search can clear them.
+    find_highlight_nodes: DomRefCell<Vec<Dom<Text>>>,
     /// A set of dirty HTML canvas elements that need their WebRender images updated the
     /// next time the rendering is updated.
     dirty_canvases: DomRefCell<Vec<Dom<HTMLCanvasElement>>>,
@@ -4456,6 +4461,7 @@ impl Document {
             shadow_roots: Default::default(),
             shadow_roots_styles_changed: Cell::new(false),
             media_controls: DomRefCell::new(HashMap::new()),
+            find_highlight_nodes: DomRefCell::new(Vec::new()),
             dirty_canvases: DomRefCell::new(Default::default()),
             has_pending_animated_image_update: Cell::new(false),
             selection: MutNullableDom::new(None),
@@ -5770,6 +5776,44 @@ impl Document {
             .networking_task_source()
             .queue_simple_event(window.upcast::<EventTarget>(), event_name);
         global_scope.set_network_online_state_on_dedicated_workers(online);
+    }
+}
+
+fn next_in_tree_order(node: &Node) -> Option<DomRoot<Node>> {
+    if let Some(child) = node.GetFirstChild() {
+        return Some(child);
+    }
+    let mut current = DomRoot::from_ref(node);
+    loop {
+        if let Some(sibling) = current.GetNextSibling() {
+            return Some(sibling);
+        }
+        current = current.GetParentNode()?;
+    }
+}
+
+fn push_find_slice(
+    grouped: &mut Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)>,
+    text: DomRoot<Text>,
+    start_utf16: u32,
+    end_utf16: u32,
+) {
+    if start_utf16 >= end_utf16 {
+        return;
+    }
+    let highlight = {
+        let data = text.upcast::<CharacterData>().data();
+        let start = Utf16CodeUnits(start_utf16).to_utf32_code_units_in(&data);
+        let end = Utf16CodeUnits(end_utf16).to_utf32_code_units_in(&data);
+        if start >= end {
+            return;
+        }
+        RangeAny::new(Some(start), Some(end))
+    };
+    if let Some((_, highlights)) = grouped.iter_mut().find(|(node, _)| *node == text) {
+        highlights.push(highlight);
+    } else {
+        grouped.push((text, vec![highlight]));
     }
 }
 
@@ -7517,6 +7561,72 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                 "No registered media controls exist with provided id".into(),
             ))),
         }
+    }
+
+    /// Replace the find-in-page highlights. Each range is painted under the glyphs of the text
+    /// it covers. An empty list clears them. Ranges may span several text nodes.
+    fn AetherSetFindHighlights(&self, ranges: Vec<DomRoot<Range>>) {
+        let previous = std::mem::take(&mut *self.find_highlight_nodes.borrow_mut());
+        for text in previous {
+            text.set_find_highlights(Vec::new());
+            let _ = text
+                .upcast::<CharacterData>()
+                .set_text_run_find_highlights(&[]);
+        }
+
+        let mut grouped: Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)> = Vec::new();
+        for range in ranges {
+            let start = range.start_container();
+            let end = range.end_container();
+            let Some(start_text) = start.downcast::<Text>() else {
+                continue;
+            };
+            if end.downcast::<Text>().is_none() {
+                continue;
+            }
+            if &*start == &*end {
+                push_find_slice(
+                    &mut grouped,
+                    DomRoot::from_ref(start_text),
+                    range.start_offset(),
+                    range.end_offset(),
+                );
+                continue;
+            }
+            let start_len = start_text.upcast::<CharacterData>().Length();
+            push_find_slice(
+                &mut grouped,
+                DomRoot::from_ref(start_text),
+                range.start_offset(),
+                start_len,
+            );
+            let mut node = next_in_tree_order(start_text.upcast::<Node>());
+            while let Some(current) = node {
+                let Some(text) = current.downcast::<Text>() else {
+                    node = next_in_tree_order(&current);
+                    continue;
+                };
+                if text.upcast::<Node>() == &*end {
+                    push_find_slice(&mut grouped, DomRoot::from_ref(text), 0, range.end_offset());
+                    break;
+                }
+                let len = text.upcast::<CharacterData>().Length();
+                let next = next_in_tree_order(text.upcast::<Node>());
+                push_find_slice(&mut grouped, DomRoot::from_ref(text), 0, len);
+                node = next;
+            }
+        }
+
+        let mut stored = Vec::new();
+        for (text, highlights) in grouped {
+            text.set_find_highlights(highlights.clone());
+            let _ = text
+                .upcast::<CharacterData>()
+                .set_text_run_find_highlights(&highlights);
+            stored.push(Dom::from_ref(&*text));
+        }
+        *self.find_highlight_nodes.borrow_mut() = stored;
+        self.window().layout().set_needs_new_display_list();
     }
 
     /// <https://w3c.github.io/selection-api/#dom-document-getselection>

@@ -120,6 +120,18 @@ impl CharacterData {
             })
     }
 
+    /// Returns whether find-in-page ranges were written onto an existing text run.
+    pub(crate) fn set_text_run_find_highlights(
+        &self,
+        highlights: &[RangeAny<Utf32CodeUnits>],
+    ) -> bool {
+        self.upcast::<Node>()
+            .layout_data()
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout_data| layout_data.set_text_run_find_highlights(highlights))
+    }
+
     /// Returns the rendered text for this [`CharacterData`].
     pub(crate) fn rendered_text(&self, range: RangeAny<Utf32CodeUnits>) -> Option<String> {
         self.upcast::<Node>()
