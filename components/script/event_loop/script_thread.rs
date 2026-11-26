@@ -2691,7 +2691,6 @@ impl ScriptThread {
             },
             WebDriverScriptCommand::GetElementAttribute(node_id, name, reply) => {
                 webdriver_handlers::handle_get_attribute(
-                    cx,
                     &documents,
                     pipeline_id,
                     node_id,
