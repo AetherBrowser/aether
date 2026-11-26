@@ -96,8 +96,10 @@ pub(crate) enum ToolbarIcon {
     Back,
     Bookmark,
     BookmarkHollow,
+    ChevronDown,
     ChevronLeft,
     ChevronRight,
+    ChevronUp,
     Close,
     Forward,
     Home,
@@ -113,8 +115,10 @@ impl ToolbarIcon {
             Self::Back => include_bytes!("../../../resources/icons/back.svg"),
             Self::Bookmark => include_bytes!("../../../resources/icons/bookmark.svg"),
             Self::BookmarkHollow => include_bytes!("../../../resources/icons/bookmark-hollow.svg"),
+            Self::ChevronDown => include_bytes!("../../../resources/icons/chevron-down.svg"),
             Self::ChevronLeft => include_bytes!("../../../resources/icons/chevron-left.svg"),
             Self::ChevronRight => include_bytes!("../../../resources/icons/chevron-right.svg"),
+            Self::ChevronUp => include_bytes!("../../../resources/icons/chevron-up.svg"),
             Self::Close => include_bytes!("../../../resources/icons/close.svg"),
             Self::Forward => include_bytes!("../../../resources/icons/forward.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
@@ -130,8 +134,10 @@ impl ToolbarIcon {
             Self::Back => "toolbar-back",
             Self::Bookmark => "toolbar-bookmark",
             Self::BookmarkHollow => "toolbar-bookmark-hollow",
+            Self::ChevronDown => "toolbar-chevron-down",
             Self::ChevronLeft => "toolbar-chevron-left",
             Self::ChevronRight => "toolbar-chevron-right",
+            Self::ChevronUp => "toolbar-chevron-up",
             Self::Close => "toolbar-close",
             Self::Forward => "toolbar-forward",
             Self::Home => "toolbar-home",
@@ -321,7 +327,12 @@ mod tests {
 
     #[test]
     fn chevron_svgs_rasterize() {
-        for icon in [ToolbarIcon::ChevronLeft, ToolbarIcon::ChevronRight] {
+        for icon in [
+            ToolbarIcon::ChevronLeft,
+            ToolbarIcon::ChevronRight,
+            ToolbarIcon::ChevronUp,
+            ToolbarIcon::ChevronDown,
+        ] {
             let image = rasterize_svg(icon.svg_bytes(), 32).expect("chevron should rasterize");
             assert_eq!(image.size, [32, 32]);
             assert!(
