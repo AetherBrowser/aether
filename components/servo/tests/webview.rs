@@ -567,6 +567,39 @@ fn test_webview_resize_interactivity() {
     assert_eq!(webview.cursor(), Cursor::Crosshair);
 }
 
+/// A resize lays out the visible `WebView` only, and a hidden one gets its new size when shown,
+/// so that a window with many tabs is not slowed down by the tabs in the background.
+#[test]
+fn test_hidden_webview_gets_its_new_size_when_shown() {
+    let servo_test = ServoTest::new();
+    let delegate = Rc::new(WebViewDelegateImpl::default());
+    let build = || {
+        WebViewBuilder::new(servo_test.servo(), servo_test.rendering_context.clone())
+            .delegate(delegate.clone())
+            .url(Url::parse("data:text/html,<!DOCTYPE html><body>hello</body>").unwrap())
+            .build()
+    };
+    let visible = build();
+    let hidden = build();
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &visible, &delegate);
+    show_webview_and_wait_for_rendering_to_be_ready(&servo_test, &hidden, &delegate);
+    hidden.hide();
+    let width_is = |webview: &WebView, width: f64| {
+        matches!(
+            evaluate_javascript(&servo_test, webview.clone(), "innerWidth"),
+            Ok(JSValue::Number(value)) if value == width
+        )
+    };
+
+    visible.resize(PhysicalSize::new(600, 600));
+    servo_test.spin(|| !width_is(&visible, 600.));
+    wait_for_webview_scene_to_be_up_to_date(&servo_test, &visible);
+    assert!(width_is(&hidden, 500.));
+
+    hidden.show();
+    servo_test.spin(|| !width_is(&hidden, 600.));
+}
+
 #[test]
 fn test_page_zoom() {
     let servo_test = ServoTest::new();

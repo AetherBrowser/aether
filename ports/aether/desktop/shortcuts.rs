@@ -38,6 +38,7 @@ pub(crate) enum BrowserAction {
     ExitDocumentFullscreen,
     History,
     Bookmarks,
+    ToggleBookmarksBar,
     Downloads,
     Settings,
     Processes,
@@ -100,6 +101,7 @@ const CMD_OR_CONTROL_SHIFT: Modifiers = CMD_OR_CONTROL.union(Modifiers::SHIFT);
 /// Shortcuts shared by all platforms. The first binding of an action is the one
 /// shown in the application menu.
 const SHORTCUTS: &[Shortcut] = &[
+    page_first(CMD_OR_CONTROL_SHIFT, Char('b'), ToggleBookmarksBar),
     reserved(CMD_OR_CONTROL, Char('t'), NewTab),
     reserved(CMD_OR_CONTROL, Char('w'), CloseTab),
     reserved(CMD_OR_CONTROL_SHIFT, Char('t'), ReopenClosedTab),

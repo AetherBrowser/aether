@@ -116,6 +116,8 @@ pub(crate) struct WebViewRenderer {
     hidpi_scale_factor: Scale<f32, DeviceIndependentPixel, DevicePixel>,
     /// Whether or not this [`WebViewRenderer`] is hidden.
     hidden: bool,
+    /// Whether the viewport changed while hidden, so that script gets it when this is shown.
+    viewport_changed_while_hidden: bool,
     /// Whether or not this [`WebViewRenderer`] isn't throttled and has a pipeline with
     /// active animations or animation frame callbacks.
     animating: bool,
@@ -164,6 +166,7 @@ impl WebViewRenderer {
             pinch_zoom: PinchZoom::new(rect),
             hidpi_scale_factor: Scale::new(hidpi_scale_factor.0),
             hidden: false,
+            viewport_changed_while_hidden: false,
             animating: false,
             viewport_description: Default::default(),
             screen_size: viewport_details.device_size,
@@ -206,6 +209,9 @@ impl WebViewRenderer {
             return false;
         }
 
+        if !new_value && std::mem::take(&mut self.viewport_changed_while_hidden) {
+            self.send_window_size_message();
+        }
         let _ = self.embedder_to_constellation_sender.send(
             EmbedderToConstellationMessage::SetWebViewHidden(self.id, new_value),
         );
@@ -1106,7 +1112,13 @@ impl WebViewRenderer {
             .push(ScrollZoomEvent::PinchZoom(magnification, center));
     }
 
-    fn send_window_size_message(&self) {
+    /// A hidden `WebView` gets its new viewport when it is shown, like a background tab, so that
+    /// resizing a window does not lay out all of its tabs.
+    fn send_window_size_message(&mut self) {
+        if self.hidden {
+            self.viewport_changed_while_hidden = true;
+            return;
+        }
         // The device pixel ratio used by the style system should include the scale from page pixels
         // to device pixels, but not including any pinch zoom.
         let device_pixel_ratio = self.device_pixels_per_page_pixel_not_including_pinch_zoom();

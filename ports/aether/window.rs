@@ -399,12 +399,15 @@ impl ServoShellWindow {
                 .url()
                 .is_some_and(|shown| shown.scheme() == url.scheme() && shown.path() == url.path())
         };
-        if let Some((id, _)) = self
+        if let Some((id, webview)) = self
             .webviews()
             .into_iter()
             .find(|(_, webview)| shows_url(webview))
         {
             self.activate_webview(id);
+            if url.fragment().is_some() {
+                webview.load(url);
+            }
         } else {
             self.queue_user_interface_command(UserInterfaceCommand::NewWebView(
                 TopLevelWebViewCreationRequest::WithUrl(url),

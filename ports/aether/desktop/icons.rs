@@ -99,7 +99,10 @@ pub(crate) enum ToolbarIcon {
     ChevronLeft,
     ChevronRight,
     Close,
+    DoubleArrowRight,
+    Folder,
     Forward,
+    Globe,
     Home,
     Menu,
     Plus,
@@ -116,7 +119,12 @@ impl ToolbarIcon {
             Self::ChevronLeft => include_bytes!("../../../resources/icons/chevron-left.svg"),
             Self::ChevronRight => include_bytes!("../../../resources/icons/chevron-right.svg"),
             Self::Close => include_bytes!("../../../resources/icons/close.svg"),
+            Self::DoubleArrowRight => {
+                include_bytes!("../../../resources/icons/double-arrow-right.svg")
+            },
+            Self::Folder => include_bytes!("../../../resources/icons/folder.svg"),
             Self::Forward => include_bytes!("../../../resources/icons/forward.svg"),
+            Self::Globe => include_bytes!("../../../resources/icons/globe.svg"),
             Self::Home => include_bytes!("../../../resources/icons/home.svg"),
             Self::Menu => include_bytes!("../../../resources/icons/menu.svg"),
             Self::Plus => include_bytes!("../../../resources/icons/plus.svg"),
@@ -133,7 +141,10 @@ impl ToolbarIcon {
             Self::ChevronLeft => "toolbar-chevron-left",
             Self::ChevronRight => "toolbar-chevron-right",
             Self::Close => "toolbar-close",
+            Self::DoubleArrowRight => "toolbar-double-arrow-right",
+            Self::Folder => "toolbar-folder",
             Self::Forward => "toolbar-forward",
+            Self::Globe => "toolbar-globe",
             Self::Home => "toolbar-home",
             Self::Menu => "toolbar-menu",
             Self::Plus => "toolbar-plus",
@@ -213,7 +224,7 @@ impl ToolbarIconCache {
         self.sized_image(ui, icon, TOOLBAR_ICON_SIZE)
     }
 
-    fn sized_image(
+    pub(crate) fn sized_image(
         &mut self,
         ui: &egui::Ui,
         icon: ToolbarIcon,
@@ -417,6 +428,21 @@ mod tests {
             image.pixels.iter().any(|pixel| pixel.a() > 0),
             "context-fill should be treated as an opaque white fill"
         );
+    }
+
+    #[test]
+    fn bookmarks_bar_svgs_rasterize() {
+        for icon in [
+            ToolbarIcon::DoubleArrowRight,
+            ToolbarIcon::Folder,
+            ToolbarIcon::Globe,
+        ] {
+            let image = rasterize_svg(icon.svg_bytes(), 32).expect("icon should rasterize");
+            assert!(
+                image.pixels.iter().any(|pixel| pixel.a() > 0),
+                "icon should not be fully transparent"
+            );
+        }
     }
 
     #[test]

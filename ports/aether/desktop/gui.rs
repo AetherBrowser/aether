@@ -24,8 +24,8 @@ use dpi::PhysicalSize;
 use egui::text::{CCursor, CCursorRange};
 use egui::text_edit::TextEditState;
 use egui::{
-    Button, FontDefinitions, Id, Key, Label, LayerId, Order, PaintCallback, Panel, WidgetInfo,
-    WidgetType,
+    Button, FontDefinitions, Id, Key, Label, LayerId, Order, PaintCallback, Panel, Popup,
+    WidgetInfo, WidgetType, pos2,
 };
 #[cfg(any(
     target_os = "windows",
@@ -54,6 +54,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::Window;
 
+use crate::desktop::bookmarks_bar::{BookmarksBar, BookmarksBarAction};
 use crate::desktop::event_loop::AppEvent;
 use crate::desktop::headed_window;
 use crate::desktop::icons::{
@@ -74,7 +75,8 @@ use crate::window::{
 const BOOKMARK_STAR_INSET: f32 = (NAVIGATION_CONTROL_SIZE - LOCATION_BUTTON_SIZE) / 2.0;
 
 /// Corner radius of the location bar, concentric with the hover square of the bookmark star.
-const LOCATION_CORNER_RADIUS: u8 = TOOLBAR_BUTTON_CORNER_RADIUS + BOOKMARK_STAR_INSET as u8;
+pub(crate) const LOCATION_CORNER_RADIUS: u8 =
+    TOOLBAR_BUTTON_CORNER_RADIUS + BOOKMARK_STAR_INSET as u8;
 
 /// Margin of the location bar text, which stops before the bookmark star.
 const LOCATION_TEXT_MARGIN: egui::Margin = egui::Margin {
@@ -142,6 +144,12 @@ pub struct Gui {
     /// Hamburger menu opened from the toolbar.
     app_menu: AppMenu,
 
+    /// The bookmarks bar below the location bar.
+    bookmarks_bar: BookmarksBar,
+
+    /// What the user asked from the bookmarks bar, done by the window after the update.
+    bookmarks_bar_action: Option<BookmarksBarAction>,
+
     /// Action chosen in the application menu, performed by the window after the update.
     app_menu_action: Option<BrowserAction>,
 
@@ -170,7 +178,7 @@ pub struct Gui {
     webview_widget_focused: bool,
 }
 
-fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
+pub(crate) fn truncate_with_ellipsis(input: &str, max_length: usize) -> String {
     if input.chars().count() > max_length {
         let truncated: String = input.chars().take(max_length.saturating_sub(1)).collect();
         format!("{}…", truncated)
@@ -372,6 +380,8 @@ impl Gui {
             toolbar_icons: Default::default(),
             app_menu: Default::default(),
             app_menu_action: None,
+            bookmarks_bar: Default::default(),
+            bookmarks_bar_action: None,
             devtools_open: false,
             devtools_rect: egui::Rect::NOTHING,
             sent_webview_accesskit_trees: Default::default(),
@@ -419,6 +429,10 @@ impl Gui {
         self.webview_widget_focused = focused;
     }
 
+    pub(crate) fn take_bookmarks_bar_action(&mut self) -> Option<BookmarksBarAction> {
+        self.bookmarks_bar_action.take()
+    }
+
     pub(crate) fn on_window_event(
         &mut self,
         winit_window: &Window,
@@ -441,22 +455,32 @@ impl Gui {
     ) -> bool {
         pointer_hits_browser_chrome(
             self.toolbar_height.get(),
-            self.app_menu.contains_pointer(position),
+            self.menu_contains_pointer(position),
             self.devtools_rect,
             position,
         )
     }
 
-    pub(crate) fn is_app_menu_open(&self) -> bool {
-        self.app_menu.is_open()
+    /// Whether the application menu or a menu of the bookmarks bar is open over the page.
+    pub(crate) fn is_menu_open(&self) -> bool {
+        self.app_menu.is_open() || Popup::is_any_open(&self.context.egui_ctx)
     }
 
-    /// Whether the pointer is over the open application menu, which overlays the page.
-    pub(crate) fn app_menu_contains_pointer(
+    /// Whether an item of the interface, such as a bookmark of the bar, is being dragged.
+    pub(crate) fn is_dragging(&self) -> bool {
+        self.context.egui_ctx.dragged_id().is_some() || self.bookmarks_bar.is_dragging()
+    }
+
+    /// Whether the pointer is over an open menu, which overlays the page.
+    pub(crate) fn menu_contains_pointer(
         &self,
         position: Point2D<f32, DeviceIndependentPixel>,
     ) -> bool {
-        self.app_menu.contains_pointer(position)
+        self.app_menu.contains_pointer(position) ||
+            self.context
+                .egui_ctx
+                .layer_id_at(pos2(position.x, position.y))
+                .is_some_and(|layer| layer.order == Order::Foreground)
     }
 
     /// Draws the bookmark star over the right end of the location bar.
@@ -643,6 +667,8 @@ impl Gui {
             toolbar_icons,
             app_menu,
             app_menu_action,
+            bookmarks_bar,
+            bookmarks_bar_action,
             ..
         } = self;
 
@@ -655,10 +681,17 @@ impl Gui {
             // Show toolbar unless fullscreen is from document (web API)
             if !headed_window.is_fullscreen_from_document() {
                 let mut menu_button = None;
+                let bar_visibility = state.bookmarks_bar().visibility();
+                let active_url = window.active_webview().and_then(|webview| webview.url());
+                let shows_bookmarks_bar = bar_visibility.shows_bar(active_url.as_ref());
+                let mut location_rect = egui::Rect::NOTHING;
                 let frame = egui::Frame::default()
                     .fill(ctx.style().visuals.window_fill)
                     .inner_margin(4.0);
-                Panel::top("toolbar").frame(frame).show_inside(ctx, |ui| {
+                let toolbar = Panel::top("toolbar")
+                    .frame(frame)
+                    .show_separator_line(!shows_bookmarks_bar);
+                toolbar.show_inside(ctx, |ui| {
                     ui.allocate_ui_with_layout(
                         ui.available_size(),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -809,6 +842,7 @@ impl Gui {
                                             .hint_text("Search or enter address"),
                                     );
 
+                                    location_rect = location_field.rect;
                                     if location_field.changed() {
                                         *location_dirty = true;
                                     }
@@ -896,6 +930,31 @@ impl Gui {
                     );
                 });
 
+                if shows_bookmarks_bar {
+                    let frame = egui::Frame::default()
+                        .fill(ctx.style().visuals.window_fill)
+                        .inner_margin(egui::Margin::symmetric(4, 2));
+                    let tree = state.bookmarks_bar().tree();
+                    Panel::top("bookmarks_bar")
+                        .frame(frame)
+                        .show_inside(ctx, |ui| {
+                            if let Some(action) = bookmarks_bar.show(
+                                ui,
+                                &tree,
+                                bar_visibility,
+                                location_rect,
+                                toolbar_icons,
+                            ) {
+                                if matches!(action, BookmarksBarAction::Open(_)) {
+                                    *location_dirty = false;
+                                }
+                                *bookmarks_bar_action = Some(action);
+                            }
+                        });
+                } else {
+                    bookmarks_bar.cancel_drag();
+                }
+
                 // A simple Tab header strip
                 let outer = Panel::top("tabs").show_inside(ctx, |ui| {
                     // Add scroll for overflowing tabs
@@ -958,6 +1017,7 @@ impl Gui {
                 }
             } else {
                 app_menu.close_ui(ctx);
+                bookmarks_bar.cancel_drag();
                 *toolbar_height = Length::default();
             }
 

@@ -5,23 +5,1055 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Bookmarks</title>
     <link rel="stylesheet" href="resource:///style/page.css" />
+    <link rel="stylesheet" href="resource:///style/button.css" />
     <link rel="stylesheet" href="resource:///style/menu.css" />
-    <link rel="stylesheet" href="resource:///style/link.css" />
+    <link rel="stylesheet" href="resource:///style/input.css" />
+    <link rel="stylesheet" href="resource:///style/enum_list.css" />
+    <link rel="stylesheet" href="resource:///style/card.css" />
+    <style>
+      h1 {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 12px 20px;
+        font-size: 1.4rem;
+      }
+
+      h1 .icon {
+        width: 22px;
+        height: 22px;
+      }
+
+      .folder {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        box-sizing: border-box;
+        width: 100%;
+        margin: 2px 0;
+        padding: 8px 12px;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .folder:hover {
+        background: var(--bg);
+      }
+
+      .folder[aria-current="page"] {
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+
+      .folder span {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .content {
+        max-width: 52rem;
+        margin: 0 auto;
+      }
+
+      #search {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        margin-bottom: 24px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        background: var(--surface);
+      }
+
+      #settings {
+        margin-bottom: 24px;
+      }
+
+      #settings label {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .list-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      #path {
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        color: var(--muted);
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      #message {
+        margin: 0 0 8px;
+        color: var(--muted);
+      }
+
+      #message:empty {
+        display: none;
+      }
+
+      #message.error,
+      #edit-error {
+        color: var(--error);
+      }
+
+      #items {
+        list-style: none;
+        margin: 0;
+        padding: 4px;
+      }
+
+      #items:empty {
+        display: none;
+      }
+
+      .item {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 3fr) minmax(0, 2fr) 32px;
+        align-items: center;
+        column-gap: 12px;
+        min-height: 40px;
+        padding: 0 4px 0 12px;
+        border-radius: 6px;
+        touch-action: pan-y;
+        user-select: none;
+      }
+
+      .item:hover,
+      .item.held {
+        background: var(--bg);
+      }
+
+      .item.dragging {
+        opacity: 0.4;
+      }
+
+      .item.drop-before {
+        box-shadow: inset 0 2px 0 var(--accent);
+      }
+
+      .item.drop-after {
+        box-shadow: inset 0 -2px 0 var(--accent);
+      }
+
+      .item.drop-into,
+      .folder.drop-into {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+
+      .icon {
+        width: 16px;
+        height: 16px;
+      }
+
+      .name {
+        padding: 10px 0;
+        overflow: hidden;
+        border: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        text-decoration: none;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        cursor: pointer;
+      }
+
+      .detail {
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 0.9rem;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+
+      .more {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        border-radius: 4px;
+        background: none;
+        cursor: pointer;
+      }
+
+      .more:hover {
+        background: var(--border);
+      }
+
+      #empty {
+        color: var(--muted);
+        margin: 24px 0;
+        text-align: center;
+      }
+
+      .menu {
+        position: absolute;
+        display: flex;
+        flex-direction: column;
+        min-width: 12rem;
+        padding: 4px 0;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgb(0 0 0 / 25%);
+      }
+
+      .menu[hidden],
+      #drag-label[hidden] {
+        display: none;
+      }
+
+      .menu button {
+        padding: 8px 16px;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .menu button:hover {
+        background: var(--bg);
+      }
+
+      #drag-label {
+        position: fixed;
+        max-width: 16rem;
+        padding: 4px 8px;
+        overflow: hidden;
+        background: var(--accent);
+        border-radius: 4px;
+        color: var(--on-accent);
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        pointer-events: none;
+      }
+
+      #backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgb(0 0 0 / 40%);
+      }
+
+      dialog {
+        background: var(--surface);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 20px;
+        width: 28rem;
+        max-width: calc(100% - 32px);
+        box-sizing: border-box;
+      }
+
+      dialog label {
+        display: block;
+        margin-bottom: 12px;
+      }
+
+      dialog label[hidden] {
+        display: none;
+      }
+
+      dialog input,
+      dialog select {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 4px;
+      }
+
+      dialog p {
+        margin: 0 0 12px;
+      }
+
+      #edit-error:empty {
+        display: none;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      @media (max-width: 40rem) {
+        .layout {
+          height: auto;
+        }
+
+        nav {
+          max-height: 14rem;
+        }
+
+        .item {
+          grid-template-columns: 16px minmax(0, 1fr) 32px;
+        }
+
+        .detail {
+          display: none;
+        }
+      }
+    </style>
   </head>
   <body>
     <div class="layout">
-      <nav aria-label="Bookmarks">
+      <nav aria-label="Bookmark folders">
         <a class="logo" href="about:newtab" aria-label="Home">
           <img class="light" src="resource:///aether-color-positive-no-container.svg" alt="" draggable="false" />
           <img class="dark" src="resource:///aether-color-negative-no-container.svg" alt="" draggable="false" />
         </a>
-        <a href="#bookmarks" aria-current="page">Bookmarks</a>
+        <h1 id="title">Bookmarks</h1>
+        <div id="folders"></div>
       </nav>
       <main>
-        <section id="bookmarks">
-          <h2>Bookmarks</h2>
-        </section>
+        <div class="content">
+          <input id="search" type="search" placeholder="Search bookmarks" aria-label="Search bookmarks" />
+          <div id="settings" class="card" hidden>
+            <h2>Settings</h2>
+            <label for="bar-visibility">Bookmarks bar</label>
+            <select id="bar-visibility">
+              <option value="always">Always show</option>
+              <option value="newtab">Only show on new tab</option>
+              <option value="never">Never show</option>
+            </select>
+          </div>
+          <div class="list-header">
+            <p id="path"></p>
+            <button type="button" class="secondary" id="new-folder">New folder</button>
+          </div>
+          <p id="message" role="status"></p>
+          <ul id="items" class="card"></ul>
+          <p id="empty" hidden></p>
+        </div>
       </main>
     </div>
+
+    <div id="menu" class="menu" role="menu" hidden></div>
+    <div id="drag-label" hidden></div>
+    <div id="backdrop" hidden></div>
+
+    <dialog id="edit-dialog" aria-labelledby="edit-title">
+      <h2 id="edit-title"></h2>
+      <label>Name<input id="edit-name" /></label>
+      <label id="edit-address-field">Address<input id="edit-address" /></label>
+      <p id="edit-error" role="alert"></p>
+      <div class="actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="button" id="edit-save" class="primary">Save</button>
+      </div>
+    </dialog>
+
+    <dialog id="move-dialog" aria-labelledby="move-title">
+      <h2 id="move-title"></h2>
+      <label>Folder<select id="move-folder"></select></label>
+      <div class="actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="button" id="move-save" class="primary">Move</button>
+      </div>
+    </dialog>
+
+    <dialog id="delete-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title"></h2>
+      <p id="delete-hint"></p>
+      <div class="actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="button" id="delete-confirm" class="primary">Delete</button>
+      </div>
+    </dialog>
+
+    <script>
+      const ROOT = null;
+      const ROOT_NAME = "Bookmarks bar";
+      const ICON_COLOR = "#7a8691";
+      // How far, in pixels, a mouse press moves before it drags its row.
+      const DRAG_DISTANCE = 5;
+      // How long, in milliseconds, a touch is held before its row can be dragged.
+      const LONG_PRESS = 500;
+      // The icons of `resources/icons`, drawn as images, which ignore CSS colors.
+      const ICONS = {
+        bookmark: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+          <path fill="#ffffff" d="M3.475 9.824.615 7.449A1.207 1.207 0 0 1 .237 6.14a1.205 1.205 0 0 1 1.074-.835l3.697-.239.501-.375 1.364-3.427C7.059.8 7.501.5 8 .5s.941.3 1.127.763l0 .001 1.364 3.427.501.375 3.697.239c.498.032.92.36 1.074.835.155.476.006.99-.378 1.309L12.53 9.82l-.18.592.91 3.575c.123.485-.059.986-.463 1.279a1.213 1.213 0 0 1-1.36.045L8.31 13.334l-.621 0-3.126 1.977c-.426.266-.96.247-1.361-.045a1.205 1.205 0 0 1-.463-1.279l.908-3.566-.172-.597z"/>
+        </svg>`,
+        folder: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+          <path d="M3 8.2C3 7.07989 3 6.51984 3.21799 6.09202C3.40973 5.71569 3.71569 5.40973 4.09202 5.21799C4.51984 5 5.0799 5 6.2 5H9.67452C10.1637 5 10.4083 5 10.6385 5.05526C10.8425 5.10425 11.0376 5.18506 11.2166 5.29472C11.4184 5.4184 11.5914 5.59135 11.9373 5.93726L12.0627 6.06274C12.4086 6.40865 12.5816 6.5816 12.7834 6.70528C12.9624 6.81494 13.1575 6.89575 13.3615 6.94474C13.5917 7 13.8363 7 14.3255 7H17.8C18.9201 7 19.4802 7 19.908 7.21799C20.2843 7.40973 20.5903 7.71569 20.782 8.09202C21 8.51984 21 9.0799 21 10.2V15.8C21 16.9201 21 17.4802 20.782 17.908C20.5903 18.2843 20.2843 18.5903 19.908 18.782C19.4802 19 18.9201 19 17.8 19H6.2C5.07989 19 4.51984 19 4.09202 18.782C3.71569 18.5903 3.40973 18.2843 3.21799 17.908C3 17.4802 3 16.9201 3 15.8V8.2Z" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>`,
+        globe: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+          <path d="M3 12H21M3 12C3 16.9706 7.02944 21 12 21M3 12C3 7.02944 7.02944 3 12 3M21 12C21 16.9706 16.9706 21 12 21M21 12C21 7.02944 16.9706 3 12 3M12 21C4.75561 13.08 8.98151 5.7 12 3M12 21C19.2444 13.08 15.0185 5.7 12 3" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>`,
+        more: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
+          <path d="M8 12C9.10457 12 10 12.8954 10 14C10 15.1046 9.10457 16 8 16C6.89543 16 6 15.1046 6 14C6 12.8954 6.89543 12 8 12Z" fill="#ffffff"/>
+          <path d="M8 6C9.10457 6 10 6.89543 10 8C10 9.10457 9.10457 10 8 10C6.89543 10 6 9.10457 6 8C6 6.89543 6.89543 6 8 6Z" fill="#ffffff"/>
+          <path d="M10 2C10 0.89543 9.10457 -4.82823e-08 8 0C6.89543 4.82823e-08 6 0.895431 6 2C6 3.10457 6.89543 4 8 4C9.10457 4 10 3.10457 10 2Z" fill="#ffffff"/>
+        </svg>`,
+      };
+
+      const byId = (id) => document.getElementById(id);
+      const folders = byId("folders");
+      const search = byId("search");
+      const message = byId("message");
+      const path = byId("path");
+      const items = byId("items");
+      const empty = byId("empty");
+      const menu = byId("menu");
+      const dragLabel = byId("drag-label");
+      const backdrop = byId("backdrop");
+      const editDialog = byId("edit-dialog");
+      const editName = byId("edit-name");
+      const editAddress = byId("edit-address");
+      const editError = byId("edit-error");
+      const moveDialog = byId("move-dialog");
+      const moveFolder = byId("move-folder");
+      const deleteDialog = byId("delete-dialog");
+      const settings = byId("settings");
+      const barVisibility = byId("bar-visibility");
+
+      let tree = [];
+      let canOpenTabs = false;
+      // The last answer shown, to render again only when the bookmarks changed.
+      let shownAnswer = "";
+      let currentFolder = ROOT;
+      // A press on a row, which becomes a drag once it moves.
+      let press = null;
+      // Whether the click that ends a drag or a held touch must not open its row.
+      let ignoreClick = false;
+      let saveEdit = null;
+      let confirmMove = null;
+      let confirmDelete = null;
+
+      function* walk(nodes) {
+        for (const node of nodes) {
+          yield node;
+          yield* walk(node.children);
+        }
+      }
+
+      const isFolder = (node) => node.url === null;
+      const nameOf = (node) => node.title || node.url;
+      const findNode = (id) => [...walk(tree)].find((node) => node.id === id) ?? null;
+      const childrenOf = (id) => (id === ROOT ? tree : (findNode(id)?.children ?? null));
+      const parentOf = (node) =>
+        [...walk(tree)].find((folder) => folder.children.includes(node))?.id ?? ROOT;
+
+      function pathTo(id) {
+        const folders = [];
+        for (let node = findNode(id); node; node = findNode(parentOf(node))) {
+          folders.unshift(node);
+        }
+        return folders;
+      }
+
+      function hostOf(url) {
+        try {
+          return new URL(url).host || url;
+        } catch (error) {
+          return url;
+        }
+      }
+
+      const countLabel = (count) => (count === 1 ? "1 item" : `${count} items`);
+
+      function showMessage(text, isError) {
+        message.textContent = text ?? "";
+        message.classList.toggle("error", Boolean(isError));
+      }
+
+      // Returns the error of the request, if any, and shows the tree it answers with.
+      async function request(parameters) {
+        const query = parameters ? `?${new URLSearchParams(parameters)}` : "";
+        try {
+          const response = await fetch(`about:bookmarks-data${query}`);
+          const answer = await response.text();
+          const data = JSON.parse(answer);
+          if (data.error) {
+            return data.error;
+          }
+          if (answer !== shownAnswer) {
+            shownAnswer = answer;
+            tree = data.tree;
+            canOpenTabs = data.canOpenTabs;
+            render();
+          }
+          return null;
+        } catch (error) {
+          return "Could not reach the bookmarks.";
+        }
+      }
+
+      async function change(parameters) {
+        const error = await request(parameters);
+        showMessage(error, Boolean(error));
+      }
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) {
+          node.className = className;
+        }
+        if (text !== undefined) {
+          node.textContent = text;
+        }
+        return node;
+      }
+
+      const iconUrls = new Map();
+
+      // An image of an icon, whose URL stays the same so that a new render reuses the decoded image.
+      function svgIcon(name, color = ICON_COLOR) {
+        const key = `${name} ${color}`;
+        if (!iconUrls.has(key)) {
+          const svg = ICONS[name].replaceAll("#ffffff", color);
+          iconUrls.set(key, `data:image/svg+xml,${encodeURIComponent(svg)}`);
+        }
+        const image = element("img", "icon");
+        image.src = iconUrls.get(key);
+        image.alt = "";
+        return image;
+      }
+
+      function nodeIcon(node) {
+        if (!node.icon) {
+          return svgIcon(isFolder(node) ? "folder" : "globe");
+        }
+        const image = element("img", "icon");
+        image.src = node.icon;
+        image.alt = "";
+        return image;
+      }
+
+      function folderButton(id, name, depth) {
+        const button = element("button", "folder");
+        button.type = "button";
+        button.dataset.folder = id === ROOT ? "" : id;
+        button.style.paddingLeft = `${12 + depth * 16}px`;
+        const current = id === currentFolder && !search.value;
+        button.append(svgIcon("folder", current ? onAccent : ICON_COLOR), element("span", "", name));
+        if (current) {
+          button.setAttribute("aria-current", "page");
+        }
+        button.addEventListener("click", () => {
+          search.value = "";
+          currentFolder = id;
+          render();
+        });
+        return button;
+      }
+
+      function renderFolders() {
+        const buttons = [folderButton(ROOT, ROOT_NAME, 0)];
+        const add = (nodes, depth) => {
+          for (const node of nodes.filter(isFolder)) {
+            buttons.push(folderButton(node.id, node.title, depth));
+            add(node.children, depth + 1);
+          }
+        };
+        add(tree, 1);
+        folders.replaceChildren(...buttons);
+      }
+
+      function itemRow(node, canDrag) {
+        const row = element("li", "item");
+        row.dataset.id = node.id;
+        row.append(nodeIcon(node));
+        if (isFolder(node)) {
+          const open = element("button", "name", node.title);
+          open.type = "button";
+          open.addEventListener("click", () => {
+            search.value = "";
+            currentFolder = node.id;
+            render();
+          });
+          row.append(open, element("span", "detail", countLabel(node.children.length)));
+        } else {
+          const link = element("a", "name", nameOf(node));
+          link.href = node.url;
+          link.title = node.url;
+          row.append(link, element("span", "detail", hostOf(node.url)));
+        }
+        const more = element("button", "more");
+        more.type = "button";
+        more.append(svgIcon("more"));
+        more.setAttribute("aria-label", `Actions for ${nameOf(node)}`);
+        more.setAttribute("aria-haspopup", "true");
+        more.addEventListener("click", (event) => {
+          event.stopPropagation();
+          openMenu(itemActions(node), more.getBoundingClientRect(), "right");
+        });
+        row.append(more);
+        row.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          if (!press?.touch) {
+            openMenu(itemActions(node), pointRect(event), "left");
+          }
+        });
+        if (canDrag) {
+          row.addEventListener("pointerdown", (event) => startPress(event, node, row));
+          row.addEventListener("pointermove", movePress);
+          row.addEventListener("pointerup", endPress);
+          row.addEventListener("pointercancel", cancelPress);
+          // Once a touch is held, its moves drag the row instead of scrolling the list.
+          row.addEventListener(
+            "touchmove",
+            (event) => {
+              if (press?.held) {
+                event.preventDefault();
+              }
+            },
+            { passive: false },
+          );
+        }
+        return row;
+      }
+
+      function render() {
+        if (currentFolder !== ROOT && !findNode(currentFolder)) {
+          currentFolder = ROOT;
+        }
+        renderFolders();
+        const query = search.value.trim().toLowerCase();
+        const nodes = query
+          ? [...walk(tree)].filter(
+              (node) =>
+                !isFolder(node) &&
+                `${node.title ?? ""} ${node.url}`.toLowerCase().includes(query),
+            )
+          : childrenOf(currentFolder);
+        path.textContent = query
+          ? `${countLabel(nodes.length)} found`
+          : [ROOT_NAME, ...pathTo(currentFolder).map(nameOf)].join(" / ");
+        items.replaceChildren(...nodes.map((node) => itemRow(node, !query)));
+        empty.hidden = nodes.length > 0;
+        if (query) {
+          empty.textContent = "No bookmarks found.";
+        } else if (currentFolder === ROOT) {
+          empty.textContent = "Your bookmarks will appear here. Select the star in the address bar to add one.";
+        } else {
+          empty.textContent = "This folder is empty.";
+        }
+      }
+
+      function closeMenu() {
+        menu.hidden = true;
+      }
+
+      const pointRect = (event) => new DOMRect(event.clientX, event.clientY, 0, 0);
+
+      // Opens the menu below `anchor`, or above it when there is no room, with its `side` edge on the anchor's.
+      function openMenu(actions, anchor, side) {
+        menu.replaceChildren(
+          ...actions.map(([label, action]) => {
+            const button = element("button", "", label);
+            button.type = "button";
+            button.setAttribute("role", "menuitem");
+            button.addEventListener("click", action);
+            return button;
+          }),
+        );
+        menu.hidden = false;
+        const left = side === "right" ? anchor.right - menu.offsetWidth : anchor.left;
+        const below = anchor.bottom + 4;
+        const top =
+          below + menu.offsetHeight > window.innerHeight
+            ? Math.max(4, anchor.top - menu.offsetHeight - 4)
+            : below;
+        const maxLeft = window.innerWidth - menu.offsetWidth - 4;
+        menu.style.top = `${window.scrollY + top}px`;
+        menu.style.left = `${window.scrollX + Math.max(4, Math.min(left, maxLeft))}px`;
+      }
+
+      function siblingMove(node, offset) {
+        const parent = parentOf(node);
+        const index = childrenOf(parent).indexOf(node);
+        return change({ action: "move", id: node.id, parent: parent ?? "", index: index + offset });
+      }
+
+      function itemActions(node) {
+        const siblings = childrenOf(parentOf(node));
+        const index = siblings.indexOf(node);
+        const actions = [];
+        if (isFolder(node)) {
+          actions.push([
+            "Open",
+            () => {
+              currentFolder = node.id;
+              search.value = "";
+              render();
+            },
+          ]);
+          actions.push(["Rename…", () => showEditDialog(node)]);
+        } else {
+          actions.push(["Open", () => (location.href = node.url)]);
+          if (canOpenTabs) {
+            actions.push(["Open in new tab", () => window.open(node.url, "_blank")]);
+          }
+          actions.push(["Edit…", () => showEditDialog(node)]);
+        }
+        actions.push(["Move to…", () => showMoveDialog(node)]);
+        if (index > 0) {
+          actions.push(["Move up", () => siblingMove(node, -1)]);
+        }
+        if (index < siblings.length - 1) {
+          actions.push(["Move down", () => siblingMove(node, 1)]);
+        }
+        actions.push([isFolder(node) ? "Delete…" : "Delete", () => showDeleteDialog(node)]);
+        return actions;
+      }
+
+      function openDialog(dialog) {
+        closeMenu();
+        backdrop.hidden = false;
+        dialog.showModal();
+      }
+
+      function showEditDialog(node) {
+        byId("edit-title").textContent = isFolder(node) ? "Rename folder" : "Edit bookmark";
+        editName.value = node.title ?? "";
+        editAddress.value = node.url ?? "";
+        byId("edit-address-field").hidden = isFolder(node);
+        editError.textContent = "";
+        saveEdit = () => {
+          const parameters = { action: "update", id: node.id, title: editName.value };
+          return request(isFolder(node) ? parameters : { ...parameters, url: editAddress.value });
+        };
+        openDialog(editDialog);
+        editName.focus();
+      }
+
+      function showNewFolderDialog() {
+        byId("edit-title").textContent = "New folder";
+        editName.value = "";
+        byId("edit-address-field").hidden = true;
+        editError.textContent = "";
+        saveEdit = () =>
+          request({
+            action: "create-folder",
+            parent: currentFolder ?? "",
+            title: editName.value,
+          });
+        openDialog(editDialog);
+        editName.focus();
+      }
+
+      async function submitEdit() {
+        const error = await saveEdit();
+        if (error) {
+          editError.textContent = error;
+        } else {
+          editDialog.close();
+          showMessage("");
+        }
+      }
+
+      function showMoveDialog(node) {
+        byId("move-title").textContent = `Move “${nameOf(node)}”`;
+        const blocked = new Set(isFolder(node) ? [...walk([node])] : []);
+        const options = [element("option", "", ROOT_NAME)];
+        options[0].value = "";
+        const add = (nodes, depth) => {
+          for (const folder of nodes.filter(isFolder)) {
+            if (!blocked.has(folder)) {
+              const option = element("option", "", `${"  ".repeat(depth)}${folder.title}`);
+              option.value = folder.id;
+              options.push(option);
+              add(folder.children, depth + 1);
+            }
+          }
+        };
+        add(tree, 1);
+        moveFolder.replaceChildren(...options);
+        const parent = parentOf(node);
+        moveFolder.value = parent === ROOT ? "" : String(parent);
+        confirmMove = () => {
+          moveDialog.close();
+          change({ action: "move", id: node.id, parent: moveFolder.value });
+        };
+        openDialog(moveDialog);
+      }
+
+      function showDeleteDialog(node) {
+        if (!isFolder(node)) {
+          closeMenu();
+          change({ action: "delete", id: node.id });
+          return;
+        }
+        byId("delete-title").textContent = `Delete “${node.title}”?`;
+        const count = [...walk(node.children)].length;
+        byId("delete-hint").textContent = count
+          ? `This folder and its ${countLabel(count)} will be deleted.`
+          : "This folder will be deleted.";
+        confirmDelete = () => {
+          deleteDialog.close();
+          change({ action: "delete", id: node.id });
+        };
+        openDialog(deleteDialog);
+      }
+
+      function clearDropMarks() {
+        for (const marked of document.querySelectorAll(".drop-before, .drop-after, .drop-into")) {
+          marked.classList.remove("drop-before", "drop-after", "drop-into");
+        }
+      }
+
+      function moveDragLabel(event) {
+        dragLabel.style.left = `${event.clientX + 12}px`;
+        dragLabel.style.top = `${event.clientY + 12}px`;
+      }
+
+      // A mouse press drags its row as soon as it moves, a touch only once it is held.
+      function startPress(event, node, row) {
+        if (event.button !== 0 || event.target.closest(".more")) {
+          return;
+        }
+        const touch = event.pointerType === "touch";
+        const started = { node, row, touch, held: !touch, dragging: false, target: null };
+        Object.assign(started, { pointerId: event.pointerId, x: event.clientX, y: event.clientY });
+        if (touch) {
+          started.timer = setTimeout(() => {
+            started.held = true;
+            row.classList.add("held");
+          }, LONG_PRESS);
+        }
+        press = started;
+      }
+
+      function movePress(event) {
+        if (!press || event.pointerId !== press.pointerId) {
+          return;
+        }
+        if (!press.dragging) {
+          if (Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG_DISTANCE) {
+            return;
+          }
+          if (!press.held) {
+            // A touch that moves before being held scrolls the list.
+            cancelPress();
+            return;
+          }
+          startDrag(event);
+        }
+        moveDragLabel(event);
+        clearDropMarks();
+        press.target = dropTarget(event);
+        press.target?.element.classList.add(press.target.mark);
+      }
+
+      function startDrag(event) {
+        closeMenu();
+        press.row.setPointerCapture(event.pointerId);
+        press.dragging = true;
+        press.row.classList.add("dragging");
+        dragLabel.textContent = nameOf(press.node);
+        dragLabel.hidden = false;
+      }
+
+      // A drag drops its row, and a held touch released without moving opens the row's menu.
+      function endPress(event) {
+        if (!press || event.pointerId !== press.pointerId) {
+          return;
+        }
+        const { node, dragging, touch, held, target } = press;
+        cancelPress();
+        if (dragging || (touch && held)) {
+          ignoreClick = true;
+          setTimeout(() => (ignoreClick = false));
+        }
+        if (dragging) {
+          if (target) {
+            const parameters = { action: "move", id: node.id, parent: target.parent ?? "" };
+            change(target.index === undefined ? parameters : { ...parameters, index: target.index });
+          }
+        } else if (touch && held) {
+          openMenu(itemActions(node), pointRect(event), "left");
+        }
+      }
+
+      function cancelPress() {
+        if (!press) {
+          return;
+        }
+        clearTimeout(press.timer);
+        press.row.classList.remove("dragging", "held");
+        dragLabel.hidden = true;
+        clearDropMarks();
+        press = null;
+      }
+
+      // A folder cannot be dropped on itself or on one of its subfolders.
+      function canDropInto(id) {
+        return !(id !== ROOT && [...walk([press.node])].some((node) => node.id === id));
+      }
+
+      function dropTarget(event) {
+        const under = document.elementFromPoint(event.clientX, event.clientY);
+        const folder = under?.closest(".folder");
+        if (folder) {
+          const id = folder.dataset.folder === "" ? ROOT : Number(folder.dataset.folder);
+          return canDropInto(id) ? { element: folder, parent: id, mark: "drop-into" } : null;
+        }
+        const row = under?.closest(".item");
+        if (!row || row === press.row) {
+          return null;
+        }
+        const node = findNode(Number(row.dataset.id));
+        const rect = row.getBoundingClientRect();
+        const ratio = (event.clientY - rect.top) / rect.height;
+        if (isFolder(node) && ratio > 0.25 && ratio < 0.75) {
+          return canDropInto(node.id)
+            ? { element: row, parent: node.id, mark: "drop-into" }
+            : null;
+        }
+        const after = ratio >= 0.5;
+        const others = childrenOf(currentFolder).filter((item) => item !== press.node);
+        return {
+          element: row,
+          parent: currentFolder,
+          index: others.indexOf(node) + (after ? 1 : 0),
+          mark: after ? "drop-after" : "drop-before",
+        };
+      }
+
+      // Only the desktop browser has a bookmarks bar, and answers this request.
+      async function requestBar(parameters) {
+        const query = parameters ? `?${new URLSearchParams(parameters)}` : "";
+        try {
+          const response = await fetch(`about:bookmarks-bar${query}`);
+          const data = await response.json();
+          if (data.visibility) {
+            barVisibility.value = data.visibility;
+            settings.hidden = false;
+          }
+        } catch (error) {}
+      }
+
+      const style = getComputedStyle(document.documentElement);
+      const accent = style.getPropertyValue("--accent").trim();
+      const onAccent = style.getPropertyValue("--on-accent").trim() || "#ffffff";
+      byId("title").prepend(svgIcon("bookmark", accent || ICON_COLOR));
+      barVisibility.addEventListener("change", () => requestBar({ visibility: barVisibility.value }));
+      byId("new-folder").addEventListener("click", showNewFolderDialog);
+      byId("edit-save").addEventListener("click", submitEdit);
+      byId("move-save").addEventListener("click", () => confirmMove());
+      byId("delete-confirm").addEventListener("click", () => confirmDelete());
+      search.addEventListener("input", render);
+      document.addEventListener("click", closeMenu);
+      document.addEventListener("contextmenu", (event) => {
+        if (!event.defaultPrevented) {
+          closeMenu();
+        }
+      });
+      document.addEventListener(
+        "click",
+        (event) => {
+          if (ignoreClick) {
+            ignoreClick = false;
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        },
+        true,
+      );
+
+      for (const input of [editName, editAddress]) {
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submitEdit();
+          }
+        });
+      }
+
+      for (const dialog of [editDialog, moveDialog, deleteDialog]) {
+        dialog.addEventListener("close", () => {
+          backdrop.hidden = true;
+        });
+        dialog.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            dialog.close();
+          }
+        });
+        for (const button of dialog.querySelectorAll("[data-close]")) {
+          button.addEventListener("click", () => dialog.close());
+        }
+      }
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          closeMenu();
+          cancelPress();
+        }
+      });
+
+      function isBusy() {
+        return press || !menu.hidden || !backdrop.hidden;
+      }
+
+      // Shows the changes made from the star, the bookmarks bar or the settings since the last request.
+      function refresh() {
+        requestBar();
+        if (!isBusy()) {
+          request().then((error) => showMessage(error, Boolean(error)));
+        }
+      }
+
+      window.addEventListener("focus", refresh);
+      document.addEventListener("visibilitychange", refresh);
+
+      // Opens what the bookmarks bar asks for. Web pages can link here too, so a link only opens a
+      // dialog and never changes the bookmarks by itself.
+      function followHash() {
+        const [name, value] = location.hash.slice(1).split("=");
+        const node = findNode(Number(value));
+        if (name === "new-folder") {
+          search.value = "";
+          currentFolder = ROOT;
+          render();
+          showNewFolderDialog();
+        } else if (name === "edit" && node) {
+          showEditDialog(node);
+        } else if (name === "delete" && node && isFolder(node)) {
+          showDeleteDialog(node);
+        } else if (name === "folder" && node && isFolder(node)) {
+          search.value = "";
+          currentFolder = node.id;
+          render();
+        } else {
+          return;
+        }
+        history.replaceState(null, "", location.href.split("#")[0]);
+      }
+
+      window.addEventListener("hashchange", followHash);
+
+      requestBar();
+      request().then((error) => {
+        showMessage(error, Boolean(error));
+        followHash();
+      });
+    </script>
   </body>
 </html>

@@ -40,7 +40,9 @@ use servo::{
 };
 use url::Url;
 
-use crate::bookmarks::{Bookmarks, can_bookmark};
+use crate::bookmarks::{Bookmarks, can_bookmark, icon_png};
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
+use crate::desktop::bookmarks_bar::{BarVisibility, BookmarksBarState};
 #[cfg(all(
     feature = "gamepad",
     not(any(target_os = "android", target_env = "ohos"))
@@ -251,6 +253,10 @@ pub(crate) struct RunningAppState {
     /// The bookmarks of the profile, once the places database has sent them.
     bookmarks: RefCell<Option<Bookmarks>>,
 
+    /// The bookmarks bar shared by the windows.
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    bookmarks_bar: BookmarksBarState,
+
     /// Whether or not program exit has been triggered. This means that all windows
     /// will be destroyed and shutdown will start at the end of the current event loop.
     exit_scheduled: Cell<bool>,
@@ -278,6 +284,13 @@ pub(crate) struct RunningAppState {
 }
 
 impl RunningAppState {
+    #[cfg_attr(
+        all(
+            feature = "gamepad",
+            not(any(target_os = "android", target_env = "ohos"))
+        ),
+        expect(clippy::too_many_arguments)
+    )]
     pub(crate) fn new(
         servo: Servo,
         servoshell_preferences: ServoShellPreferences,
@@ -285,6 +298,8 @@ impl RunningAppState {
         user_content_manager: Rc<UserContentManager>,
         default_preferences: Preferences,
         places: PlacesService,
+        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+        bookmarks_bar: BookmarksBarState,
         #[cfg(all(
             feature = "gamepad",
             not(any(target_os = "android", target_env = "ohos"))
@@ -326,6 +341,8 @@ impl RunningAppState {
             user_content_manager,
             places,
             bookmarks: Default::default(),
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            bookmarks_bar,
             experimental_preferences_enabled,
             accessibility_active: Cell::new(false),
         }
@@ -484,12 +501,61 @@ impl RunningAppState {
         };
         let (added, revision) = bookmarks.toggle(&url);
         if added {
-            self.places
-                .add_bookmark(url, webview.page_title(), SystemTime::now(), revision);
+            self.places.add_bookmark(
+                url.clone(),
+                webview.page_title(),
+                SystemTime::now(),
+                revision,
+            );
+            if let Some(icon) = webview.favicon().and_then(|favicon| icon_png(&favicon)) {
+                self.places.set_bookmark_icon(url, icon);
+            }
         } else {
             self.places.remove_bookmark(url, revision);
         }
-        self.refresh_bookmark_stars();
+        self.refresh_bookmarks_interface();
+    }
+
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    pub(crate) fn bookmarks_bar(&self) -> &BookmarksBarState {
+        &self.bookmarks_bar
+    }
+
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    pub(crate) fn set_bookmarks_bar_visibility(&self, visibility: BarVisibility) {
+        self.bookmarks_bar.set_visibility(visibility);
+        self.update_bookmarks_bar();
+    }
+
+    /// Hides the bookmarks bar where it shows, as Ctrl+Shift+B, for a window showing `url`.
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    pub(crate) fn toggle_bookmarks_bar(&self, url: Option<&Url>) {
+        self.bookmarks_bar.toggle(url);
+        self.update_bookmarks_bar();
+    }
+
+    /// Shows the visibility of the bookmarks bar last chosen, from the bar or from a page.
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    fn update_bookmarks_bar(&self) {
+        if self.bookmarks_bar.update_visibility() {
+            self.refresh_bookmarks_interface();
+        }
+    }
+
+    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+    pub(crate) fn edit_bookmarks(&self, edit: aether_places::BookmarkEdit) {
+        // The places thread publishes the new tree, so the reply is not needed.
+        drop(self.places.bookmarks_editor().edit(edit));
+    }
+
+    /// Saves the icon of the page shown in `webview`, if that page is bookmarked.
+    fn save_bookmark_icon(&self, webview: &WebView) {
+        if let Some(url) = webview.url() &&
+            self.bookmark_state(&url) == Some(true) &&
+            let Some(icon) = webview.favicon().and_then(|favicon| icon_png(&favicon))
+        {
+            self.places.set_bookmark_icon(url, icon);
+        }
     }
 
     fn update_bookmarks(&self) {
@@ -501,11 +567,13 @@ impl RunningAppState {
                     None => *bookmarks = Some(Bookmarks::new(&saved.urls)),
                 }
             }
-            self.refresh_bookmark_stars();
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            self.bookmarks_bar.set_tree(saved.tree);
+            self.refresh_bookmarks_interface();
         }
     }
 
-    fn refresh_bookmark_stars(&self) {
+    fn refresh_bookmarks_interface(&self) {
         for window in self.windows().iter() {
             window.set_needs_update();
             window.set_needs_repaint();
@@ -598,6 +666,8 @@ impl RunningAppState {
 
         self.servo.spin_event_loop();
         self.update_bookmarks();
+        #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+        self.update_bookmarks_bar();
 
         for window in self.windows.borrow().iter() {
             window.update_and_request_repaint_if_necessary(self);
@@ -1033,6 +1103,7 @@ impl WebViewDelegate for RunningAppState {
     }
 
     fn notify_favicon_changed(&self, webview: WebView) {
+        self.save_bookmark_icon(&webview);
         self.window_for_webview(&webview)
             .notify_favicon_changed(webview);
     }

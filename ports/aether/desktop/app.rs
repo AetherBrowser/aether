@@ -20,6 +20,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 use super::event_loop::AppEvent;
+use crate::bookmarks_page::BookmarksPage;
+use crate::desktop::bookmarks_bar::BookmarksBarState;
 use crate::desktop::event_loop::ServoShellEventLoop;
 use crate::desktop::headed_window::HeadedWindow;
 use crate::desktop::headless_window::HeadlessWindow;
@@ -94,6 +96,7 @@ impl App {
         crate::content_filter::install_content_filter(self.opts.config_dir.clone());
 
         let (places, history_page) = open_places(&self.opts, self.waker.clone());
+        let bookmarks_bar = BookmarksBarState::load(&self.opts, self.waker.clone());
 
         let mut protocol_registry = ProtocolRegistry::default();
         let _ = protocol_registry.register(
@@ -102,7 +105,11 @@ impl App {
         );
         let _ = protocol_registry.register(
             "about",
-            protocols::servo::ServoProtocolHandler::new(history_page),
+            protocols::servo::ServoProtocolHandler::new(
+                history_page,
+                BookmarksPage::new(places.bookmarks_editor(), true),
+                bookmarks_bar.setting(),
+            ),
         );
         let _ = protocol_registry.register(
             "resource",
@@ -151,6 +158,7 @@ impl App {
             user_content_manager,
             self.preferences.clone(),
             places,
+            bookmarks_bar,
             #[cfg(feature = "gamepad")]
             self.event_loop_proxy
                 .clone()
