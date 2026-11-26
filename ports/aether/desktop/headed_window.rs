@@ -458,6 +458,7 @@ impl HeadedWindow {
             BrowserAction::Reload => queue(UserInterfaceCommand::Reload),
             BrowserAction::Home => queue(UserInterfaceCommand::Home),
             BrowserAction::FocusLocationBar => self.focus_location_bar(),
+            BrowserAction::Find => self.gui.borrow_mut().open_find_bar(webview.id()),
             BrowserAction::ZoomIn => webview.set_page_zoom(webview.page_zoom() + 0.1),
             BrowserAction::ZoomOut => webview.set_page_zoom(webview.page_zoom() - 0.1),
             BrowserAction::ResetZoom => webview.set_page_zoom(1.0),

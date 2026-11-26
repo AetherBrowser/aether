@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 #[cfg(any(
     target_os = "windows",
@@ -46,8 +47,8 @@ use euclid::{Length, Point2D, Rect, Scale, Size2D};
 use log::info;
 use log::warn;
 use servo::{
-    DeviceIndependentPixel, DevicePixel, Image, LoadStatus, OffscreenRenderingContext, PixelFormat,
-    RenderingContext, WebView, WebViewId,
+    DeviceIndependentPixel, DevicePixel, Image, JSValue, LoadStatus, OffscreenRenderingContext,
+    PixelFormat, RenderingContext, WebView, WebViewId,
 };
 use url::Url;
 use winit::event::WindowEvent;
@@ -55,6 +56,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::Window;
 
 use crate::desktop::event_loop::AppEvent;
+use crate::desktop::find_bar::{
+    FindBar, FindBarCommand, find_script, parse_find_count, step_match,
+};
 use crate::desktop::headed_window;
 use crate::desktop::icons::{
     LOCATION_BUTTON_SIZE, NAVIGATION_CONTROL_SIZE, TOOLBAR_BUTTON_CORNER_RADIUS, ToolbarIcon,
@@ -118,6 +122,15 @@ pub struct Gui {
 
     /// Whether a shortcut asked to focus the location bar on the next update.
     location_focus_requested: bool,
+
+    /// Find bar of each tab. A search opened on one page stays on that page.
+    find_bars: HashMap<WebViewId, FindBar>,
+
+    /// Screen rect of the find bar, in device-independent pixels. Empty when it is closed.
+    find_bar_rect: egui::Rect,
+
+    /// Latest `(generation, active, total)` per tab, written when that page's search finishes.
+    find_outcome: Rc<RefCell<HashMap<WebViewId, (u64, usize, usize)>>>,
 
     /// The [`LoadStatus`] of the active `WebView`.
     load_status: LoadStatus,
@@ -294,11 +307,14 @@ fn pointer_hits_browser_chrome(
     toolbar_height: f32,
     menu_contains_pointer: bool,
     devtools_rect: egui::Rect,
+    find_bar_rect: egui::Rect,
     position: Point2D<f32, DeviceIndependentPixel>,
 ) -> bool {
+    let point = egui::pos2(position.x, position.y);
     position.y < toolbar_height ||
         menu_contains_pointer ||
-        devtools_rect.contains(egui::pos2(position.x, position.y))
+        devtools_rect.contains(point) ||
+        find_bar_rect.contains(point)
 }
 
 impl Drop for Gui {
@@ -364,6 +380,9 @@ impl Gui {
             location_webview: None,
             edited_locations: Default::default(),
             location_focus_requested: false,
+            find_bars: HashMap::default(),
+            find_bar_rect: egui::Rect::NOTHING,
+            find_outcome: Rc::new(RefCell::new(HashMap::new())),
             load_status: LoadStatus::Complete,
             status_text: None,
             can_go_back: false,
@@ -394,6 +413,11 @@ impl Gui {
     /// Focuses the location bar and selects its text on the next update.
     pub(crate) fn focus_location_bar(&mut self) {
         self.location_focus_requested = true;
+    }
+
+    /// Opens the find bar of `webview` and focuses its field on the next update.
+    pub(crate) fn open_find_bar(&mut self, webview: WebViewId) {
+        self.find_bars.entry(webview).or_default().open();
     }
 
     pub(crate) fn toggle_developer_tools(&mut self) {
@@ -443,6 +467,7 @@ impl Gui {
             self.toolbar_height.get(),
             self.app_menu.contains_pointer(position),
             self.devtools_rect,
+            self.find_bar_rect,
             position,
         )
     }
@@ -944,6 +969,77 @@ impl Gui {
                         })
                 });
 
+                let pending: Vec<_> = self.find_outcome.borrow_mut().drain().collect();
+                for (id, (generation, active, total)) in pending {
+                    if self
+                        .find_bars
+                        .get(&id)
+                        .is_some_and(|bar| bar.generation() == generation)
+                    {
+                        self.find_bars
+                            .get_mut(&id)
+                            .expect("find bar checked above")
+                            .set_matches(active, total);
+                    }
+                }
+                let active_id = window.active_webview().map(|webview| webview.id());
+                let search = if let Some(id) = active_id
+                    && let Some(bar) = self.find_bars.get_mut(&id)
+                {
+                    let (find_rect, find_command) =
+                        bar.show(ctx, toolbar_icons, egui::Id::new(("find_bar_query", id)));
+                    self.find_bar_rect = find_rect.unwrap_or(egui::Rect::NOTHING);
+                    find_command.map(|command| {
+                        let index = match command {
+                            FindBarCommand::Closed => 0,
+                            FindBarCommand::QueryChanged => 1,
+                            FindBarCommand::Next => {
+                                step_match(bar.active(), bar.total(), true)
+                            },
+                            FindBarCommand::Previous => {
+                                step_match(bar.active(), bar.total(), false)
+                            },
+                            FindBarCommand::HighlightChanged => {
+                                let active = bar.active();
+                                if active == 0 { 1 } else { active }
+                            },
+                        };
+                        let highlight_all =
+                            command != FindBarCommand::Closed && bar.highlight_all();
+                        let query = if command == FindBarCommand::Closed {
+                            String::new()
+                        } else {
+                            bar.query().to_owned()
+                        };
+                        (id, query, index, highlight_all, bar.next_generation())
+                    })
+                } else {
+                    self.find_bar_rect = egui::Rect::NOTHING;
+                    None
+                };
+                if let Some((id, query, index, highlight_all, generation)) = search {
+                    let outcome = Rc::clone(&self.find_outcome);
+                    let repaint = ctx.ctx().clone();
+                    if let Some(webview) = window.webview_by_id(id) {
+                        webview.evaluate_javascript(
+                            find_script(&query, index, highlight_all, generation),
+                            move |result| {
+                                if let Ok(JSValue::String(text)) = result
+                                    && let Some((active, total)) = parse_find_count(&text)
+                                {
+                                    let mut pending = outcome.borrow_mut();
+                                    match pending.get(&id) {
+                                        Some((stored, _, _)) if *stored > generation => {},
+                                        _ => {
+                                            pending.insert(id, (generation, active, total));
+                                        },
+                                    }
+                                }
+                                repaint.request_repaint();
+                            },
+                        );
+                    }
+                }
                 *toolbar_height = Length::new(outer.response.rect.max.y);
 
                 if let Some(button) = &menu_button {
@@ -958,6 +1054,7 @@ impl Gui {
                 }
             } else {
                 app_menu.close_ui(ctx);
+                self.find_bar_rect = egui::Rect::NOTHING;
                 *toolbar_height = Length::default();
             }
 
@@ -1140,6 +1237,8 @@ impl Gui {
                 .insert(previous_id, std::mem::take(&mut self.location));
         }
         self.edited_locations
+            .retain(|id, _| window.webview_by_id(*id).is_some());
+        self.find_bars
             .retain(|id, _| window.webview_by_id(*id).is_some());
         self.location_webview = active_id;
         match active_id.and_then(|id| self.edited_locations.remove(&id)) {
@@ -1481,23 +1580,27 @@ mod tests {
             40.0,
             false,
             dock,
+            egui::Rect::NOTHING,
             Point2D::new(100.0, 200.0),
         ));
         assert!(pointer_hits_browser_chrome(
             40.0,
             false,
             dock,
+            egui::Rect::NOTHING,
             Point2D::new(600.0, 200.0),
         ));
         assert!(pointer_hits_browser_chrome(
             40.0,
             false,
             dock,
+            egui::Rect::NOTHING,
             Point2D::new(100.0, 10.0),
         ));
         assert!(pointer_hits_browser_chrome(
             40.0,
             true,
+            egui::Rect::NOTHING,
             egui::Rect::NOTHING,
             Point2D::new(100.0, 200.0),
         ));
@@ -1505,7 +1608,16 @@ mod tests {
             40.0,
             false,
             egui::Rect::NOTHING,
+            egui::Rect::NOTHING,
             Point2D::new(600.0, 200.0),
+        ));
+        let find_bar = egui::Rect::from_min_max(egui::pos2(0.0, 560.0), egui::pos2(800.0, 600.0));
+        assert!(pointer_hits_browser_chrome(
+            40.0,
+            false,
+            egui::Rect::NOTHING,
+            find_bar,
+            Point2D::new(20.0, 580.0),
         ));
     }
 }
