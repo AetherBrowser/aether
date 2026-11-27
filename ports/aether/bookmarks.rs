@@ -7,7 +7,14 @@
 use std::collections::HashSet;
 
 use aether_places::without_credentials;
+use image::codecs::png::PngEncoder;
+use image::imageops::{self, FilterType};
+use image::{ExtendedColorType, ImageEncoder, RgbaImage};
+use servo::{Image, PixelFormat};
 use url::Url;
+
+/// The largest side of a saved page icon, in pixels.
+const ICON_SIZE: u32 = 32;
 
 /// A bookmark change sent to the database and not yet covered by a saved read.
 struct PendingToggle {
@@ -76,11 +83,65 @@ pub(crate) fn can_bookmark(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https" | "file")
 }
 
+/// Encodes a page icon as a PNG of at most [`ICON_SIZE`] pixels.
+pub(crate) fn icon_png(icon: &Image) -> Option<Vec<u8>> {
+    encode_icon(
+        icon.width,
+        icon.height,
+        rgba_pixels(icon.format, icon.data()),
+    )
+}
+
+fn rgba_pixels(format: PixelFormat, data: &[u8]) -> Vec<u8> {
+    match format {
+        PixelFormat::K8 => data.iter().flat_map(|&k| [k, k, k, 255]).collect(),
+        PixelFormat::KA8 => data
+            .as_chunks()
+            .0
+            .iter()
+            .flat_map(|&[k, a]| [k, k, k, a])
+            .collect(),
+        PixelFormat::RGB8 => data
+            .as_chunks()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect(),
+        PixelFormat::RGBA8 => data.to_vec(),
+        PixelFormat::BGRA8 => data
+            .as_chunks()
+            .0
+            .iter()
+            .flat_map(|&[b, g, r, a]| [r, g, b, a])
+            .collect(),
+    }
+}
+
+fn encode_icon(width: u32, height: u32, rgba: Vec<u8>) -> Option<Vec<u8>> {
+    let mut image = RgbaImage::from_raw(width, height, rgba)?;
+    if width > ICON_SIZE || height > ICON_SIZE {
+        let scale = f64::from(ICON_SIZE) / f64::from(width.max(height));
+        let scaled = |side: u32| ((f64::from(side) * scale).round() as u32).max(1);
+        image = imageops::resize(&image, scaled(width), scaled(height), FilterType::Triangle);
+    }
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+        .write_image(
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .ok()?;
+    Some(png)
+}
+
 #[cfg(test)]
 mod tests {
+    use servo::PixelFormat;
     use url::Url;
 
-    use super::{Bookmarks, can_bookmark};
+    use super::{Bookmarks, can_bookmark, encode_icon, rgba_pixels};
 
     fn url(url: &str) -> Url {
         Url::parse(url).unwrap()
@@ -177,5 +238,43 @@ mod tests {
         bookmarks.reconcile(std::slice::from_ref(&page), revision);
 
         assert!(bookmarks.contains(&page));
+    }
+
+    #[test]
+    fn every_pixel_format_becomes_rgba() {
+        for (format, data, rgba) in [
+            (PixelFormat::K8, vec![9], [9, 9, 9, 255]),
+            (PixelFormat::KA8, vec![9, 7], [9, 9, 9, 7]),
+            (PixelFormat::RGB8, vec![1, 2, 3], [1, 2, 3, 255]),
+            (PixelFormat::RGBA8, vec![1, 2, 3, 4], [1, 2, 3, 4]),
+            (PixelFormat::BGRA8, vec![3, 2, 1, 4], [1, 2, 3, 4]),
+        ] {
+            assert_eq!(rgba_pixels(format, &data), rgba, "{format:?}");
+        }
+    }
+
+    fn encoded_size(width: u32, height: u32) -> (u32, u32) {
+        let rgba = vec![200; (width * height * 4) as usize];
+        let png = encode_icon(width, height, rgba).unwrap();
+        let image = image::load_from_memory(&png).unwrap();
+        (image.width(), image.height())
+    }
+
+    #[test]
+    fn large_icons_are_reduced_and_small_ones_kept() {
+        assert_eq!(encoded_size(256, 256), (32, 32));
+        assert_eq!(encoded_size(32, 32), (32, 32));
+        assert_eq!(encoded_size(16, 16), (16, 16));
+    }
+
+    #[test]
+    fn reduced_icons_keep_their_proportions() {
+        assert_eq!(encoded_size(64, 32), (32, 16));
+        assert_eq!(encoded_size(40, 400), (3, 32));
+    }
+
+    #[test]
+    fn pixels_that_do_not_match_the_size_are_refused() {
+        assert_eq!(encode_icon(16, 16, vec![0; 3]), None);
     }
 }

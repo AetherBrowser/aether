@@ -15,8 +15,8 @@ use log::{error, warn};
 use tokio::sync::oneshot;
 use url::Url;
 
-use crate::PlacesStore;
 use crate::database::PlacesCommand;
+use crate::{BookmarkEdit, BookmarkNode, PlacesStore, bookmarked_urls};
 
 const EXPIRATION_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
@@ -28,13 +28,18 @@ pub struct PlacesService {
     /// Only `None` while the service is dropped, to close the channel before joining.
     sender: Option<Sender<PlacesRequest>>,
     cleaner: HistoryCleaner,
+    editor: BookmarksEditor,
     thread: Option<JoinHandle<()>>,
     bookmarks: Receiver<SavedBookmarks>,
 }
 
 const HISTORY_UNAVAILABLE: &str = "The history is not available";
 
+const BOOKMARKS_UNAVAILABLE: &str = "The bookmarks are not available";
+
 type Reply = oneshot::Sender<Result<(), String>>;
+
+type BookmarksResponder = oneshot::Sender<Result<Vec<BookmarkNode>, String>>;
 
 enum CleanerRequest {
     SetRetention(Duration, Reply),
@@ -45,11 +50,19 @@ enum CleanerRequest {
 struct BookmarksPublisher {
     sender: Sender<SavedBookmarks>,
     notify: Box<dyn Fn() + Send>,
+    /// The newest bookmark change that the interface sent and this thread has handled.
+    revision: u64,
 }
 
 impl BookmarksPublisher {
-    fn publish(&self, urls: Vec<Url>, revision: u64) {
-        let _ = self.sender.send(SavedBookmarks { urls, revision });
+    /// Sends the saved `tree`, after handling the interface's change `revision`, if any.
+    fn publish(&mut self, tree: Vec<BookmarkNode>, revision: Option<u64>) {
+        self.revision = self.revision.max(revision.unwrap_or_default());
+        let _ = self.sender.send(SavedBookmarks {
+            urls: bookmarked_urls(&tree),
+            tree,
+            revision: self.revision,
+        });
         (self.notify)();
     }
 }
@@ -59,6 +72,7 @@ impl BookmarksPublisher {
 /// `revision` is zero when no bookmark change has been attempted yet.
 pub struct SavedBookmarks {
     pub urls: Vec<Url>,
+    pub tree: Vec<BookmarkNode>,
     pub revision: u64,
 }
 
@@ -86,21 +100,63 @@ impl HistoryCleaner {
     fn request(&self, request: impl FnOnce(Reply) -> CleanerRequest) -> CleanerReply {
         let (reply, receiver) = oneshot::channel();
         let _ = self.0.send(request(reply));
-        CleanerReply(receiver)
+        PlacesReply {
+            receiver,
+            unavailable: HISTORY_UNAVAILABLE,
+        }
     }
 }
 
-/// Resolves when the deletion asked to a [`HistoryCleaner`] is done, with its error if any.
+/// Resolves when a request to the places thread is done, with its result or its error.
 #[must_use]
-pub struct CleanerReply(oneshot::Receiver<Result<(), String>>);
+pub struct PlacesReply<T> {
+    receiver: oneshot::Receiver<Result<T, String>>,
+    unavailable: &'static str,
+}
 
-impl Future for CleanerReply {
-    type Output = Result<(), String>;
+impl<T> Future for PlacesReply<T> {
+    type Output = Result<T, String>;
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0)
+        let unavailable = self.unavailable;
+        Pin::new(&mut self.receiver)
             .poll(context)
-            .map(|result| result.unwrap_or_else(|_| Err(HISTORY_UNAVAILABLE.to_owned())))
+            .map(|result| result.unwrap_or_else(|_| Err(unavailable.to_owned())))
+    }
+}
+
+/// Resolves when the deletion asked to a [`HistoryCleaner`] is done.
+pub type CleanerReply = PlacesReply<()>;
+
+/// Resolves with the bookmarks tree after a request to a [`BookmarksEditor`].
+pub type BookmarksReply = PlacesReply<Vec<BookmarkNode>>;
+
+enum EditorRequest {
+    Read(BookmarksResponder),
+    Edit(BookmarkEdit, BookmarksResponder),
+}
+
+/// Reads and changes the bookmarks tree of a [`PlacesService`], after the changes already sent
+/// to it.
+#[derive(Clone)]
+pub struct BookmarksEditor(Sender<EditorRequest>);
+
+impl BookmarksEditor {
+    pub fn read(&self) -> BookmarksReply {
+        self.request(EditorRequest::Read)
+    }
+
+    pub fn edit(&self, edit: BookmarkEdit) -> BookmarksReply {
+        self.request(|reply| EditorRequest::Edit(edit, reply))
+    }
+
+    fn request(&self, request: impl FnOnce(BookmarksResponder) -> EditorRequest) -> BookmarksReply {
+        let (reply, receiver) = oneshot::channel();
+        let _ = self.0.send(request(reply));
+        PlacesReply {
+            receiver,
+            unavailable: BOOKMARKS_UNAVAILABLE,
+        }
     }
 }
 
@@ -123,19 +179,28 @@ impl PlacesService {
     ) -> Self {
         let (sender, receiver) = unbounded();
         let (cleaner_sender, cleaner_receiver) = unbounded();
+        let (editor_sender, editor_receiver) = unbounded();
         let (bookmarks_sender, bookmarks) = unbounded();
-        let publisher = BookmarksPublisher {
+        let mut publisher = BookmarksPublisher {
             sender: bookmarks_sender,
             notify: Box::new(notify),
+            revision: 0,
         };
         let thread = thread::Builder::new()
             .name("Places".to_owned())
             .spawn(move || match open_store() {
                 Ok(store) => {
-                    if let Some(urls) = read_bookmarks(&store) {
-                        publisher.publish(urls, 0);
+                    if let Some(tree) = read_bookmarks(&store) {
+                        publisher.publish(tree, None);
                     }
-                    run(store, receiver, retention, cleaner_receiver, publisher)
+                    run(
+                        store,
+                        receiver,
+                        retention,
+                        cleaner_receiver,
+                        editor_receiver,
+                        publisher,
+                    )
                 },
                 // Nothing is saved for this session, but browsing keeps working.
                 Err(error) => error!("Could not open the places database: {error}"),
@@ -144,6 +209,7 @@ impl PlacesService {
         Self {
             sender: Some(sender),
             cleaner: HistoryCleaner(cleaner_sender),
+            editor: BookmarksEditor(editor_sender),
             thread: Some(thread),
             bookmarks,
         }
@@ -152,6 +218,11 @@ impl PlacesService {
     /// Returns a handle to delete visits.
     pub fn cleaner(&self) -> HistoryCleaner {
         self.cleaner.clone()
+    }
+
+    /// Returns a handle to read and change the bookmarks tree.
+    pub fn bookmarks_editor(&self) -> BookmarksEditor {
+        self.editor.clone()
     }
 
     /// Records a visit of `url` at `visit_date`.
@@ -185,8 +256,8 @@ impl PlacesService {
         });
     }
 
-    /// The saved bookmarks, if they were sent since the last call: at startup and after a
-    /// failed write.
+    /// The saved bookmarks, if they were sent since the last call: at startup and after each
+    /// change of the bookmarks.
     pub fn take_bookmarks(&self) -> Option<SavedBookmarks> {
         self.bookmarks.try_iter().last()
     }
@@ -221,6 +292,11 @@ impl PlacesService {
         });
     }
 
+    /// Stores the PNG `icon` of `url`, if `url` is bookmarked.
+    pub fn set_bookmark_icon(&self, url: Url, icon: Vec<u8>) {
+        self.send(PlacesCommand::SetBookmarkIcon { url, icon });
+    }
+
     fn send(&self, command: PlacesCommand) {
         self.send_request(PlacesRequest {
             command,
@@ -247,9 +323,9 @@ impl Drop for PlacesService {
     }
 }
 
-fn read_bookmarks(store: &PlacesStore) -> Option<Vec<Url>> {
+fn read_bookmarks(store: &PlacesStore) -> Option<Vec<BookmarkNode>> {
     store
-        .bookmarked_urls()
+        .bookmark_tree()
         .inspect_err(|error| warn!("Could not read the bookmarks: {error}"))
         .ok()
 }
@@ -259,7 +335,8 @@ fn run(
     receiver: Receiver<PlacesRequest>,
     mut retention: Duration,
     cleaner_receiver: Receiver<CleanerRequest>,
-    publisher: BookmarksPublisher,
+    editor_receiver: Receiver<EditorRequest>,
+    mut publisher: BookmarksPublisher,
 ) {
     let expiration_timer = tick(EXPIRATION_INTERVAL);
     expire_or_warn(&mut store, retention);
@@ -270,21 +347,56 @@ fn run(
                     for cleaner_request in cleaner_receiver.try_iter() {
                         clean(&mut store, cleaner_request, &mut retention);
                     }
+                    for editor_request in editor_receiver.try_iter() {
+                        answer_editor(&mut store, editor_request, &mut publisher);
+                    }
                     return;
                 };
                 let requests = iter::once(request).chain(receiver.try_iter()).collect();
-                write(&mut store, requests, &publisher);
+                write(&mut store, requests, &mut publisher);
             },
             recv(cleaner_receiver) -> request => {
                 let Ok(request) = request else {
                     return;
                 };
-                write(&mut store, receiver.try_iter().collect(), &publisher);
+                write(&mut store, receiver.try_iter().collect(), &mut publisher);
                 clean(&mut store, request, &mut retention);
+            },
+            recv(editor_receiver) -> request => {
+                let Ok(request) = request else {
+                    return;
+                };
+                write(&mut store, receiver.try_iter().collect(), &mut publisher);
+                answer_editor(&mut store, request, &mut publisher);
             },
             recv(expiration_timer) -> _ => expire_or_warn(&mut store, retention),
         }
     }
+}
+
+fn answer_editor(
+    store: &mut PlacesStore,
+    request: EditorRequest,
+    publisher: &mut BookmarksPublisher,
+) {
+    let (edited, reply) = match request {
+        EditorRequest::Read(reply) => (false, reply),
+        EditorRequest::Edit(edit, reply) => {
+            if let Err(error) = store.edit_bookmarks(&edit, SystemTime::now()) {
+                warn!("Could not change the bookmarks: {error}");
+                let _ = reply.send(Err(error.to_string()));
+                return;
+            }
+            (true, reply)
+        },
+    };
+    let result = store
+        .bookmark_tree()
+        .map_err(|error| format!("Could not read the bookmarks: {error}"));
+    if edited && let Ok(tree) = &result {
+        publisher.publish(tree.clone(), None);
+    }
+    let _ = reply.send(result);
 }
 
 fn clean(store: &mut PlacesStore, request: CleanerRequest, retention: &mut Duration) {
@@ -302,7 +414,11 @@ fn clean(store: &mut PlacesStore, request: CleanerRequest, retention: &mut Durat
     let _ = reply.send(result);
 }
 
-fn write(store: &mut PlacesStore, requests: Vec<PlacesRequest>, publisher: &BookmarksPublisher) {
+fn write(
+    store: &mut PlacesStore,
+    requests: Vec<PlacesRequest>,
+    publisher: &mut BookmarksPublisher,
+) {
     if requests.is_empty() {
         return;
     }
@@ -314,18 +430,20 @@ fn write(store: &mut PlacesStore, requests: Vec<PlacesRequest>, publisher: &Book
         .into_iter()
         .map(|request| request.command)
         .collect();
-    if let Err(error) = store.apply(&commands) {
+    let icon_changed = store.apply(&commands).unwrap_or_else(|error| {
         warn!(
             "Could not write {} changes to the places database: {error}",
             commands.len()
         );
-        // The revision is the newest bookmark change of this attempt. The read is the database
-        // without that attempt, so the interface can keep the changes it sent afterwards.
-        if let Some(revision) = revision &&
-            let Some(urls) = read_bookmarks(store)
-        {
-            publisher.publish(urls, revision);
-        }
+        false
+    });
+    // The revision is the newest bookmark change of this attempt. The read includes that attempt
+    // only if it succeeded, and the interface keeps the changes it sent afterwards. A visit of a
+    // bookmarked page sends its icon again, which only needs a read when it changed.
+    if (icon_changed || commands.iter().any(PlacesCommand::toggles_bookmark)) &&
+        let Some(tree) = read_bookmarks(store)
+    {
+        publisher.publish(tree, revision);
     }
 }
 
@@ -352,7 +470,8 @@ mod tests {
     use rusqlite::Connection;
     use url::Url;
 
-    use super::{HISTORY_UNAVAILABLE, PlacesService, SavedBookmarks};
+    use super::{BOOKMARKS_UNAVAILABLE, HISTORY_UNAVAILABLE, PlacesService, SavedBookmarks};
+    use crate::{BookmarkEdit, BookmarkNode};
 
     fn days(days: u64) -> Duration {
         Duration::from_secs(days * 24 * 60 * 60)
@@ -581,6 +700,7 @@ mod tests {
         next_bookmarks(&service, &notifications);
         service.add_bookmark(saved.clone(), None, UNIX_EPOCH, 1);
         flush(&service);
+        next_bookmarks(&service, &notifications);
         reject_inserts_into(&path, "bookmarks");
 
         service.add_bookmark(
@@ -596,20 +716,140 @@ mod tests {
     }
 
     #[test]
-    fn only_failed_bookmark_writes_send_the_bookmarks_again() {
+    fn a_saved_bookmark_sends_the_new_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+
+        service.add_bookmark(page.clone(), Some("Servo".to_owned()), UNIX_EPOCH, 7);
+
+        let saved = next_bookmarks(&service, &notifications);
+        assert_eq!(saved.urls, [page]);
+        assert_eq!(saved.revision, 7);
+        assert_eq!(saved.tree[0].title.as_deref(), Some("Servo"));
+    }
+
+    #[test]
+    fn a_new_icon_sends_the_new_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 7);
+        flush(&service);
+        next_bookmarks(&service, &notifications);
+
+        service.set_bookmark_icon(page, vec![1, 2]);
+
+        let saved = next_bookmarks(&service, &notifications);
+        assert_eq!(saved.tree[0].icon, Some(vec![1, 2]));
+        assert_eq!(saved.revision, 7);
+    }
+
+    #[test]
+    fn the_same_icon_again_does_not_send_the_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let page = Url::parse("https://servo.org/").unwrap();
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 7);
+        service.set_bookmark_icon(page.clone(), vec![1, 2]);
+        flush(&service);
+        while notifications.try_recv().is_ok() {}
+
+        service.set_bookmark_icon(page, vec![1, 2]);
+        flush(&service);
+
+        assert!(notifications.try_recv().is_err());
+    }
+
+    #[test]
+    fn writing_visits_does_not_send_the_bookmarks() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("places.sqlite");
         let page = Url::parse("https://servo.org/").unwrap();
         let (service, notifications) = open_notified(path.clone(), Duration::MAX);
         next_bookmarks(&service, &notifications);
-        reject_inserts_into(&path, "visits");
 
         service.record_visit(page.clone(), SystemTime::now(), None);
         flush(&service);
-        service.add_bookmark(page, None, UNIX_EPOCH, 1);
+        reject_inserts_into(&path, "visits");
+        service.record_visit(page, SystemTime::now(), None);
         drop(service);
 
         assert!(notifications.try_recv().is_err());
+    }
+
+    fn new_folder(title: &str) -> BookmarkEdit {
+        BookmarkEdit::CreateFolder {
+            parent: None,
+            title: title.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_editor_changes_the_tree_and_sends_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+
+        let tree = block_on(service.bookmarks_editor().edit(new_folder("Folder"))).unwrap();
+
+        assert_eq!(tree[0].title.as_deref(), Some("Folder"));
+        assert_eq!(next_bookmarks(&service, &notifications).tree, tree);
+    }
+
+    #[test]
+    fn the_editor_reads_the_writes_already_sent() {
+        let service = PlacesService::open_in_memory(Duration::MAX, || {});
+        let page = Url::parse("https://servo.org/").unwrap();
+
+        service.add_bookmark(page.clone(), None, UNIX_EPOCH, 1);
+        let tree: Vec<BookmarkNode> = block_on(service.bookmarks_editor().read()).unwrap();
+
+        assert_eq!(tree[0].url, Some(page));
+    }
+
+    #[test]
+    fn an_edit_keeps_the_revision_of_the_last_bookmark_change() {
+        let service = PlacesService::open_in_memory(Duration::MAX, || {});
+        let page = Url::parse("https://servo.org/").unwrap();
+
+        service.add_bookmark(page, None, UNIX_EPOCH, 9);
+        block_on(service.bookmarks_editor().edit(new_folder("Folder"))).unwrap();
+
+        assert_eq!(service.take_bookmarks().unwrap().revision, 9);
+    }
+
+    #[test]
+    fn a_refused_edit_reports_why_and_sends_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("places.sqlite");
+        let (service, notifications) = open_notified(path, Duration::MAX);
+        next_bookmarks(&service, &notifications);
+
+        let reply = block_on(service.bookmarks_editor().edit(new_folder(" ")));
+
+        assert_eq!(reply, Err("A folder needs a name.".to_owned()));
+        assert!(notifications.try_recv().is_err());
+    }
+
+    #[test]
+    fn the_editor_can_outlive_the_service() {
+        let service = PlacesService::open_in_memory(days(90), || {});
+        let editor = service.bookmarks_editor();
+
+        drop(service);
+
+        assert_eq!(
+            block_on(editor.read()),
+            Err(BOOKMARKS_UNAVAILABLE.to_owned())
+        );
     }
 
     #[test]

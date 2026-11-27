@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, params};
 use url::Url;
 
-use crate::bookmarks::{add_bookmark, remove_bookmark};
+use crate::bookmarks::{add_bookmark, remove_bookmark, set_bookmark_icon};
 use crate::history::{record_visit, replace_visit, set_title};
 
 /// Schema migrations, in order. The database's `user_version` is the number of migrations
@@ -39,6 +39,24 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         date_added INTEGER NOT NULL,
         guid TEXT NOT NULL UNIQUE
     );",
+    // Version 4: a tree of folders and bookmarks, ordered within each folder. The table is rebuilt
+    // because a folder has no place.
+    "CREATE TABLE new_bookmarks (
+        id INTEGER PRIMARY KEY,
+        place_id INTEGER UNIQUE REFERENCES places(id),
+        parent_id INTEGER REFERENCES new_bookmarks(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        title TEXT,
+        date_added INTEGER NOT NULL,
+        guid TEXT NOT NULL UNIQUE,
+        icon BLOB
+    );
+    INSERT INTO new_bookmarks (id, place_id, position, title, date_added, guid)
+        SELECT id, place_id, row_number() OVER (ORDER BY date_added, id) - 1, title, date_added, guid
+        FROM bookmarks;
+    DROP TABLE bookmarks;
+    ALTER TABLE new_bookmarks RENAME TO bookmarks;
+    CREATE INDEX bookmarks_parent_index ON bookmarks(parent_id, position);",
 ];
 
 pub(crate) enum PlacesCommand {
@@ -48,7 +66,7 @@ pub(crate) enum PlacesCommand {
         visit_date: SystemTime,
         title: Option<String>,
     },
-    /// Stores `title` as the last title of `url`, if `url` has a place.
+    /// Stores `title` as the last title of `url`, if `url` was visited.
     SetTitle { url: Url, title: String },
     /// Moves the visit of `old_url` at `visit_date` to `new_url`, or deletes it when `new_url`
     /// is `None`.
@@ -66,6 +84,14 @@ pub(crate) enum PlacesCommand {
     },
     /// Removes the bookmark of `url`.
     RemoveBookmark { url: Url },
+    /// Stores the PNG `icon` of `url`, if `url` is bookmarked.
+    SetBookmarkIcon { url: Url, icon: Vec<u8> },
+}
+
+impl PlacesCommand {
+    pub(crate) fn toggles_bookmark(&self) -> bool {
+        matches!(self, Self::AddBookmark { .. } | Self::RemoveBookmark { .. })
+    }
 }
 
 pub struct PlacesStore {
@@ -94,8 +120,8 @@ impl PlacesStore {
     }
 
     /// Writes `commands` in order, in one transaction. A title that a later command replaces
-    /// is not written.
-    pub(crate) fn apply(&mut self, commands: &[PlacesCommand]) -> rusqlite::Result<()> {
+    /// is not written. Returns whether the icon of a bookmark changed.
+    pub(crate) fn apply(&mut self, commands: &[PlacesCommand]) -> rusqlite::Result<bool> {
         let mut last_titles = HashMap::new();
         for (index, command) in commands.iter().enumerate() {
             if let PlacesCommand::SetTitle { url, .. } = command {
@@ -103,6 +129,7 @@ impl PlacesStore {
             }
         }
         let transaction = self.connection.transaction()?;
+        let mut icon_changed = false;
         for (index, command) in commands.iter().enumerate() {
             match command {
                 PlacesCommand::RecordVisit {
@@ -133,6 +160,9 @@ impl PlacesStore {
                     date_added,
                 } => add_bookmark(&transaction, url, title.as_deref(), *date_added)?,
                 PlacesCommand::RemoveBookmark { url } => remove_bookmark(&transaction, url)?,
+                PlacesCommand::SetBookmarkIcon { url, icon } => {
+                    icon_changed |= set_bookmark_icon(&transaction, url, icon)?
+                },
             }
         }
         transaction.commit()?;
@@ -142,7 +172,7 @@ impl PlacesStore {
         {
             self.erase_deleted_rows()?;
         }
-        Ok(())
+        Ok(icon_changed)
     }
 
     /// Erases the deleted rows from the database files, so that they cannot be read back.

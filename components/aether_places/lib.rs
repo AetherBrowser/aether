@@ -6,7 +6,7 @@
 //!
 //! The database follows the model of Firefox's `places.sqlite`: `places` lists each URL once,
 //! `visits` has one row per visit, dated in microseconds since the Unix epoch (UTC), and
-//! `bookmarks` has one row per bookmarked place. To read the visits by hand:
+//! `bookmarks` is the tree of folders and bookmarked places. To read the visits by hand:
 //!
 //! ```sh
 //! sqlite3 places.sqlite "SELECT datetime(visit_date / 1000000, 'unixepoch', 'localtime'), url
@@ -18,5 +18,9 @@ mod database;
 mod history;
 mod service;
 
+pub use bookmarks::{BookmarkEdit, BookmarkError, BookmarkNode, bookmarked_urls};
 pub use database::{PlacesStore, without_credentials};
-pub use service::{CleanerReply, HistoryCleaner, PlacesService, SavedBookmarks};
+pub use service::{
+    BookmarksEditor, BookmarksReply, CleanerReply, HistoryCleaner, PlacesReply, PlacesService,
+    SavedBookmarks,
+};
