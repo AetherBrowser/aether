@@ -366,29 +366,15 @@ pub(crate) fn find_script(
     return {{ lower: lower, map: map }};
   }}
   function scrollMatch(range) {{
-    const containers = [];
     let node = range.startContainer;
+    if (!node) return;
     if (node.nodeType !== 1) node = node.parentElement;
-    while (node) {{
-      containers.push(node);
-      node = node.parentElement;
-    }}
-    for (let i = 0; i < containers.length; i++) {{
-      const container = containers[i];
-      if (container.scrollHeight <= container.clientHeight + 1) continue;
-      const live = range.getClientRects();
-      if (!live.length) break;
-      const rect = live[0];
-      const box = container.getBoundingClientRect();
-      if (rect.top < box.top || rect.bottom > box.bottom) {{
-        container.scrollTop += rect.top - box.top - Math.min(40, container.clientHeight / 4);
-      }}
-    }}
-    const live = range.getClientRects();
-    if (live.length) {{
-      const rect = live[0];
-      if (rect.top < 0 || rect.bottom > window.innerHeight) window.scrollBy(0, rect.top - 80);
-    }}
+    if (!node) return;
+    if (node.scrollIntoView) node.scrollIntoView(true);
+    const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+    if (!rect || (rect.top >= 0 && rect.bottom <= window.innerHeight)) return;
+    const scroller = document.scrollingElement || document.documentElement;
+    if (scroller) scroller.scrollTop += rect.top - 80;
   }}
   function locate(segs, combinedLength, index) {{
     if (!segs.length) return null;
