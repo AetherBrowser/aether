@@ -84,9 +84,10 @@ impl CharacterData {
 
     fn content_changed(&self, cx: &mut JSContext) {
         if let Some(text) = self.downcast::<Text>() &&
-            !text.find_highlights().is_empty()
+            self.upcast::<Node>()
+                .owner_doc()
+                .clear_find_highlights_for(text)
         {
-            text.set_find_highlights(Vec::new());
             let _ = self.set_text_run_find_highlights(&[]);
         }
         let node = self.upcast::<Node>();

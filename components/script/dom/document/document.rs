@@ -626,6 +626,12 @@ pub(crate) struct Document {
     media_controls: DomRefCell<HashMap<String, Dom<ShadowRoot>>>,
     /// Text nodes that currently carry find-in-page highlights, so the next search can clear them.
     find_highlight_nodes: DomRefCell<Vec<Dom<Text>>>,
+    /// Find-in-page ranges keyed by text-node address, in UTF-32 offsets of that node's data.
+    /// Kept off [`Text`] so the DOM struct stays the size `size_of` expects. Layout reads this
+    /// while rebuilding a text run.
+    #[no_trace]
+    #[ignore_malloc_size_of = "find-in-page ranges for a handful of text nodes"]
+    find_highlights: AtomicRefCell<FxHashMap<usize, Vec<RangeAny<Utf32CodeUnits>>>>,
     /// A set of dirty HTML canvas elements that need their WebRender images updated the
     /// next time the rendering is updated.
     dirty_canvases: DomRefCell<Vec<Dom<HTMLCanvasElement>>>,
@@ -4202,6 +4208,42 @@ struct DocumentSizes {
     other_nodes_size: usize,
 }
 
+impl Document {
+    fn find_highlight_key(text: &Text) -> usize {
+        std::ptr::from_ref(text) as usize
+    }
+
+    /// Store find-in-page ranges for `text`. An empty list removes the entry.
+    pub(crate) fn set_find_highlights_for(
+        &self,
+        text: &Text,
+        highlights: Vec<RangeAny<Utf32CodeUnits>>,
+    ) {
+        let mut map = self.find_highlights.borrow_mut();
+        if highlights.is_empty() {
+            map.remove(&Self::find_highlight_key(text));
+        } else {
+            map.insert(Self::find_highlight_key(text), highlights);
+        }
+    }
+
+    /// Remove find-in-page ranges for `text`. Returns whether any were stored.
+    pub(crate) fn clear_find_highlights_for(&self, text: &Text) -> bool {
+        self.find_highlights
+            .borrow_mut()
+            .remove(&Self::find_highlight_key(text))
+            .is_some_and(|highlights| !highlights.is_empty())
+    }
+
+    pub(crate) fn find_highlights_for(&self, text: &Text) -> Vec<RangeAny<Utf32CodeUnits>> {
+        self.find_highlights
+            .borrow()
+            .get(&Self::find_highlight_key(text))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl<'dom> LayoutDom<'dom, Document> {
     #[inline]
     pub(crate) fn is_html_document_for_layout(&self) -> bool {
@@ -4238,6 +4280,13 @@ impl<'dom> LayoutDom<'dom, Document> {
 
     pub(crate) fn url_for_layout(self) -> ServoUrl {
         self.unsafe_get().url.borrow().clone()
+    }
+
+    pub(crate) fn find_highlights_for_text_layout(
+        &self,
+        text: &Text,
+    ) -> Vec<RangeAny<Utf32CodeUnits>> {
+        self.unsafe_get().find_highlights_for(text)
     }
 
     #[expect(unsafe_code)]
@@ -4462,6 +4511,7 @@ impl Document {
             shadow_roots_styles_changed: Cell::new(false),
             media_controls: DomRefCell::new(HashMap::new()),
             find_highlight_nodes: DomRefCell::new(Vec::new()),
+            find_highlights: AtomicRefCell::new(FxHashMap::default()),
             dirty_canvases: DomRefCell::new(Default::default()),
             has_pending_animated_image_update: Cell::new(false),
             selection: MutNullableDom::new(None),
@@ -7587,13 +7637,13 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     fn AetherSetFindHighlights(&self, ranges: Vec<DomRoot<Range>>) {
         rooted_vec!(let previous <- self.find_highlight_nodes.take().into_iter());
         for text in previous.iter() {
-            text.set_find_highlights(Vec::new());
+            self.set_find_highlights_for(text, Vec::new());
             let wrote = text
                 .upcast::<CharacterData>()
                 .set_text_run_find_highlights(&[]);
             if !wrote {
                 // `::first-letter` keeps its own copy of the ranges. Drop that run so the next
-                // layout rebuilds it from the highlights just cleared on the text node.
+                // layout rebuilds it from the highlights just cleared for this text node.
                 // SAFETY: this only clears layout data and marks the node dirty. It does not
                 // allocate a garbage-collected object.
                 let no_gc = unsafe { NoGC::new() };
@@ -7673,13 +7723,13 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
         rooted_vec!(let mut stored);
         for (text, highlights) in grouped {
-            text.set_find_highlights(highlights.clone());
+            self.set_find_highlights_for(&text, highlights.clone());
             let wrote = text
                 .upcast::<CharacterData>()
                 .set_text_run_find_highlights(&highlights);
             if !wrote {
                 // `::first-letter` splits the node into several runs. Drop the cached run so the
-                // next layout rebuilds it from the highlights stored on the text node.
+                // next layout rebuilds it from the highlights stored for this text node.
                 // SAFETY: this only clears layout data and marks the node dirty. It does not
                 // allocate a garbage-collected object.
                 let no_gc = unsafe { NoGC::new() };
