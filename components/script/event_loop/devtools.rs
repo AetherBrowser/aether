@@ -366,7 +366,7 @@ pub(crate) fn handle_get_children(
                 return false;
             };
             let computed_style = window.GetComputedStyle(cx, elem, None);
-            let display = computed_style.Display();
+            let display = computed_style.Display(cx.no_gc());
             display == "inline"
         })
         .collect();
@@ -629,7 +629,9 @@ pub(crate) fn handle_get_stylesheet_style(
         let style_rule = find_rule_by_block_id(cx, &list, matched_rule.block_id)?;
         let declaration = style_rule.Style(cx);
 
-        Some(node_styles_from_css_text(&declaration.CssText().str()))
+        Some(node_styles_from_css_text(
+            &declaration.CssText(cx.no_gc()).str(),
+        ))
     })();
 
     reply.send(msg).unwrap();
@@ -653,11 +655,11 @@ pub(crate) fn handle_get_computed_style(
         .expect("This should be an element");
     let computed_style = window.GetComputedStyle(cx, elem, None);
 
-    let msg = (0..computed_style.Length())
+    let msg = (0..computed_style.Length(cx.no_gc()))
         .map(|i| {
-            let name = computed_style.Item(i);
+            let name = computed_style.Item(cx.no_gc(), i);
             NodeStyle {
-                value: String::from(computed_style.GetPropertyValue(name.clone())),
+                value: String::from(computed_style.GetPropertyValue(cx.no_gc(), name.clone())),
                 priority: String::from(computed_style.GetPropertyPriority(name.clone())),
                 name: String::from(name),
             }
@@ -690,22 +692,22 @@ pub(crate) fn handle_get_layout(
     let window = node.owner_window();
     let computed_style = window.GetComputedStyle(cx, element, None);
     let computed_layout = ComputedNodeLayout {
-        display: computed_style.Display().into(),
-        position: computed_style.Position().into(),
-        z_index: computed_style.ZIndex().into(),
-        box_sizing: computed_style.BoxSizing().into(),
-        margin_top: computed_style.MarginTop().into(),
-        margin_right: computed_style.MarginRight().into(),
-        margin_bottom: computed_style.MarginBottom().into(),
-        margin_left: computed_style.MarginLeft().into(),
-        border_top_width: computed_style.BorderTopWidth().into(),
-        border_right_width: computed_style.BorderRightWidth().into(),
-        border_bottom_width: computed_style.BorderBottomWidth().into(),
-        border_left_width: computed_style.BorderLeftWidth().into(),
-        padding_top: computed_style.PaddingTop().into(),
-        padding_right: computed_style.PaddingRight().into(),
-        padding_bottom: computed_style.PaddingBottom().into(),
-        padding_left: computed_style.PaddingLeft().into(),
+        display: computed_style.Display(cx.no_gc()).into(),
+        position: computed_style.Position(cx.no_gc()).into(),
+        z_index: computed_style.ZIndex(cx.no_gc()).into(),
+        box_sizing: computed_style.BoxSizing(cx.no_gc()).into(),
+        margin_top: computed_style.MarginTop(cx.no_gc()).into(),
+        margin_right: computed_style.MarginRight(cx.no_gc()).into(),
+        margin_bottom: computed_style.MarginBottom(cx.no_gc()).into(),
+        margin_left: computed_style.MarginLeft(cx.no_gc()).into(),
+        border_top_width: computed_style.BorderTopWidth(cx.no_gc()).into(),
+        border_right_width: computed_style.BorderRightWidth(cx.no_gc()).into(),
+        border_bottom_width: computed_style.BorderBottomWidth(cx.no_gc()).into(),
+        border_left_width: computed_style.BorderLeftWidth(cx.no_gc()).into(),
+        padding_top: computed_style.PaddingTop(cx.no_gc()).into(),
+        padding_right: computed_style.PaddingRight(cx.no_gc()).into(),
+        padding_bottom: computed_style.PaddingBottom(cx.no_gc()).into(),
+        padding_left: computed_style.PaddingLeft(cx.no_gc()).into(),
         width,
         height,
     };
@@ -771,6 +773,50 @@ pub(crate) fn handle_get_xpath(
         .join("");
 
     reply.send(selector).unwrap();
+}
+
+pub(crate) fn handle_get_background_color(
+    cx: &mut JSContext,
+    state: &DevtoolsState,
+    pipeline: PipelineId,
+    node_id: &str,
+    reply: GenericSender<Vec<f32>>,
+) {
+    let Some(node) = state.find_node_by_unique_id(pipeline, node_id) else {
+        return reply.send(vec![255.0, 255.0, 255.0, 1.0]).unwrap();
+    };
+
+    let background_color = node
+        .inclusive_ancestors(ShadowIncluding::Yes)
+        .find_map(|ancestor| {
+            let element = ancestor.downcast::<Element>()?;
+
+            let computed_values = element.style(cx)?;
+
+            let color =
+                computed_values.resolve_color(&computed_values.get_background().background_color);
+
+            if color.is_transparent() {
+                return None;
+            }
+
+            Some(color)
+        });
+
+    let value = background_color
+        .map(|color| {
+            let color = color.into_srgb_legacy();
+
+            vec![
+                (color.components.0 * 255.0).round(),
+                (color.components.1 * 255.0).round(),
+                (color.components.2 * 255.0).round(),
+                color.alpha,
+            ]
+        })
+        .unwrap_or_else(|| vec![255.0, 255.0, 255.0, 1.0]);
+
+    let _ = reply.send(value);
 }
 
 pub(crate) fn handle_get_inner_or_outer_html(
