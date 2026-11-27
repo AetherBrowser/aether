@@ -43,6 +43,8 @@ pub(crate) struct FindBar {
     pending_search: bool,
     /// Set when the webview size changes so the current match is scrolled again.
     pending_recenter: bool,
+    /// Last painted close button, so tests can click it without reading egui widget memory.
+    close_rect: Option<egui::Rect>,
 }
 
 impl FindBar {
@@ -216,7 +218,9 @@ impl FindBar {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icon_button(ui, icons, ToolbarIcon::Close, "Close find").clicked() {
+                        let close = icon_button(ui, icons, ToolbarIcon::Close, "Close find");
+                        self.close_rect = Some(close.rect);
+                        if close.clicked() {
                             command = Some(FindBarCommand::Closed);
                         }
                     });
@@ -607,25 +611,16 @@ mod tests {
         assert!(bar.is_open());
         assert!(!closed);
 
-        let close = button_center(&ctx, "Close find");
-        let _ = ctx.run_ui(input(click(close)), |ui| {
+        let close = bar
+            .close_rect
+            .expect("close button rect from the first frame");
+        let _ = ctx.run_ui(input(click(close.center())), |ui| {
             let (_, command) = bar.show(ui, &mut icons, egui::Id::new("find_bar_query"));
             closed = command == Some(FindBarCommand::Closed);
         });
         assert!(closed);
         assert!(!bar.is_open());
         assert_eq!(bar.query(), "servo");
-    }
-
-    fn button_center(ctx: &egui::Context, label: &str) -> egui::Pos2 {
-        ctx.memory(|memory| {
-            memory
-                .widgets()
-                .iter()
-                .find(|(_, widget)| widget.info.label.as_deref() == Some(label))
-                .map(|(_, widget)| widget.interact_rect.center())
-                .unwrap_or_else(|| panic!("no widget labeled {label}"))
-        })
     }
 
     fn input(events: Vec<egui::Event>) -> egui::RawInput {

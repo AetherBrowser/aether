@@ -7585,12 +7585,21 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
     /// it covers. An empty list clears them. Ranges may span several text nodes.
     #[allow(unsafe_code)]
     fn AetherSetFindHighlights(&self, ranges: Vec<DomRoot<Range>>) {
-        let previous = std::mem::take(&mut *self.find_highlight_nodes.borrow_mut());
-        for text in previous {
+        rooted_vec!(let previous <- self.find_highlight_nodes.take().into_iter());
+        for text in previous.iter() {
             text.set_find_highlights(Vec::new());
-            let _ = text
+            let wrote = text
                 .upcast::<CharacterData>()
                 .set_text_run_find_highlights(&[]);
+            if !wrote {
+                // `::first-letter` keeps its own copy of the ranges. Drop that run so the next
+                // layout rebuilds it from the highlights just cleared on the text node.
+                // SAFETY: this only clears layout data and marks the node dirty. It does not
+                // allocate a garbage-collected object.
+                let no_gc = unsafe { NoGC::new() };
+                text.upcast::<Node>()
+                    .dirty(&no_gc, NodeDamage::ContentOrHeritage);
+            }
         }
 
         let mut grouped: Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)> = Vec::new();
@@ -7602,7 +7611,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                 continue;
             }
             let Some(start_text) = start.downcast::<Text>() else {
-                if &*start == &*end {
+                if start == end {
                     let from = range.start_offset();
                     let to = range.end_offset();
                     for (index, child) in start.children().enumerate() {
@@ -7621,7 +7630,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             if end.downcast::<Text>().is_none() {
                 continue;
             }
-            if &*start == &*end {
+            if start == end {
                 push_find_slice(
                     &mut grouped,
                     &mut index_of,
@@ -7662,7 +7671,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             }
         }
 
-        let mut stored = Vec::new();
+        rooted_vec!(let mut stored);
         for (text, highlights) in grouped {
             text.set_find_highlights(highlights.clone());
             let wrote = text
@@ -7679,7 +7688,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             }
             stored.push(Dom::from_ref(&*text));
         }
-        *self.find_highlight_nodes.borrow_mut() = stored;
+        *self.find_highlight_nodes.borrow_mut() = stored.iter().cloned().collect();
         self.window().layout().set_needs_new_display_list();
     }
 
