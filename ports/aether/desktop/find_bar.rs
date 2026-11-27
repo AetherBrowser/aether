@@ -22,6 +22,8 @@ pub(crate) enum FindBarCommand {
     Closed,
     /// The highlight-all checkbox was toggled.
     HighlightChanged,
+    /// The window size changed. Keep the current match and bring it back into view.
+    Recenter,
 }
 
 /// Chrome find bar: query field, `active/total`, previous, next, close.
@@ -39,6 +41,8 @@ pub(crate) struct FindBar {
     generation: u64,
     /// Set when a closed bar is opened again with a query still in the field.
     pending_search: bool,
+    /// Set when the webview size changes so the current match is scrolled again.
+    pending_recenter: bool,
 }
 
 impl FindBar {
@@ -48,6 +52,13 @@ impl FindBar {
         self.focus_requested = true;
         if was_closed && !self.query.is_empty() {
             self.pending_search = true;
+        }
+    }
+
+    /// Ask the next paint to scroll the current match back into the resized viewport.
+    pub(crate) fn recenter_on_resize(&mut self) {
+        if self.open && !self.query.is_empty() {
+            self.pending_recenter = true;
         }
     }
 
@@ -164,6 +175,9 @@ impl FindBar {
                             FindBarCommand::Next
                         });
                         field.request_focus();
+                    }
+                    if command.is_none() && std::mem::take(&mut self.pending_recenter) {
+                        command = Some(FindBarCommand::Recenter);
                     }
                     if command.is_none() && std::mem::take(&mut self.pending_search) {
                         self.active = 0;
@@ -366,16 +380,54 @@ pub(crate) fn find_script(
     return {{ lower: lower, map: map }};
   }}
   function scrollMatch(range) {{
-    let node = range.startContainer;
-    if (!node) return;
-    if (node.nodeType !== 1) node = node.parentElement;
-    if (!node) return;
-    if (node.scrollIntoView) node.scrollIntoView(true);
-    const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
-    if (!rect || (rect.top >= 0 && rect.bottom <= window.innerHeight)) return;
-    const scroller = document.scrollingElement || document.documentElement;
-    if (scroller) scroller.scrollTop += rect.top - 80;
+    const node = range.startContainer;
+    if (!node || !node.parentNode) return;
+    const startOffset = range.startOffset;
+    const endNode = range.endContainer;
+    const endOffset = range.endOffset;
+    let offset = startOffset;
+    if (node.nodeType === 3 && endNode === node && endOffset > offset) {{
+      offset += Math.floor((endOffset - offset) / 2);
+    }}
+    const marker = document.createElement("span");
+    marker.textContent = "\\u200b";
+    try {{
+      if (node.nodeType === 3 && offset === 0) {{
+        node.parentNode.insertBefore(marker, node);
+      }} else if (node.nodeType === 3 && offset >= node.length) {{
+        node.parentNode.insertBefore(marker, node.nextSibling);
+      }} else {{
+        const at = range.cloneRange();
+        at.setStart(node, offset);
+        at.collapse(true);
+        at.insertNode(marker);
+      }}
+      if (marker.scrollIntoView) marker.scrollIntoView({{ block: "center", inline: "center" }});
+    }} catch (error) {{
+      const host = node.nodeType === 1 ? node : node.parentElement;
+      if (host && host.scrollIntoView) host.scrollIntoView({{ block: "center", inline: "center" }});
+    }}
+    if (marker.parentNode) {{
+      const parent = marker.parentNode;
+      parent.removeChild(marker);
+      if (parent.normalize) parent.normalize();
+    }}
+    try {{
+      range.setStart(node, startOffset);
+      range.setEnd(endNode, endOffset);
+      if (selection) {{
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }}
+    }} catch (error) {{}}
   }}
+  if (window.__aetherFindScroll) window.removeEventListener("resize", window.__aetherFindScroll);
+  window.__aetherFindScroll = function() {{
+    const current = window.getSelection && window.getSelection();
+    if (!current || !current.rangeCount) return;
+    scrollMatch(current.getRangeAt(0));
+  }};
+  window.addEventListener("resize", window.__aetherFindScroll);
   function locate(segs, combinedLength, index) {{
     if (!segs.length) return null;
     if (index >= combinedLength) {{
@@ -433,6 +485,14 @@ pub(crate) fn find_script(
   }}
   if (!stale()) {{
     try {{
+      if (selection && document.createRange && chosen) {{
+        const range = document.createRange();
+        range.setStart(chosen.startNode, chosen.startOffset);
+        range.setEnd(chosen.endNode, chosen.endOffset);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        scrollMatch(range);
+      }}
       if (highlightAll && document.aetherSetFindHighlights && document.createRange) {{
         const ranges = [];
         for (let i = 0; i < hits.length; i++) {{
@@ -443,14 +503,6 @@ pub(crate) fn find_script(
           ranges.push(range);
         }}
         document.aetherSetFindHighlights(ranges);
-      }}
-      if (selection && document.createRange && chosen) {{
-        const range = document.createRange();
-        range.setStart(chosen.startNode, chosen.startOffset);
-        range.setEnd(chosen.endNode, chosen.endOffset);
-        selection.removeAllRanges();
-        selection.addRange(range);
-        scrollMatch(range);
       }}
     }} catch (error) {{}}
   }}

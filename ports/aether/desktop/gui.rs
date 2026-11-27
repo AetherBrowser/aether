@@ -999,7 +999,7 @@ impl Gui {
                             FindBarCommand::Previous => {
                                 step_match(bar.active(), bar.total(), false)
                             },
-                            FindBarCommand::HighlightChanged => {
+                            FindBarCommand::HighlightChanged | FindBarCommand::Recenter => {
                                 let active = bar.active();
                                 if active == 0 { 1 } else { active }
                             },
@@ -1129,7 +1129,12 @@ impl Gui {
                 // `rect` is sized to just the WebView viewport, which is required by
                 // `OffscreenRenderingContext` See:
                 // <https://github.com/servo/servo/issues/38369#issuecomment-3138378527>
-                webview.resize(PhysicalSize::new(size.width as u32, size.height as u32))
+                webview.resize(PhysicalSize::new(size.width as u32, size.height as u32));
+                let id = webview.id();
+                if let Some(bar) = self.find_bars.get_mut(&id) {
+                    bar.recenter_on_resize();
+                    ctx.request_repaint();
+                }
             }
 
             if let Some(status_text) = &self.status_text {
