@@ -73,6 +73,7 @@ impl FindBar {
         self.pending_search = self.open && !self.query.is_empty();
     }
 
+    #[cfg(test)]
     pub(crate) fn is_open(&self) -> bool {
         self.open
     }
@@ -194,7 +195,7 @@ impl FindBar {
                     let label = match_label(self.active, self.total, self.query.is_empty());
                     let count = ui.add(egui::Label::new(label).selectable(false));
                     if self.total == 0 && !self.query.is_empty() {
-                        count.clone().on_hover_text("No matches");
+                        count.on_hover_text("No matches");
                     }
 
                     if icon_button(ui, icons, ToolbarIcon::ChevronUp, "Previous match").clicked() {

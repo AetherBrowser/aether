@@ -102,6 +102,9 @@ fn location_text(url: &Url) -> String {
     }
 }
 
+/// Latest search result for one tab: generation, active match, total.
+type FindOutcome = (u64, usize, usize);
+
 /// The user interface of a headed servoshell. Currently this is implemented via
 /// egui.
 pub struct Gui {
@@ -130,7 +133,7 @@ pub struct Gui {
     find_bar_rect: egui::Rect,
 
     /// Latest `(generation, active, total)` per tab, written when that page's search finishes.
-    find_outcome: Rc<RefCell<HashMap<WebViewId, (u64, usize, usize)>>>,
+    find_outcome: Rc<RefCell<HashMap<WebViewId, FindOutcome>>>,
 
     /// The [`LoadStatus`] of the active `WebView`.
     load_status: LoadStatus,
