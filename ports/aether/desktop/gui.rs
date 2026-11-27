@@ -1024,9 +1024,11 @@ impl Gui {
                         webview.evaluate_javascript(
                             find_script(&query, index, highlight_all, generation),
                             move |result| {
-                                if let Ok(JSValue::String(text)) = result
-                                    && let Some((active, total)) = parse_find_count(&text)
-                                {
+                                let parsed = match result {
+                                    Ok(JSValue::String(text)) => parse_find_count(&text),
+                                    _ => Some((0, 0)),
+                                };
+                                if let Some((active, total)) = parsed {
                                     let mut pending = outcome.borrow_mut();
                                     match pending.get(&id) {
                                         Some((stored, _, _)) if *stored > generation => {},
@@ -1212,6 +1214,11 @@ impl Gui {
         });
         match current_url_string {
             Some(location) if location != self.location => {
+                if let Some(id) = window.active_webview().map(|webview| webview.id())
+                    && let Some(bar) = self.find_bars.get_mut(&id)
+                {
+                    bar.invalidate_document();
+                }
                 self.location = location;
                 // Keep the whole address selected, so typing replaces it.
                 if self.location_has_focus() {
@@ -1226,6 +1233,8 @@ impl Gui {
     /// Keeps the location edited in the tab being left, and shows the one edited in the newly
     /// active tab, if any. Returns true iff the active tab changed.
     fn update_location_webview(&mut self, window: &ServoShellWindow) -> bool {
+        self.find_bars
+            .retain(|id, _| window.webview_by_id(*id).is_some());
         let active_id = window.active_webview().map(|webview| webview.id());
         if active_id == self.location_webview {
             return false;
@@ -1237,8 +1246,6 @@ impl Gui {
                 .insert(previous_id, std::mem::take(&mut self.location));
         }
         self.edited_locations
-            .retain(|id, _| window.webview_by_id(*id).is_some());
-        self.find_bars
             .retain(|id, _| window.webview_by_id(*id).is_some());
         self.location_webview = active_id;
         match active_id.and_then(|id| self.edited_locations.remove(&id)) {

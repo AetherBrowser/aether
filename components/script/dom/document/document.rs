@@ -5794,6 +5794,7 @@ fn next_in_tree_order(node: &Node) -> Option<DomRoot<Node>> {
 
 fn push_find_slice(
     grouped: &mut Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)>,
+    index_of: &mut HashMap<*const Text, usize>,
     text: DomRoot<Text>,
     start_utf16: u32,
     end_utf16: u32,
@@ -5810,10 +5811,27 @@ fn push_find_slice(
         }
         RangeAny::new(Some(start), Some(end))
     };
-    if let Some((_, highlights)) = grouped.iter_mut().find(|(node, _)| *node == text) {
-        highlights.push(highlight);
+    let key = &*text as *const Text;
+    if let Some(&index) = index_of.get(&key) {
+        grouped[index].1.push(highlight);
     } else {
+        index_of.insert(key, grouped.len());
         grouped.push((text, vec![highlight]));
+    }
+}
+
+fn push_descendant_text(
+    grouped: &mut Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)>,
+    index_of: &mut HashMap<*const Text, usize>,
+    node: &Node,
+) {
+    if let Some(text) = node.downcast::<Text>() {
+        let len = text.upcast::<CharacterData>().Length();
+        push_find_slice(grouped, index_of, DomRoot::from_ref(text), 0, len);
+        return;
+    }
+    for child in node.children() {
+        push_descendant_text(grouped, index_of, &child);
     }
 }
 
@@ -7565,6 +7583,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
 
     /// Replace the find-in-page highlights. Each range is painted under the glyphs of the text
     /// it covers. An empty list clears them. Ranges may span several text nodes.
+    #[allow(unsafe_code)]
     fn AetherSetFindHighlights(&self, ranges: Vec<DomRoot<Range>>) {
         let previous = std::mem::take(&mut *self.find_highlight_nodes.borrow_mut());
         for text in previous {
@@ -7575,10 +7594,28 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         }
 
         let mut grouped: Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)> = Vec::new();
+        let mut index_of: HashMap<*const Text, usize> = HashMap::new();
         for range in ranges {
             let start = range.start_container();
             let end = range.end_container();
+            if !std::ptr::eq(&*start.owner_doc(), self) || !std::ptr::eq(&*end.owner_doc(), self) {
+                continue;
+            }
             let Some(start_text) = start.downcast::<Text>() else {
+                if &*start == &*end {
+                    let from = range.start_offset();
+                    let to = range.end_offset();
+                    for (index, child) in start.children().enumerate() {
+                        let index = index as u32;
+                        if index < from {
+                            continue;
+                        }
+                        if index >= to {
+                            break;
+                        }
+                        push_descendant_text(&mut grouped, &mut index_of, &child);
+                    }
+                }
                 continue;
             };
             if end.downcast::<Text>().is_none() {
@@ -7587,6 +7624,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             if &*start == &*end {
                 push_find_slice(
                     &mut grouped,
+                    &mut index_of,
                     DomRoot::from_ref(start_text),
                     range.start_offset(),
                     range.end_offset(),
@@ -7596,6 +7634,7 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
             let start_len = start_text.upcast::<CharacterData>().Length();
             push_find_slice(
                 &mut grouped,
+                &mut index_of,
                 DomRoot::from_ref(start_text),
                 range.start_offset(),
                 start_len,
@@ -7607,12 +7646,18 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                     continue;
                 };
                 if text.upcast::<Node>() == &*end {
-                    push_find_slice(&mut grouped, DomRoot::from_ref(text), 0, range.end_offset());
+                    push_find_slice(
+                        &mut grouped,
+                        &mut index_of,
+                        DomRoot::from_ref(text),
+                        0,
+                        range.end_offset(),
+                    );
                     break;
                 }
                 let len = text.upcast::<CharacterData>().Length();
                 let next = next_in_tree_order(text.upcast::<Node>());
-                push_find_slice(&mut grouped, DomRoot::from_ref(text), 0, len);
+                push_find_slice(&mut grouped, &mut index_of, DomRoot::from_ref(text), 0, len);
                 node = next;
             }
         }
@@ -7620,9 +7665,17 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
         let mut stored = Vec::new();
         for (text, highlights) in grouped {
             text.set_find_highlights(highlights.clone());
-            let _ = text
+            let wrote = text
                 .upcast::<CharacterData>()
                 .set_text_run_find_highlights(&highlights);
+            if !wrote {
+                // `::first-letter` splits the node into several runs. Drop the cached run so the
+                // next layout rebuilds it from the highlights stored on the text node.
+                // SAFETY: this only clears layout data and marks the node dirty. It does not
+                // allocate a garbage-collected object.
+                let no_gc = unsafe { NoGC::new() };
+                text.upcast::<Node>().dirty(&no_gc, NodeDamage::ContentOrHeritage);
+            }
             stored.push(Dom::from_ref(&*text));
         }
         *self.find_highlight_nodes.borrow_mut() = stored;

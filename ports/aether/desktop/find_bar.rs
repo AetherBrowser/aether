@@ -37,12 +37,27 @@ pub(crate) struct FindBar {
     highlight_all: bool,
     /// Bumped on every search so a late result cannot overwrite a newer one.
     generation: u64,
+    /// Set when a closed bar is opened again with a query still in the field.
+    pending_search: bool,
 }
 
 impl FindBar {
     pub(crate) fn open(&mut self) {
+        let was_closed = !self.open;
         self.open = true;
         self.focus_requested = true;
+        if was_closed && !self.query.is_empty() {
+            self.pending_search = true;
+        }
+    }
+
+    /// Drops the match count after the document changes. A following paint searches again
+    /// when the bar is open and the query is not empty.
+    pub(crate) fn invalidate_document(&mut self) {
+        self.active = 0;
+        self.total = 0;
+        self.generation = self.generation.wrapping_add(1);
+        self.pending_search = self.open && !self.query.is_empty();
     }
 
     pub(crate) fn is_open(&self) -> bool {
@@ -121,6 +136,8 @@ impl FindBar {
                     });
 
                     if field.changed() {
+                        self.active = 0;
+                        self.total = 0;
                         command = Some(FindBarCommand::QueryChanged);
                     }
                     if std::mem::take(&mut self.focus_requested) {
@@ -134,7 +151,10 @@ impl FindBar {
                             input.modifiers.shift,
                         )
                     });
-                    if field.has_focus() && escape {
+                    // This egui version has no public setter for `TextEdit`'s escape filter,
+                    // and Escape clears the field's focus before `has_focus` is read.
+                    // `lost_focus` is still true on that frame, so Escape closes the bar.
+                    if escape && (field.has_focus() || field.lost_focus()) {
                         command = Some(FindBarCommand::Closed);
                     }
                     if field.lost_focus() && enter {
@@ -144,6 +164,11 @@ impl FindBar {
                             FindBarCommand::Next
                         });
                         field.request_focus();
+                    }
+                    if command.is_none() && std::mem::take(&mut self.pending_search) {
+                        self.active = 0;
+                        self.total = 0;
+                        command = Some(FindBarCommand::QueryChanged);
                     }
 
                     let label = match_label(self.active, self.total, self.query.is_empty());
@@ -237,23 +262,6 @@ pub(crate) fn find_script(
       window.removeEventListener("resize", window.__aetherFindScroll);
       window.__aetherFindScroll = null;
     }}
-    const overlay = document.getElementById("aether-find-overlay");
-    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-    const style = document.getElementById("aether-find-style");
-    if (style && style.parentNode) style.parentNode.removeChild(style);
-    const marks = document.querySelectorAll ? document.querySelectorAll("mark.aether-find") : [];
-    const parents = [];
-    for (let i = marks.length - 1; i >= 0; i--) {{
-      const mark = marks[i];
-      const parent = mark.parentNode;
-      if (!parent) continue;
-      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
-      parent.removeChild(mark);
-      parents.push(parent);
-    }}
-    for (let i = 0; i < parents.length; i++) {{
-      if (parents[i].normalize) parents[i].normalize();
-    }}
   }}
   if (!query || !document.body) {{
     if (!stale()) {{
@@ -322,6 +330,10 @@ pub(crate) fn find_script(
     let next = elementWalker.nextNode();
     while (next) {{
       if (to.compareDocumentPosition(next) & 4) return false;
+      if (hiddenByStyle(next)) {{
+        next = elementWalker.nextNode();
+        continue;
+      }}
       if (next.localName === "br" || next.localName === "wbr" || isBlockBox(next)) return true;
       next = elementWalker.nextNode();
     }}
@@ -339,11 +351,50 @@ pub(crate) fn find_script(
     run.parts.push(node);
     run.last = node;
   }}
+  function foldPart(text) {{
+    let lower = "";
+    const map = [];
+    for (let i = 0; i < text.length; ) {{
+      const ch = String.fromCodePoint(text.codePointAt(i));
+      const folded = ch.toLowerCase();
+      const origin = i;
+      i += ch.length;
+      lower += folded;
+      for (let k = 0; k < folded.length; k++) map.push(origin);
+    }}
+    map.push(text.length);
+    return {{ lower: lower, map: map }};
+  }}
+  function scrollMatch(range) {{
+    const containers = [];
+    let node = range.startContainer;
+    if (node.nodeType !== 1) node = node.parentElement;
+    while (node) {{
+      containers.push(node);
+      node = node.parentElement;
+    }}
+    for (let i = 0; i < containers.length; i++) {{
+      const container = containers[i];
+      if (container.scrollHeight <= container.clientHeight + 1) continue;
+      const live = range.getClientRects();
+      if (!live.length) break;
+      const rect = live[0];
+      const box = container.getBoundingClientRect();
+      if (rect.top < box.top || rect.bottom > box.bottom) {{
+        container.scrollTop += rect.top - box.top - Math.min(40, container.clientHeight / 4);
+      }}
+    }}
+    const live = range.getClientRects();
+    if (live.length) {{
+      const rect = live[0];
+      if (rect.top < 0 || rect.bottom > window.innerHeight) window.scrollBy(0, rect.top - 80);
+    }}
+  }}
   function locate(segs, combinedLength, index) {{
     if (!segs.length) return null;
     if (index >= combinedLength) {{
       const last = segs[segs.length - 1];
-      return {{ node: last.node, offset: last.length }};
+      return {{ node: last.node, offset: last.map[last.map.length - 1] }};
     }}
     let lo = 0;
     let hi = segs.length - 1;
@@ -352,7 +403,7 @@ pub(crate) fn find_script(
       const seg = segs[mid];
       if (index < seg.start) hi = mid - 1;
       else if (index >= seg.start + seg.length) lo = mid + 1;
-      else return {{ node: seg.node, offset: index - seg.start }};
+      else return {{ node: seg.node, offset: seg.map[index - seg.start] }};
     }}
     return null;
   }}
@@ -367,8 +418,9 @@ pub(crate) fn find_script(
     for (let p = 0; p < parts.length; p++) {{
       const text = parts[p].textContent || "";
       if (!text.length) continue;
-      segs.push({{ node: parts[p], start: combined.length, length: text.length }});
-      combined += text.toLowerCase();
+      const folded = foldPart(text);
+      segs.push({{ node: parts[p], start: combined.length, length: folded.lower.length, map: folded.map }});
+      combined += folded.lower;
     }}
     let from = 0;
     while (from < combined.length) {{
@@ -412,10 +464,7 @@ pub(crate) fn find_script(
         range.setEnd(chosen.endNode, chosen.endOffset);
         selection.removeAllRanges();
         selection.addRange(range);
-        const target = chosen.startNode.parentElement;
-        if (target && target.scrollIntoView) target.scrollIntoView(true);
-      }} else if (selection) {{
-        selection.removeAllRanges();
+        scrollMatch(range);
       }}
     }} catch (error) {{}}
   }}
