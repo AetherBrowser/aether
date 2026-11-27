@@ -70,9 +70,9 @@ use script_bindings::trace::CustomTraceable;
 use script_traits::{DocumentActivity, ProgressiveWebMetricType};
 use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::generic_channel::GenericSend;
 use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId, WebViewId};
+use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
 use servo_constellation_traits::{
@@ -102,6 +102,7 @@ use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::{ExceptionHandling, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEvent_Binding::BeforeUnloadEventMethods;
+use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState, DocumentVisibilityState, ElementCreationOptions,
     NamedPropertyValue,
@@ -113,7 +114,6 @@ use crate::dom::bindings::codegen::Bindings::HTMLIFrameElementBinding::HTMLIFram
 use crate::dom::bindings::codegen::Bindings::IntersectionObserverBinding::IntersectionObserverMethods;
 #[cfg(any(feature = "webxr", feature = "gamepad"))]
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::Navigator_Binding::NavigatorMethods;
-use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
 use crate::dom::bindings::codegen::Bindings::NodeFilterBinding::NodeFilter;
 use crate::dom::bindings::codegen::Bindings::PerformanceBinding::PerformanceMethods;
@@ -7674,7 +7674,8 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                 // SAFETY: this only clears layout data and marks the node dirty. It does not
                 // allocate a garbage-collected object.
                 let no_gc = unsafe { NoGC::new() };
-                text.upcast::<Node>().dirty(&no_gc, NodeDamage::ContentOrHeritage);
+                text.upcast::<Node>()
+                    .dirty(&no_gc, NodeDamage::ContentOrHeritage);
             }
             stored.push(Dom::from_ref(&*text));
         }

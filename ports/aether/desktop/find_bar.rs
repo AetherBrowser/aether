@@ -103,7 +103,11 @@ impl FindBar {
     /// Updates the counter the bar displays. `active` is 1-based and `0` when `total` is `0`.
     pub(crate) fn set_matches(&mut self, active: usize, total: usize) {
         self.total = total;
-        self.active = if total == 0 { 0 } else { active.clamp(1, total) };
+        self.active = if total == 0 {
+            0
+        } else {
+            active.clamp(1, total)
+        };
     }
 
     /// Paints the bar along the bottom of the window when it is open.
@@ -541,10 +545,12 @@ fn icon_button(
 
 fn select_all(ctx: &egui::Context, id: egui::Id, query: &str) {
     if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, id) {
-        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-            egui::text::CCursor::new(0),
-            egui::text::CCursor::new(query.len()),
-        )));
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(query.len()),
+            )));
         state.store(ctx, id);
     }
 }

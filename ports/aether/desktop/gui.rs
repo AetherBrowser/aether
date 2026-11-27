@@ -983,8 +983,8 @@ impl Gui {
                     }
                 }
                 let active_id = window.active_webview().map(|webview| webview.id());
-                let search = if let Some(id) = active_id
-                    && let Some(bar) = self.find_bars.get_mut(&id)
+                let search = if let Some(id) = active_id &&
+                    let Some(bar) = self.find_bars.get_mut(&id)
                 {
                     let (find_rect, find_command) =
                         bar.show(ctx, toolbar_icons, egui::Id::new(("find_bar_query", id)));
@@ -993,9 +993,7 @@ impl Gui {
                         let index = match command {
                             FindBarCommand::Closed => 0,
                             FindBarCommand::QueryChanged => 1,
-                            FindBarCommand::Next => {
-                                step_match(bar.active(), bar.total(), true)
-                            },
+                            FindBarCommand::Next => step_match(bar.active(), bar.total(), true),
                             FindBarCommand::Previous => {
                                 step_match(bar.active(), bar.total(), false)
                             },
@@ -1219,8 +1217,8 @@ impl Gui {
         });
         match current_url_string {
             Some(location) if location != self.location => {
-                if let Some(id) = window.active_webview().map(|webview| webview.id())
-                    && let Some(bar) = self.find_bars.get_mut(&id)
+                if let Some(id) = window.active_webview().map(|webview| webview.id()) &&
+                    let Some(bar) = self.find_bars.get_mut(&id)
                 {
                     bar.invalidate_document();
                 }
