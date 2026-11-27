@@ -437,6 +437,24 @@ impl GenericLayoutDataTrait for DOMLayoutData {
         }
     }
 
+    fn set_text_run_find_highlights(&self, highlights: &[RangeAny<Utf32CodeUnits>]) -> bool {
+        let inner = self.0.borrow();
+        // `::first-letter` splits one DOM text node into several text runs.
+        if inner
+            .pseudo_boxes
+            .iter()
+            .any(|pseudo_box| matches!(pseudo_box.pseudo, PseudoElement::FirstLetter))
+        {
+            return false;
+        }
+        if let Some(LayoutBox::Text(text_run)) = &*inner.self_box.borrow() {
+            *text_run.borrow().run_data.find_highlights.borrow_mut() = highlights.to_vec();
+            true
+        } else {
+            false
+        }
+    }
+
     fn set_element_selection(&self, selected: bool) -> bool {
         let inner = self.0.borrow();
         let inner_box = inner.self_box.borrow();

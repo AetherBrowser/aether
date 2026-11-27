@@ -83,6 +83,13 @@ impl CharacterData {
     }
 
     fn content_changed(&self, cx: &mut JSContext) {
+        if let Some(text) = self.downcast::<Text>() &&
+            self.upcast::<Node>()
+                .owner_doc()
+                .clear_find_highlights_for(text)
+        {
+            let _ = self.set_text_run_find_highlights(&[]);
+        }
         let node = self.upcast::<Node>();
         node.dirty(cx.no_gc(), NodeDamage::Other);
 
@@ -118,6 +125,18 @@ impl CharacterData {
             .is_some_and(|layout_data| {
                 layout_data.set_text_run_selection(new_range, new_paints_caret)
             })
+    }
+
+    /// Returns whether find-in-page ranges were written onto an existing text run.
+    pub(crate) fn set_text_run_find_highlights(
+        &self,
+        highlights: &[RangeAny<Utf32CodeUnits>],
+    ) -> bool {
+        self.upcast::<Node>()
+            .layout_data()
+            .borrow()
+            .as_ref()
+            .is_some_and(|layout_data| layout_data.set_text_run_find_highlights(highlights))
     }
 
     /// Returns the rendered text for this [`CharacterData`].

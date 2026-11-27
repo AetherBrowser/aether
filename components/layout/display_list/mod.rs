@@ -95,6 +95,10 @@ const INSERTION_POINT_LOGICAL_WIDTH: Au = Au(AU_PER_PX);
 static UNFOCUSED_SELECTION_COLOR: LazyLock<AbsoluteColor> =
     LazyLock::new(|| AbsoluteColor::srgb_legacy(200, 200, 200, 1.0));
 
+/// Find-in-page mark. Opaque, because the glyphs are painted after this rectangle.
+static FIND_HIGHLIGHT_COLOR: LazyLock<AbsoluteColor> =
+    LazyLock::new(|| AbsoluteColor::srgb_legacy(255, 238, 128, 1.0));
+
 pub(crate) struct DisplayListBuilder<'a> {
     /// The [`FragmentTree`] that we are building a display list for.
     fragment_tree: &'a FragmentTree,
@@ -1234,6 +1238,7 @@ impl Fragment {
             );
         }
 
+        Self::build_display_list_for_find_highlights(fragment, builder, state, line_box_rect);
         Self::build_display_list_for_text_selection(fragment, builder, state, line_box_rect);
 
         for decoration in [
@@ -1488,6 +1493,105 @@ impl Fragment {
                 do_aa: true,
             }),
         );
+    }
+
+    /// Yellow rectangles behind the glyphs of every find-in-page match in this fragment.
+    fn build_display_list_for_find_highlights(
+        fragment: &TextFragment,
+        builder: &mut DisplayListBuilder<'_>,
+        state: &TraversalState,
+        line_box_rect: &PhysicalRect<Au>,
+    ) {
+        let highlights = fragment.run_data.find_highlights.borrow().clone();
+        let color = *FIND_HIGHLIGHT_COLOR;
+        for highlight in highlights {
+            let range = fragment
+                .run_data
+                .map_dom_range_to_transformed_range(highlight);
+            Self::push_character_range_background(
+                fragment,
+                builder,
+                state,
+                line_box_rect,
+                range.start,
+                range.end,
+                color,
+            );
+        }
+    }
+
+    /// Paint one character range under the glyphs. `start` and `end` are post-transform offsets
+    /// in this fragment's text run, the same space as `character_range_in_dom_node`.
+    fn push_character_range_background(
+        fragment: &TextFragment,
+        builder: &mut DisplayListBuilder<'_>,
+        state: &TraversalState,
+        line_box_rect: &PhysicalRect<Au>,
+        range_start: servo_base::text::Utf32CodeUnits,
+        range_end: servo_base::text::Utf32CodeUnits,
+        color: AbsoluteColor,
+    ) {
+        if range_start >= range_end {
+            return;
+        }
+        if fragment.character_range_in_dom_node.start > range_end ||
+            fragment.character_range_in_dom_node.end < range_start
+        {
+            return;
+        }
+
+        let mut current_character_index = fragment.character_range_in_dom_node.start;
+        let mut current_advance = Au::zero();
+        let mut start_advance = None;
+        let mut end_advance = None;
+        for glyph_store in fragment.glyphs.iter() {
+            let glyph_store_character_count = glyph_store.character_count();
+            if current_character_index + glyph_store_character_count < range_start {
+                current_advance += glyph_store.total_advance() +
+                    (fragment.justification_adjustment *
+                        glyph_store.total_word_separators() as i32);
+                current_character_index += glyph_store_character_count;
+                continue;
+            }
+
+            if current_character_index >= range_end {
+                break;
+            }
+
+            for glyph in glyph_store.glyphs() {
+                if current_character_index >= range_start {
+                    start_advance = start_advance.or(Some(current_advance));
+                }
+
+                current_character_index += glyph.character_count();
+                current_advance += glyph.advance();
+                if glyph.char_is_word_separator() {
+                    current_advance += fragment.justification_adjustment;
+                }
+
+                if current_character_index <= range_end {
+                    end_advance = Some(current_advance);
+                }
+            }
+        }
+
+        let start_x = start_advance.unwrap_or(current_advance);
+        let end_x = end_advance.unwrap_or(current_advance);
+        if end_x <= start_x {
+            return;
+        }
+
+        let fragment_rect = fragment.base.rect();
+        let fragment_origin =
+            (state.origin + fragment_rect.origin.to_vector()) + Vector2D::new(start_x, Au::zero());
+        let highlight_rect = Rect::new(
+            Point2D::new(fragment_origin.x, line_box_rect.min_y()),
+            Size2D::new(end_x - start_x, line_box_rect.height()),
+        )
+        .to_webrender();
+        let parent_style = fragment.style();
+        let common = builder.common_properties(state, highlight_rect, &parent_style);
+        builder.wr().push_rect(&common, highlight_rect, rgba(color));
     }
 
     // TODO: This caret/text selection implementation currently does not account for vertical text

@@ -331,15 +331,16 @@ impl InlineFormattingContextBuilder {
         layout_context: &LayoutContext,
     ) -> bool {
         let selection = info.node.text_node_selection();
+        let highlights = info.node.text_node_find_highlights();
         if !self.should_process_first_letter || !container_info.pseudo_element_chain().is_empty() {
-            self.push_text(text, info, selection);
+            self.push_text(text, info, selection, highlights);
             return false;
         }
 
         let Some(first_letter_info) =
             container_info.with_pseudo_element(layout_context, PseudoElement::FirstLetter)
         else {
-            self.push_text(text, info, selection);
+            self.push_text(text, info, selection, highlights);
             return false;
         };
 
@@ -366,6 +367,11 @@ impl InlineFormattingContextBuilder {
                 Cow::Borrowed(&text[leading_whitespace_range]).into(),
                 info,
                 leading_whitespace_selection_range,
+                clip_find_highlights(
+                    &highlights,
+                    RangeAny::from_start_to(first_letter_range_u32.start),
+                    Utf32CodeUnits(0),
+                ),
             );
         }
 
@@ -387,6 +393,11 @@ impl InlineFormattingContextBuilder {
             first_letter_text.into(),
             &first_letter_info,
             first_letter_selection_range,
+            clip_find_highlights(
+                &highlights,
+                (*first_letter_range_u32).clone().into(),
+                first_letter_range_u32.start,
+            ),
         );
         self.end_inline_box();
         self.should_process_first_letter = false;
@@ -403,6 +414,11 @@ impl InlineFormattingContextBuilder {
             Cow::Borrowed(&text[first_letter_range.end..]).into(),
             info,
             remaining_selection_range,
+            clip_find_highlights(
+                &highlights,
+                RangeAny::new(Some(first_letter_range_u32.end), None),
+                first_letter_range_u32.end,
+            ),
         );
 
         true
@@ -413,6 +429,7 @@ impl InlineFormattingContextBuilder {
         text: BoxTreeString<'dom>,
         info: &NodeAndStyleInfo<'dom>,
         selection: Option<RangeAny<Utf32CodeUnits>>,
+        find_highlights: Vec<RangeAny<Utf32CodeUnits>>,
     ) {
         let mut offset_map = self.offset_map.borrow_mut();
         let original_size_before = offset_map.total_original_size();
@@ -493,6 +510,7 @@ impl InlineFormattingContextBuilder {
                 character_range_in_ifc_text: new_character_range,
                 original_offset: original_size_before,
                 selection: AtomicRefCell::new(selection),
+                find_highlights: AtomicRefCell::new(find_highlights),
                 needs_caret_placeholder,
                 paints_caret: info.node.text_node_paints_caret().into(),
                 offset_map: self.offset_map.clone(),
@@ -626,6 +644,23 @@ fn first_letter_range(text: &str) -> Range<usize> {
         State::Start | State::PrecedingPunctuation => 0..0,
         State::Lns | State::TrailingPunctuation => start..text.len(),
     }
+}
+
+/// Keep the parts of `highlights` that fall inside `slice`, then rebase them so offset 0
+/// is the start of that slice. Each `::first-letter` slice has its own offset map.
+fn clip_find_highlights(
+    highlights: &[RangeAny<Utf32CodeUnits>],
+    slice: RangeAny<Utf32CodeUnits>,
+    origin: Utf32CodeUnits,
+) -> Vec<RangeAny<Utf32CodeUnits>> {
+    highlights
+        .iter()
+        .filter_map(|range| {
+            range
+                .intersect(slice)
+                .map(|range| range.map(|offset| offset - origin))
+        })
+        .collect()
 }
 
 #[cfg(test)]

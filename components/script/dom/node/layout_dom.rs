@@ -280,6 +280,14 @@ impl<'dom> LayoutDom<'dom, Node> {
         Some(RangeAny::new(start, end))
     }
 
+    pub(crate) fn find_highlights_for_text_node(&self) -> Vec<RangeAny<Utf32CodeUnits>> {
+        let Some(text) = self.downcast::<Text>() else {
+            return Vec::new();
+        };
+        self.owner_doc_for_layout()
+            .find_highlights_for_text_layout(text.unsafe_get())
+    }
+
     pub(crate) fn text_node_paints_caret(&self) -> bool {
         self.parent_node_ref()
             .is_some_and(|parent| parent.is_text_container_of_single_line_input()) ||

@@ -186,6 +186,12 @@ pub trait LayoutNode<'dom>: Copy + Debug + NodeInfo + Send + Sync {
     /// Returned offsets are counted in `char`s in the `self.text_content()` string.
     fn text_node_selection(&self) -> Option<RangeAny<Utf32CodeUnits>>;
 
+    /// Find-in-page ranges for this text node, in the same offsets as
+    /// [`Self::text_node_selection`]. Empty when this node is not highlighted.
+    fn text_node_find_highlights(&self) -> Vec<RangeAny<Utf32CodeUnits>> {
+        Vec::new()
+    }
+
     /// For a text node, whether a caret should be painted when the selection is an empty range
     /// (start == end)
     fn text_node_paints_caret(&self) -> bool;

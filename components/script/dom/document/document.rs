@@ -72,6 +72,7 @@ use servo_arc::Arc;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSend;
 use servo_base::id::{ContainerTimingID, LCPCandidateID, PipelineId, WebViewId};
+use servo_base::text::{RangeAny, Utf16CodeUnits, Utf32CodeUnits};
 use servo_base::{Epoch, generic_channel};
 use servo_config::pref;
 use servo_constellation_traits::{
@@ -101,6 +102,7 @@ use crate::dom::beforeunloadevent::BeforeUnloadEvent;
 use crate::dom::bindings::callback::{ExceptionHandling, TracedCallback};
 use crate::dom::bindings::codegen::Bindings::AnimationFrameProviderBinding::FrameRequestCallback;
 use crate::dom::bindings::codegen::Bindings::BeforeUnloadEventBinding::BeforeUnloadEvent_Binding::BeforeUnloadEventMethods;
+use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
     DocumentMethods, DocumentReadyState, DocumentVisibilityState, ElementCreationOptions,
     NamedPropertyValue,
@@ -141,6 +143,7 @@ use crate::dom::bindings::trace::{HashMapTracedValues, NoTrace};
 use crate::dom::bindings::weakref::DOMTracker;
 use crate::dom::bindings::xmlname::matches_name_production;
 use crate::dom::cdatasection::CDATASection;
+use crate::dom::characterdata::CharacterData;
 use crate::dom::comment::Comment;
 use crate::dom::compositionevent::CompositionEvent;
 use crate::dom::css::cssstylesheet::CSSStyleSheet;
@@ -621,6 +624,14 @@ pub(crate) struct Document {
     /// where `id` needs to match any of the registered ShadowRoots
     /// hosting the media controls UI.
     media_controls: DomRefCell<HashMap<String, Dom<ShadowRoot>>>,
+    /// Text nodes that currently carry find-in-page highlights, so the next search can clear them.
+    find_highlight_nodes: DomRefCell<Vec<Dom<Text>>>,
+    /// Find-in-page ranges keyed by text-node address, in UTF-32 offsets of that node's data.
+    /// Kept off [`Text`] so the DOM struct stays the size `size_of` expects. Layout reads this
+    /// while rebuilding a text run.
+    #[no_trace]
+    #[ignore_malloc_size_of = "find-in-page ranges for a handful of text nodes"]
+    find_highlights: AtomicRefCell<FxHashMap<usize, Vec<RangeAny<Utf32CodeUnits>>>>,
     /// A set of dirty HTML canvas elements that need their WebRender images updated the
     /// next time the rendering is updated.
     dirty_canvases: DomRefCell<Vec<Dom<HTMLCanvasElement>>>,
@@ -4197,6 +4208,42 @@ struct DocumentSizes {
     other_nodes_size: usize,
 }
 
+impl Document {
+    fn find_highlight_key(text: &Text) -> usize {
+        std::ptr::from_ref(text) as usize
+    }
+
+    /// Store find-in-page ranges for `text`. An empty list removes the entry.
+    pub(crate) fn set_find_highlights_for(
+        &self,
+        text: &Text,
+        highlights: Vec<RangeAny<Utf32CodeUnits>>,
+    ) {
+        let mut map = self.find_highlights.borrow_mut();
+        if highlights.is_empty() {
+            map.remove(&Self::find_highlight_key(text));
+        } else {
+            map.insert(Self::find_highlight_key(text), highlights);
+        }
+    }
+
+    /// Remove find-in-page ranges for `text`. Returns whether any were stored.
+    pub(crate) fn clear_find_highlights_for(&self, text: &Text) -> bool {
+        self.find_highlights
+            .borrow_mut()
+            .remove(&Self::find_highlight_key(text))
+            .is_some_and(|highlights| !highlights.is_empty())
+    }
+
+    pub(crate) fn find_highlights_for(&self, text: &Text) -> Vec<RangeAny<Utf32CodeUnits>> {
+        self.find_highlights
+            .borrow()
+            .get(&Self::find_highlight_key(text))
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl<'dom> LayoutDom<'dom, Document> {
     #[inline]
     pub(crate) fn is_html_document_for_layout(&self) -> bool {
@@ -4233,6 +4280,13 @@ impl<'dom> LayoutDom<'dom, Document> {
 
     pub(crate) fn url_for_layout(self) -> ServoUrl {
         self.unsafe_get().url.borrow().clone()
+    }
+
+    pub(crate) fn find_highlights_for_text_layout(
+        &self,
+        text: &Text,
+    ) -> Vec<RangeAny<Utf32CodeUnits>> {
+        self.unsafe_get().find_highlights_for(text)
     }
 
     #[expect(unsafe_code)]
@@ -4456,6 +4510,8 @@ impl Document {
             shadow_roots: Default::default(),
             shadow_roots_styles_changed: Cell::new(false),
             media_controls: DomRefCell::new(HashMap::new()),
+            find_highlight_nodes: DomRefCell::new(Vec::new()),
+            find_highlights: AtomicRefCell::new(FxHashMap::default()),
             dirty_canvases: DomRefCell::new(Default::default()),
             has_pending_animated_image_update: Cell::new(false),
             selection: MutNullableDom::new(None),
@@ -5770,6 +5826,62 @@ impl Document {
             .networking_task_source()
             .queue_simple_event(window.upcast::<EventTarget>(), event_name);
         global_scope.set_network_online_state_on_dedicated_workers(online);
+    }
+}
+
+fn next_in_tree_order(node: &Node) -> Option<DomRoot<Node>> {
+    if let Some(child) = node.GetFirstChild() {
+        return Some(child);
+    }
+    let mut current = DomRoot::from_ref(node);
+    loop {
+        if let Some(sibling) = current.GetNextSibling() {
+            return Some(sibling);
+        }
+        current = current.GetParentNode()?;
+    }
+}
+
+fn push_find_slice(
+    grouped: &mut Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)>,
+    index_of: &mut HashMap<*const Text, usize>,
+    text: DomRoot<Text>,
+    start_utf16: u32,
+    end_utf16: u32,
+) {
+    if start_utf16 >= end_utf16 {
+        return;
+    }
+    let highlight = {
+        let data = text.upcast::<CharacterData>().data();
+        let start = Utf16CodeUnits(start_utf16).to_utf32_code_units_in(&data);
+        let end = Utf16CodeUnits(end_utf16).to_utf32_code_units_in(&data);
+        if start >= end {
+            return;
+        }
+        RangeAny::new(Some(start), Some(end))
+    };
+    let key = &*text as *const Text;
+    if let Some(&index) = index_of.get(&key) {
+        grouped[index].1.push(highlight);
+    } else {
+        index_of.insert(key, grouped.len());
+        grouped.push((text, vec![highlight]));
+    }
+}
+
+fn push_descendant_text(
+    grouped: &mut Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)>,
+    index_of: &mut HashMap<*const Text, usize>,
+    node: &Node,
+) {
+    if let Some(text) = node.downcast::<Text>() {
+        let len = text.upcast::<CharacterData>().Length();
+        push_find_slice(grouped, index_of, DomRoot::from_ref(text), 0, len);
+        return;
+    }
+    for child in node.children() {
+        push_descendant_text(grouped, index_of, &child);
     }
 }
 
@@ -7517,6 +7629,117 @@ impl DocumentMethods<crate::DomTypeHolder> for Document {
                 "No registered media controls exist with provided id".into(),
             ))),
         }
+    }
+
+    /// Replace the find-in-page highlights. Each range is painted under the glyphs of the text
+    /// it covers. An empty list clears them. Ranges may span several text nodes.
+    #[allow(unsafe_code)]
+    fn AetherSetFindHighlights(&self, ranges: Vec<DomRoot<Range>>) {
+        rooted_vec!(let previous <- self.find_highlight_nodes.take().into_iter());
+        for text in previous.iter() {
+            self.set_find_highlights_for(text, Vec::new());
+            let wrote = text
+                .upcast::<CharacterData>()
+                .set_text_run_find_highlights(&[]);
+            if !wrote {
+                // `::first-letter` keeps its own copy of the ranges. Drop that run so the next
+                // layout rebuilds it from the highlights just cleared for this text node.
+                // SAFETY: this only clears layout data and marks the node dirty. It does not
+                // allocate a garbage-collected object.
+                let no_gc = unsafe { NoGC::new() };
+                text.upcast::<Node>()
+                    .dirty(&no_gc, NodeDamage::ContentOrHeritage);
+            }
+        }
+
+        let mut grouped: Vec<(DomRoot<Text>, Vec<RangeAny<Utf32CodeUnits>>)> = Vec::new();
+        let mut index_of: HashMap<*const Text, usize> = HashMap::new();
+        for range in ranges {
+            let start = range.start_container();
+            let end = range.end_container();
+            if !std::ptr::eq(&*start.owner_doc(), self) || !std::ptr::eq(&*end.owner_doc(), self) {
+                continue;
+            }
+            let Some(start_text) = start.downcast::<Text>() else {
+                if start == end {
+                    let from = range.start_offset();
+                    let to = range.end_offset();
+                    for (index, child) in start.children().enumerate() {
+                        let index = index as u32;
+                        if index < from {
+                            continue;
+                        }
+                        if index >= to {
+                            break;
+                        }
+                        push_descendant_text(&mut grouped, &mut index_of, &child);
+                    }
+                }
+                continue;
+            };
+            if end.downcast::<Text>().is_none() {
+                continue;
+            }
+            if start == end {
+                push_find_slice(
+                    &mut grouped,
+                    &mut index_of,
+                    DomRoot::from_ref(start_text),
+                    range.start_offset(),
+                    range.end_offset(),
+                );
+                continue;
+            }
+            let start_len = start_text.upcast::<CharacterData>().Length();
+            push_find_slice(
+                &mut grouped,
+                &mut index_of,
+                DomRoot::from_ref(start_text),
+                range.start_offset(),
+                start_len,
+            );
+            let mut node = next_in_tree_order(start_text.upcast::<Node>());
+            while let Some(current) = node {
+                let Some(text) = current.downcast::<Text>() else {
+                    node = next_in_tree_order(&current);
+                    continue;
+                };
+                if text.upcast::<Node>() == &*end {
+                    push_find_slice(
+                        &mut grouped,
+                        &mut index_of,
+                        DomRoot::from_ref(text),
+                        0,
+                        range.end_offset(),
+                    );
+                    break;
+                }
+                let len = text.upcast::<CharacterData>().Length();
+                let next = next_in_tree_order(text.upcast::<Node>());
+                push_find_slice(&mut grouped, &mut index_of, DomRoot::from_ref(text), 0, len);
+                node = next;
+            }
+        }
+
+        rooted_vec!(let mut stored);
+        for (text, highlights) in grouped {
+            self.set_find_highlights_for(&text, highlights.clone());
+            let wrote = text
+                .upcast::<CharacterData>()
+                .set_text_run_find_highlights(&highlights);
+            if !wrote {
+                // `::first-letter` splits the node into several runs. Drop the cached run so the
+                // next layout rebuilds it from the highlights stored for this text node.
+                // SAFETY: this only clears layout data and marks the node dirty. It does not
+                // allocate a garbage-collected object.
+                let no_gc = unsafe { NoGC::new() };
+                text.upcast::<Node>()
+                    .dirty(&no_gc, NodeDamage::ContentOrHeritage);
+            }
+            stored.push(Dom::from_ref(&*text));
+        }
+        *self.find_highlight_nodes.borrow_mut() = stored.iter().cloned().collect();
+        self.window().layout().set_needs_new_display_list();
     }
 
     /// <https://w3c.github.io/selection-api/#dom-document-getselection>

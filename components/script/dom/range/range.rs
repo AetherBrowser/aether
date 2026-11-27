@@ -396,6 +396,26 @@ impl Range {
             }
         }
 
+        // A range that starts and ends in the same node only covers that node.
+        // `following_nodes` never yields the start node, so walking until `end` would
+        // otherwise collect every border box in the rest of the document.
+        if start == end {
+            if start.is::<CharacterData>() {
+                return start.border_boxes(cx);
+            }
+            let start_offset = self.start_offset();
+            let end_offset = self.end_offset();
+            return start
+                .children()
+                .enumerate()
+                .filter(|(index, _)| {
+                    let index = *index as u32;
+                    index >= start_offset && index < end_offset
+                })
+                .flat_map(|(_, child)| child.border_boxes(cx))
+                .collect();
+        }
+
         let document = start.owner_doc();
         let nodes: Vec<DomRoot<Node>> = {
             let unrooted_end = end.as_unrooted(cx.no_gc());
